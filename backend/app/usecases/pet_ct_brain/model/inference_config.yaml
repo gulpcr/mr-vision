@@ -1,0 +1,68 @@
+model:
+  architecture: atlas_suvr
+  # AAL3 atlas is downloaded automatically via nilearn on first run.
+  # Set atlas_cache_dir to a persistent volume path.
+  atlas_cache_dir: /app/app/usecases/pet_ct_brain/model/atlas_cache
+  # Optional: path to custom MNI152 PET template for registration (NIfTI).
+  # When null, nilearn's MNI152 T1 template is used as reference.
+  mni_template_path: null
+
+inference:
+  device: cpu
+  # Reference region for SUVR computation (by AAL3 label name prefix)
+  reference_region_fdg: cerebellum            # Cerebellum GM for FDG
+  reference_region_amyloid: cerebellum        # Cerebellar cortex for amyloid
+  reference_region_tau: cerebellum            # Inferior cerebellar cortex for tau
+  # Centiloid conversion coefficients (PiB-anchor method, scanner-agnostic)
+  centiloid_slope: 188.22
+  centiloid_intercept: -189.16
+  # Asymmetry Index: flag if |L-R| / ((L+R)/2) > threshold
+  asymmetry_flag_threshold: 0.15
+
+preprocessing:
+  pet_series_patterns:
+    - "(?i)\\bpt\\b"
+    - "(?i)\\bpet\\b"
+    - "(?i)emission"
+    - "(?i)brain.*pet"
+    - "(?i)pet.*brain"
+  ct_series_patterns:
+    - "(?i)\\bct\\b"
+    - "(?i)attenuation"
+    - "(?i)transmission"
+  # Tracer detection from RadiopharmaceuticalInformationSequence
+  tracer_patterns:
+    fdg:
+      - "(?i)fdg"
+      - "(?i)fluoro.*deoxyglucose"
+      - "(?i)fluorodeoxyglucose"
+      - "(?i)18f-fdg"
+    amyloid:
+      - "(?i)florbetapir"
+      - "(?i)av.?45"
+      - "(?i)amyvid"
+      - "(?i)florbetaben"
+      - "(?i)nmb4"
+      - "(?i)neuraceq"
+    tau:
+      - "(?i)flortaucipir"
+      - "(?i)av.?1451"
+      - "(?i)tauvid"
+  f18_half_life_seconds: 6586.2
+
+postprocessing:
+  # ROI summary: report SUVR for these AAL3 label prefix groups
+  summary_regions:
+    - frontal
+    - temporal
+    - parietal
+    - occipital
+    - cingulate
+    - cerebellum
+    - thalamus
+    - caudate
+    - putamen
+
+quality_checks:
+  min_brain_coverage_voxels: 50000
+  max_registration_metric: 0.5

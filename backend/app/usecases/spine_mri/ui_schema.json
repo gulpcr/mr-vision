@@ -1,0 +1,117 @@
+{
+  "title": "Spine MRI Analysis",
+  "description": "AI-powered spine segmentation: vertebrae, discs, spinal canal, and cord",
+  "sections": [
+    {
+      "id": "summary",
+      "title": "Summary",
+      "type": "key_value",
+      "data_path": "summary",
+      "fields": [
+        {
+          "key": "levels_analyzed",
+          "label": "Levels Analyzed",
+          "format": "array"
+        },
+        {
+          "key": "stenosis_suspected",
+          "label": "Stenosis Suspected",
+          "format": "boolean"
+        },
+        {
+          "key": "cord_compression_suspected",
+          "label": "Cord Compression Suspected",
+          "format": "boolean"
+        },
+        {
+          "key": "sequences_used",
+          "label": "Sequences Used",
+          "format": "array"
+        },
+        {
+          "key": "processing_notes",
+          "label": "Notes",
+          "format": "text"
+        }
+      ]
+    },
+    {
+      "id": "measurements",
+      "title": "Quantitative Measurements",
+      "type": "key_value",
+      "data_path": "measurements",
+      "fields": [
+        {
+          "key": "disc_count",
+          "label": "Intervertebral Disc Count",
+          "format": "integer"
+        },
+        {
+          "key": "vertebra_count",
+          "label": "Vertebra Count",
+          "format": "integer"
+        },
+        {
+          "key": "canal_area_mm2",
+          "label": "Mean Canal Cross-Sectional Area",
+          "unit": "mm²",
+          "format": "number",
+          "precision": 2
+        },
+        {
+          "key": "cord_area_mm2",
+          "label": "Mean Cord Cross-Sectional Area",
+          "unit": "mm²",
+          "format": "number",
+          "precision": 2
+        }
+      ]
+    },
+    {
+      "id": "qa",
+      "title": "Quality Assurance",
+      "type": "qa_panel",
+      "flags_path": "qa_flags",
+      "details_path": "qa_details",
+      "severity_map": {
+        "missing_sequence": "warning",
+        "spacing_inconsistency": "warning",
+        "motion_artifact": "error",
+        "incomplete_coverage": "warning",
+        "slice_gap": "info",
+        "no_model_weights": "warning"
+      }
+    },
+    {
+      "id": "overlays",
+      "title": "Segmentation Overlay",
+      "type": "overlay",
+      "artifact_filter": "segmentation_nifti",
+      "colormap": {
+        "1": { "label": "Vertebra", "color": "#E8C87A" },
+        "2": { "label": "Intervertebral Disc", "color": "#6BBFFF" },
+        "3": { "label": "Spinal Canal", "color": "#A8E6A3" },
+        "4": { "label": "Spinal Cord", "color": "#FF8C69" }
+      }
+    },
+    {
+      "id": "model_info",
+      "title": "Model Information",
+      "type": "key_value",
+      "fields": [
+        {
+          "key": "model_version",
+          "label": "Model Version",
+          "format": "text",
+          "data_path": "model_version"
+        },
+        {
+          "key": "model_checksum",
+          "label": "Model Checksum",
+          "format": "text",
+          "data_path": "model_checksum"
+        }
+      ]
+    }
+  ]
+}

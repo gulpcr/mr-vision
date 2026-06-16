@@ -1,0 +1,55 @@
+model:
+  architecture: totalsegmentator_mr
+  version: "2.2"  # informational — not passed to Python API
+  totalseg_task: total_mr
+  totalseg_weights_dir: /model_cache/totalsegmentator
+  # Vertebral levels to merge into label 1; all others come from total_mr
+  vertebra_prefixes:
+    - vertebrae_C
+    - vertebrae_T
+    - vertebrae_L
+    - vertebrae_S
+  organ_map:
+    spinal_cord: 4
+
+inference:
+  device: auto   # selects cuda when GPU is present, cpu otherwise
+  mixed_precision: true
+
+preprocessing:
+  target_spacing: [0.9, 0.9, 3.0]
+  orientation: RAS
+  intensity_normalization: z_score
+  crop_to_nonzero: true
+
+postprocessing:
+  label_map:
+    0: background
+    1: vertebra
+    2: intervertebral_disc
+    3: spinal_canal
+    4: spinal_cord
+  min_structure_volume_ml: 0.1
+  apply_connected_components: true
+  largest_component_only_labels: [3, 4]
+
+quality_checks:
+  min_expected_spacing_mm: 0.3
+  max_expected_spacing_mm: 6.0
+  min_slices: 15
+  max_spacing_anisotropy: 8.0
+  motion_artifact_threshold: 0.15
+
+swin_unetr:
+  # Set to a .pt file to activate SwinUNETR over TotalSegmentator.
+  # Leave null to use TotalSegmentator (default).
+  custom_weights_path: null
+  in_channels: 1              # single-channel MRI input
+  out_channels: 5             # background + 4 spine labels
+  feature_size: 48
+  use_checkpoint: false
+  roi_size: [96, 96, 96]
+  sw_batch_size: 1
+  overlap: 0.5
+  mode: gaussian
+  threshold: 0.5

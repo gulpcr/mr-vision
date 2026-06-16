@@ -1,0 +1,16 @@
+name: spine_mri
+version: "1.0.0"
+description: >
+  Spine MRI segmentation and quantitative analysis. Segments vertebrae,
+  intervertebral discs, spinal canal, and spinal cord. Computes disc counts,
+  canal and cord cross-sectional areas, and flags stenosis and cord compression.
+supported_body_parts:
+  - SPINE
+  - CSPINE
+  - TSPINE
+  - LSPINE
+required_sequences:
+  - SAG_T2
+  - AX_T2
+model_type: segresnet
+enabled: true

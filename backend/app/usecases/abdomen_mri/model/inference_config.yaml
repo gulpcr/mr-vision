@@ -1,0 +1,62 @@
+model:
+  architecture: totalsegmentator_mr
+  version: "2.2"  # informational — TotalSegmentator manages its own versioning; not passed to Python API
+  # TotalSegmentator task: total_mr segments 57 MRI structures
+  # nnU-Net 3D full-resolution, ~65M params, trained on multi-site MRI data
+  totalseg_task: total_mr
+  # Weights auto-download to totalseg_weights_dir on first run (~450 MB)
+  totalseg_weights_dir: /model_cache/totalsegmentator
+  # Organ file names TotalSegmentator outputs for this use case
+  organ_map:
+    liver: 1
+    spleen: 2
+    kidney_right: 3
+    kidney_left: 4
+    pancreas: 5
+
+inference:
+  device: auto   # selects cuda when GPU is present, cpu otherwise
+  mixed_precision: true
+
+preprocessing:
+  target_spacing: [1.5, 1.5, 3.0]
+  orientation: RAS
+  intensity_normalization: z_score
+  crop_to_nonzero: true
+
+postprocessing:
+  label_map:
+    0: background
+    1: liver
+    2: spleen
+    3: right_kidney
+    4: left_kidney
+    5: pancreas
+  min_structure_volume_ml: 0.5
+  apply_connected_components: true
+  largest_component_only_labels: [1, 2, 3, 4, 5]
+
+quality_checks:
+  min_expected_spacing_mm: 0.5
+  max_expected_spacing_mm: 8.0
+  min_slices: 20
+  max_spacing_anisotropy: 6.0
+  motion_artifact_threshold: 0.15
+
+reference_volumes_ml:
+  liver_normal_max: 1800.0
+  spleen_normal_max: 315.0
+
+swin_unetr:
+  # Set to a .pt file to activate SwinUNETR over TotalSegmentator.
+  # Leave null to use TotalSegmentator (default).
+  custom_weights_path: null
+  in_channels: 1              # single-channel MRI input
+  out_channels: 6             # background + 5 abdominal organ labels
+  feature_size: 48
+  use_checkpoint: false
+  roi_size: [96, 96, 96]
+  sw_batch_size: 1
+  overlap: 0.5
+  mode: gaussian
+  threshold: 0.5

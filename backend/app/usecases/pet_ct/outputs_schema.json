@@ -1,0 +1,96 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "PET/CT Oncology Analysis Result",
+  "type": "object",
+  "required": ["summary", "measurements", "qa_flags", "model_version", "artifacts"],
+  "properties": {
+    "summary": {
+      "type": "object",
+      "required": ["lesions_detected", "lesion_count", "mtv_total_ml", "tlg_total", "suvmax_body"],
+      "properties": {
+        "lesions_detected":    { "type": "boolean" },
+        "lesion_count":        { "type": "integer", "minimum": 0 },
+        "mtv_total_ml":        { "type": "number",  "minimum": 0 },
+        "tlg_total":           { "type": "number",  "minimum": 0 },
+        "suvmax_body":         { "type": "number",  "minimum": 0 },
+        "radiopharmaceutical": { "type": "string" },
+        "percist_score":       { "type": ["string", "null"], "enum": ["CMR", "PMR", "SMD", "PMD", null] },
+        "deauville_score":     { "type": ["integer", "null"], "minimum": 1, "maximum": 5 },
+        "processing_notes":    { "type": "string" }
+      }
+    },
+    "measurements": {
+      "type": "object",
+      "properties": {
+        "lesions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "suv_max", "suv_mean", "suv_peak", "volume_ml", "tlg"],
+            "properties": {
+              "id":                { "type": "integer" },
+              "suv_max":           { "type": "number" },
+              "suv_mean":          { "type": "number" },
+              "suv_peak":          { "type": "number" },
+              "volume_ml":         { "type": "number" },
+              "tlg":               { "type": "number" },
+              "anatomical_region": { "type": "string" },
+              "centroid_voxel":    {
+                "type": "array",
+                "items": { "type": "number" },
+                "minItems": 3,
+                "maxItems": 3
+              }
+            }
+          }
+        },
+        "reference_organs": {
+          "type": "object",
+          "properties": {
+            "liver_suv_mean":       { "type": "number" },
+            "liver_suv_sd":         { "type": "number" },
+            "mediastinum_suv_mean": { "type": "number" }
+          }
+        },
+        "whole_body": {
+          "type": "object",
+          "properties": {
+            "mtv_total_ml": { "type": "number" },
+            "tlg_total":    { "type": "number" },
+            "suvmax_body":  { "type": "number" },
+            "lesion_count": { "type": "integer" }
+          }
+        },
+        "voxel_spacing_mm": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "image_dimensions": {
+          "type": "array",
+          "items": { "type": "integer" },
+          "minItems": 3,
+          "maxItems": 3
+        }
+      }
+    },
+    "qa_flags":       { "type": "array",  "items": { "type": "string" } },
+    "qa_details":     { "type": "object", "additionalProperties": true },
+    "model_version":  { "type": "string" },
+    "model_checksum": { "type": "string" },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "artifact_type", "local_path"],
+        "properties": {
+          "name":          { "type": "string" },
+          "artifact_type": { "type": "string" },
+          "local_path":    { "type": "string" },
+          "content_type":  { "type": "string" }
+        }
+      }
+    }
+  }
+}

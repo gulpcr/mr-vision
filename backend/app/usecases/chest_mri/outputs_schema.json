@@ -1,0 +1,77 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Chest MRI Segmentation Result",
+  "type": "object",
+  "required": ["summary", "measurements", "qa_flags", "qa_details", "model_version", "model_checksum", "artifacts"],
+  "properties": {
+    "summary": {
+      "type": "object",
+      "required": ["lesion_detected", "bilateral_analysis", "lung_volume_ratio"],
+      "properties": {
+        "lesion_detected": { "type": "boolean" },
+        "bilateral_analysis": { "type": "boolean" },
+        "lung_volume_ratio": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Right lung volume divided by left lung volume"
+        },
+        "segmentation_labels": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "sequences_used": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "processing_notes": { "type": "string" }
+      }
+    },
+    "measurements": {
+      "type": "object",
+      "required": [
+        "right_lung_volume_ml",
+        "left_lung_volume_ml",
+        "total_lung_volume_ml",
+        "heart_volume_ml"
+      ],
+      "properties": {
+        "right_lung_volume_ml": { "type": "number", "minimum": 0 },
+        "left_lung_volume_ml": { "type": "number", "minimum": 0 },
+        "total_lung_volume_ml": { "type": "number", "minimum": 0 },
+        "heart_volume_ml": { "type": "number", "minimum": 0 },
+        "aorta_volume_ml": { "type": "number", "minimum": 0 },
+        "voxel_spacing_mm": {
+          "type": "array",
+          "items": { "type": "number" }
+        },
+        "image_dimensions": {
+          "type": "array",
+          "items": { "type": "integer" }
+        }
+      }
+    },
+    "qa_flags": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "qa_details": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "model_version": { "type": "string" },
+    "model_checksum": { "type": "string" },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "artifact_type", "local_path", "content_type"],
+        "properties": {
+          "name": { "type": "string" },
+          "artifact_type": { "type": "string" },
+          "local_path": { "type": "string" },
+          "content_type": { "type": "string" }
+        }
+      }
+    }
+  }
+}

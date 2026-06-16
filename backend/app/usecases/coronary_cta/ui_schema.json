@@ -1,0 +1,80 @@
+{
+  "title": "Coronary CTA Analysis",
+  "description": "Coronary artery calcium (Agatston) scoring with optional per-segment stenosis grading and CAD-RADS 2.0 category",
+  "sections": [
+    {
+      "id": "summary",
+      "title": "Clinical Summary",
+      "type": "key_value",
+      "data_path": "summary",
+      "fields": [
+        { "key": "calcium_score_agatston", "label": "Agatston Calcium Score", "format": "number", "precision": 0 },
+        { "key": "calcium_category",       "label": "Calcium Burden",         "format": "text" },
+        { "key": "calcium_volume_mm3",     "label": "Calcium Volume",         "unit": "mm³", "format": "number", "precision": 0 },
+        { "key": "cad_rads",               "label": "CAD-RADS 2.0",           "format": "number" },
+        { "key": "max_stenosis_pct",       "label": "Max Stenosis",           "unit": "%",   "format": "number", "precision": 0 },
+        { "key": "diagnosis",              "label": "Diagnosis",              "format": "text" },
+        { "key": "inference_method",       "label": "Method",                 "format": "text" },
+        { "key": "processing_notes",       "label": "Notes",                  "format": "text" }
+      ]
+    },
+    {
+      "id": "calcium_per_vessel",
+      "title": "Calcium Score by Vessel",
+      "type": "key_value",
+      "data_path": "measurements.calcium_per_vessel",
+      "fields": [
+        { "key": "LM",  "label": "Left Main",                "format": "number", "precision": 0 },
+        { "key": "LAD", "label": "Left Anterior Descending", "format": "number", "precision": 0 },
+        { "key": "LCx", "label": "Left Circumflex",          "format": "number", "precision": 0 },
+        { "key": "RCA", "label": "Right Coronary",           "format": "number", "precision": 0 },
+        { "key": "total", "label": "Total",                  "format": "number", "precision": 0 }
+      ]
+    },
+    {
+      "id": "segment_table",
+      "title": "Per-Segment Stenosis (SCCT 18-Segment)",
+      "type": "table",
+      "data_path": "measurements.segments",
+      "columns": [
+        { "key": "segment",      "label": "Segment",       "format": "text" },
+        { "key": "vessel",       "label": "Vessel",        "format": "text" },
+        { "key": "stenosis_pct", "label": "Stenosis (%)",  "format": "number", "precision": 0 },
+        { "key": "plaque_type",  "label": "Plaque",        "format": "text" }
+      ]
+    },
+    {
+      "id": "qa",
+      "title": "Quality Assurance",
+      "type": "qa_panel",
+      "flags_path": "qa_flags",
+      "details_path": "qa_details",
+      "severity_map": {
+        "no_calcium_series":          "warning",
+        "no_ccta_series":             "warning",
+        "calcium_roi_approximate":         "warning",
+        "calcium_slice_thickness_abnormal":"warning",
+        "insufficient_coverage":      "error",
+        "contrast_in_calcium_series": "warning"
+      }
+    },
+    {
+      "id": "overlays",
+      "title": "Calcium Overlay",
+      "type": "overlay",
+      "artifact_filter": "overlay_png",
+      "colormap": {
+        "1": { "label": "Coronary Calcium", "color": "#FF4444" }
+      }
+    },
+    {
+      "id": "model_info",
+      "title": "Model Information",
+      "type": "key_value",
+      "fields": [
+        { "key": "model_version",  "label": "Model Version",  "format": "text", "data_path": "model_version" },
+        { "key": "model_checksum", "label": "Model Checksum", "format": "text", "data_path": "model_checksum" }
+      ]
+    }
+  ]
+}

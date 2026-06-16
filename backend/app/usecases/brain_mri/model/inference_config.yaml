@@ -1,0 +1,67 @@
+model:
+  # MONAI Model Zoo: BraTS brain tumor segmentation (SegResNet)
+  # Pre-trained on BraTS 2021 challenge data. Auto-downloads on first run.
+  # No manual weight provisioning required.
+  architecture: segresnet
+  bundle_name: brats_mri_segmentation
+  source: monai_model_zoo
+  version: "1.0.0"
+
+  # Auto-downloaded bundles are cached here (persisted via Docker volume)
+  bundle_cache_dir: /app/app/usecases/brain_mri/model/bundles
+
+  # If you have custom-trained weights (nnU-Net, SwinUNETR, etc.), set this
+  # path and the pipeline will prefer them over the auto-downloaded model.
+  custom_weights_path: null
+
+inference:
+  device: auto   # "auto" selects cuda when a real GPU is present, cpu otherwise
+  mixed_precision: true
+  batch_size: 1
+  sliding_window:
+    roi_size: [240, 240, 160]
+    sw_batch_size: 1
+    overlap: 0.6
+    mode: gaussian
+
+preprocessing:
+  target_spacing: [1.0, 1.0, 1.0]
+  orientation: RAS
+  intensity_normalization: z_score
+  crop_to_nonzero: true
+
+postprocessing:
+  # BraTS SegResNet output channels (sigmoid, not softmax):
+  #   channel 0 → tumor core (TC)
+  #   channel 1 → whole tumor (WT)
+  #   channel 2 → enhancing tumor (ET)
+  # Post-processing converts sigmoid outputs into a merged label map.
+  label_map:
+    0: background
+    1: tumor_core
+    2: whole_tumor
+    3: enhancing_tumor
+  min_lesion_volume_ml: 0.05
+  apply_connected_components: true
+  largest_component_only_labels: [2]
+
+quality_checks:
+  min_expected_spacing_mm: 0.5
+  max_expected_spacing_mm: 5.0
+  min_slices: 20
+  max_spacing_anisotropy: 3.0
+  motion_artifact_threshold: 0.15
+
+swin_unetr:
+  # Set to a .pt file to activate SwinUNETR over the BraTS SegResNet bundle.
+  # Leave null to use the auto-downloaded BraTS bundle (default).
+  custom_weights_path: null
+  in_channels: 4              # T1 / T1ce / T2 / FLAIR (matches BraTS convention)
+  out_channels: 4             # background + TC + WT + ET
+  feature_size: 48
+  use_checkpoint: false
+  roi_size: [128, 128, 128]
+  sw_batch_size: 1
+  overlap: 0.5
+  mode: gaussian
+  threshold: 0.5

@@ -1,0 +1,1243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MRI AI Platform — Clinical Presentation</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --blue:    #0a6bff;
+      --dark:    #0c1120;
+      --card:    #131b2e;
+      --border:  #1e2d4a;
+      --text:    #e2e8f0;
+      --muted:   #8899bb;
+      --accent:  #00d4aa;
+      --warn:    #ff6b35;
+      --purple:  #7c3aed;
+    }
+
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: var(--dark);
+      color: var(--text);
+      overflow: hidden;
+    }
+
+    /* ── slide container ── */
+    .slides { width: 100vw; height: 100vh; position: relative; }
+
+    .slide {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      padding: 48px 64px;
+      opacity: 0;
+      transform: translateX(60px);
+      transition: opacity 0.45s ease, transform 0.45s ease;
+      pointer-events: none;
+    }
+    .slide.active {
+      opacity: 1;
+      transform: translateX(0);
+      pointer-events: all;
+    }
+    .slide.out {
+      opacity: 0;
+      transform: translateX(-60px);
+    }
+
+    /* ── nav ── */
+    .nav {
+      position: fixed;
+      bottom: 28px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      z-index: 100;
+      background: rgba(13,24,45,.85);
+      backdrop-filter: blur(10px);
+      border: 1px solid var(--border);
+      border-radius: 40px;
+      padding: 10px 24px;
+    }
+    .nav button {
+      background: none;
+      border: none;
+      color: var(--text);
+      font-size: 18px;
+      cursor: pointer;
+      padding: 4px 10px;
+      border-radius: 8px;
+      transition: background .2s;
+    }
+    .nav button:hover { background: var(--border); }
+    .nav .counter { font-size: 13px; color: var(--muted); min-width: 60px; text-align: center; }
+    .dot-row { display: flex; gap: 6px; }
+    .dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--border); cursor: pointer; transition: background .2s;
+    }
+    .dot.on { background: var(--blue); }
+
+    /* ── key shortcut hint ── */
+    .hint {
+      position: fixed; bottom: 28px; right: 36px;
+      font-size: 11px; color: var(--muted);
+    }
+
+    /* ── typography helpers ── */
+    h1 { font-size: 3rem; font-weight: 800; line-height: 1.15; }
+    h2 { font-size: 2rem; font-weight: 700; margin-bottom: 32px; }
+    h3 { font-size: 1.3rem; font-weight: 600; }
+    p  { line-height: 1.7; color: var(--muted); }
+
+    .tag {
+      display: inline-block;
+      background: var(--blue);
+      color: #fff;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .08em;
+      padding: 4px 12px;
+      border-radius: 20px;
+      margin-bottom: 18px;
+      text-transform: uppercase;
+    }
+    .tag.green { background: var(--accent); color: var(--dark); }
+    .tag.purple { background: var(--purple); }
+
+    .accent { color: var(--accent); }
+    .blue   { color: var(--blue); }
+    .warn   { color: var(--warn); }
+
+    /* ── grid layouts ── */
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; width: 100%; }
+    .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; width: 100%; }
+    .grid-4 { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 16px; width: 100%; }
+
+    /* ── cards ── */
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 28px;
+    }
+    .card.highlight { border-color: var(--accent); }
+    .card.blue-glow { border-color: var(--blue); box-shadow: 0 0 30px rgba(10,107,255,.12); }
+
+    .icon { font-size: 2.2rem; margin-bottom: 14px; }
+    .card h3 { margin-bottom: 8px; }
+    .card p { font-size: .92rem; }
+
+    /* ── stat blocks ── */
+    .stat-big { font-size: 3.5rem; font-weight: 800; line-height: 1; }
+    .stat-label { font-size: .85rem; color: var(--muted); margin-top: 6px; }
+
+    /* ── flow steps ── */
+    .flow {
+      display: flex;
+      align-items: center;
+      gap: 0;
+      width: 100%;
+      flex-wrap: nowrap;
+    }
+    .step {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 18px 16px;
+      text-align: center;
+      flex: 1;
+    }
+    .step .num {
+      width: 28px; height: 28px;
+      border-radius: 50%;
+      background: var(--blue);
+      color: #fff;
+      font-size: .8rem;
+      font-weight: 700;
+      display: flex; align-items: center; justify-content: center;
+      margin: 0 auto 10px;
+    }
+    .step h4 { font-size: .85rem; font-weight: 600; margin-bottom: 4px; }
+    .step p  { font-size: .75rem; color: var(--muted); }
+    .arrow { color: var(--blue); font-size: 1.2rem; padding: 0 4px; flex-shrink: 0; }
+
+    /* ── list ── */
+    ul.check { list-style: none; display: flex; flex-direction: column; gap: 12px; }
+    ul.check li { display: flex; align-items: flex-start; gap: 12px; font-size: .95rem; }
+    ul.check li::before { content: "✓"; color: var(--accent); font-weight: 700; flex-shrink: 0; margin-top: 2px; }
+
+    /* ── progress bar ── */
+    .bar-row { display: flex; flex-direction: column; gap: 14px; width: 100%; }
+    .bar-item { }
+    .bar-label { display: flex; justify-content: space-between; font-size: .85rem; margin-bottom: 6px; }
+    .bar-track { background: var(--border); border-radius: 4px; height: 8px; }
+    .bar-fill { height: 8px; border-radius: 4px; background: linear-gradient(90deg, var(--blue), var(--accent)); }
+
+    /* ── slide 1 — hero ── */
+    .hero-sub {
+      font-size: 1.25rem;
+      color: var(--muted);
+      max-width: 640px;
+      text-align: center;
+      margin-top: 18px;
+      line-height: 1.6;
+    }
+    .hero-badges {
+      display: flex;
+      gap: 12px;
+      margin-top: 36px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    .badge {
+      border: 1px solid var(--border);
+      border-radius: 30px;
+      padding: 8px 20px;
+      font-size: .85rem;
+      color: var(--muted);
+    }
+
+    /* ── timeline ── */
+    .timeline { display: flex; flex-direction: column; gap: 16px; width: 100%; }
+    .tl-row { display: flex; align-items: center; gap: 20px; }
+    .tl-dot { width: 14px; height: 14px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
+    .tl-line { width: 2px; height: 20px; background: var(--border); margin-left: 6px; }
+    .tl-content { flex: 1; }
+    .tl-time { font-size: .75rem; color: var(--blue); font-weight: 600; margin-bottom: 2px; }
+    .tl-text { font-size: .9rem; }
+
+    /* ── quote ── */
+    .quote-block {
+      border-left: 4px solid var(--accent);
+      padding: 20px 28px;
+      background: var(--card);
+      border-radius: 0 12px 12px 0;
+      font-style: italic;
+      font-size: 1.15rem;
+      line-height: 1.7;
+      color: var(--text);
+    }
+
+    /* background glow blobs */
+    .blob {
+      position: absolute;
+      border-radius: 50%;
+      filter: blur(80px);
+      pointer-events: none;
+      z-index: 0;
+    }
+    .slide > * { position: relative; z-index: 1; }
+
+    /* full-width helper */
+    .full { width: 100%; }
+    .mt { margin-top: 20px; }
+    .mb { margin-bottom: 20px; }
+    .center { text-align: center; }
+
+    /* role pill */
+    .role { font-size: .78rem; color: var(--blue); font-weight: 600; letter-spacing: .06em; text-transform: uppercase; margin-bottom: 6px; }
+  </style>
+</head>
+<body>
+
+<div class="slides" id="slides">
+
+  <!-- ─────────── SLIDE 1: HERO ─────────── -->
+  <div class="slide active" id="s1">
+    <div class="blob" style="width:500px;height:500px;background:rgba(10,107,255,.15);top:-100px;left:-150px;"></div>
+    <div class="blob" style="width:400px;height:400px;background:rgba(0,212,170,.1);bottom:-80px;right:-100px;"></div>
+    <div class="tag">Medical AI Platform</div>
+    <h1 class="center">AI-Powered MRI<br><span class="accent">Analysis Platform</span></h1>
+    <p class="hero-sub">
+      Automated segmentation, volumetric measurement, and quality assurance
+      for radiologists — faster, more consistent, and always reproducible.
+    </p>
+    <div class="hero-badges">
+      <div class="badge">🧠 Brain Tumor Segmentation</div>
+      <div class="badge">📐 Volumetric Measurements</div>
+      <div class="badge">✅ QA &amp; Artifact Detection</div>
+      <div class="badge">🔗 PACS / DICOM Integration</div>
+    </div>
+  </div>
+
+  <!-- ─────────── SLIDE 2: THE PROBLEM ─────────── -->
+  <div class="slide" id="s2">
+    <div class="tag warn" style="background:var(--warn)">The Challenge</div>
+    <h2 class="center">What Radiologists Face <span class="warn">Today</span></h2>
+    <div class="grid-3 full">
+      <div class="card">
+        <div class="icon">⏱️</div>
+        <h3>Time-Consuming Reads</h3>
+        <p>Manual volumetric measurements of brain lesions can take 20–40 minutes per study, creating bottlenecks in radiology workflows.</p>
+      </div>
+      <div class="card">
+        <div class="icon">📊</div>
+        <h3>Inconsistent Measurements</h3>
+        <p>Inter-reader variability in tumor volume estimation can exceed 15–20%, complicating treatment response monitoring.</p>
+      </div>
+      <div class="card">
+        <div class="icon">🔍</div>
+        <h3>Subtle Findings Missed</h3>
+        <p>Fatigue and high case volumes increase the risk of missing small or evolving lesions, especially in follow-up studies.</p>
+      </div>
+      <div class="card">
+        <div class="icon">📁</div>
+        <h3>No Structured Output</h3>
+        <p>Results are locked in free-text reports, making longitudinal comparisons and population-level research difficult.</p>
+      </div>
+      <div class="card">
+        <div class="icon">🛤️</div>
+        <h3>Manual Study Routing</h3>
+        <p>Coordinators manually triage which studies need which analyses, leading to delays and mis-routing errors.</p>
+      </div>
+      <div class="card">
+        <div class="icon">🏗️</div>
+        <h3>Siloed AI Tools</h3>
+        <p>Existing AI tools are single-purpose, lack PACS integration, and produce results that can't be compared over time.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─────────── SLIDE 3: SOLUTION OVERVIEW ─────────── -->
+  <div class="slide" id="s3">
+    <div class="blob" style="width:400px;height:400px;background:rgba(0,212,170,.08);top:-80px;right:-80px;"></div>
+    <div class="tag green">Our Solution</div>
+    <h2 class="center">One Platform. <span class="accent">End-to-End AI.</span></h2>
+    <div class="flow full">
+      <div class="step">
+        <div class="num">1</div>
+        <h4>Upload / PACS</h4>
+        <p>DICOM via Orthanc PACS or direct upload</p>
+      </div>
+      <div class="arrow">→</div>
+      <div class="step">
+        <div class="num">2</div>
+        <h4>Auto Route</h4>
+        <p>Smart engine assigns the right AI pipeline</p>
+      </div>
+      <div class="arrow">→</div>
+      <div class="step">
+        <div class="num">3</div>
+        <h4>QA Check</h4>
+        <p>Detects artifacts, missing sequences, gaps</p>
+      </div>
+      <div class="arrow">→</div>
+      <div class="step">
+        <div class="num">4</div>
+        <h4>AI Segmentation</h4>
+        <p>SegResNet segments tumor sub-regions</p>
+      </div>
+      <div class="arrow">→</div>
+      <div class="step">
+        <div class="num">5</div>
+        <h4>Volumetrics</h4>
+        <p>Precise volumes in mL per sub-region</p>
+      </div>
+      <div class="arrow">→</div>
+      <div class="step">
+        <div class="num">6</div>
+        <h4>Report</h4>
+        <p>Structured JSON + overlays + PDF report</p>
+      </div>
+    </div>
+    <div class="grid-3 full mt">
+      <div class="card highlight">
+        <div class="role">Core AI Model</div>
+        <h3>SegResNet</h3>
+        <p>Trained on BraTS 2021 challenge dataset — the gold standard for brain tumor segmentation benchmarks.</p>
+      </div>
+      <div class="card highlight">
+        <div class="role">Integration</div>
+        <h3>Native DICOM / DICOMweb</h3>
+        <p>Plugs directly into your existing PACS infrastructure. No rip-and-replace, no workflow disruption.</p>
+      </div>
+      <div class="card highlight">
+        <div class="role">Output</div>
+        <h3>Structured &amp; Standardized</h3>
+        <p>Results as DICOM SR/SEG objects, NIfTI overlays, and PDF reports — ready for EMR or FHIR systems.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─────────── SLIDE 4: BRAIN TUMOR AI ─────────── -->
+  <div class="slide" id="s4">
+    <div class="tag">Brain MRI AI</div>
+    <h2 class="center">Automated Brain Tumor <span class="accent">Segmentation</span></h2>
+    <div class="grid-2 full">
+      <div>
+        <div class="card blue-glow mb">
+          <h3 class="blue">Three Sub-Region Labels</h3>
+          <div class="bar-row mt">
+            <div class="bar-item">
+              <div class="bar-label"><span>Whole Tumor (WT)</span><span class="accent">Full extent of disease</span></div>
+              <div class="bar-track"><div class="bar-fill" style="width:100%"></div></div>
+            </div>
+            <div class="bar-item">
+              <div class="bar-label"><span>Tumor Core (TC)</span><span style="color:var(--blue)">Active + necrotic core</span></div>
+              <div class="bar-track"><div class="bar-fill" style="width:70%;background:linear-gradient(90deg,var(--blue),var(--purple))"></div></div>
+            </div>
+            <div class="bar-item">
+              <div class="bar-label"><span>Enhancing Tumor (ET)</span><span style="color:var(--warn)">Viable, active tumor</span></div>
+              <div class="bar-track"><div class="bar-fill" style="width:40%;background:linear-gradient(90deg,var(--warn),#ff9e6b)"></div></div>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <h3 class="mb">Multi-Sequence Input</h3>
+          <div class="grid-4" style="gap:10px">
+            <div style="text-align:center">
+              <div style="background:var(--border);border-radius:8px;padding:12px;font-size:.8rem;font-weight:600">T1</div>
+            </div>
+            <div style="text-align:center">
+              <div style="background:var(--border);border-radius:8px;padding:12px;font-size:.8rem;font-weight:600">T1ce</div>
+            </div>
+            <div style="text-align:center">
+              <div style="background:var(--border);border-radius:8px;padding:12px;font-size:.8rem;font-weight:600">T2</div>
+            </div>
+            <div style="text-align:center">
+              <div style="background:var(--border);border-radius:8px;padding:12px;font-size:.8rem;font-weight:600">FLAIR</div>
+            </div>
+          </div>
+          <p style="margin-top:12px;font-size:.85rem">All four sequences fused into a single 3D volumetric analysis — the way expert neuroradiologists read.</p>
+        </div>
+      </div>
+      <div>
+        <ul class="check full">
+          <li><div><strong>Sliding-window 3D inference</strong> — analyzes the full brain volume, not just 2D slices, ensuring no region is missed.</div></li>
+          <li><div><strong>Isotropic resampling to 1 mm</strong> — normalizes for scanner variability across field strengths and vendors.</div></li>
+          <li><div><strong>Z-score intensity normalization</strong> — robust to differences in contrast agent dosing and scanner calibration.</div></li>
+          <li><div><strong>Volume in milliliters (mL)</strong> — per sub-region, plus percentage contribution, ready for response assessment (RANO criteria).</div></li>
+          <li><div><strong>Model lineage tracking</strong> — every result records model version + SHA-256 checksum for full reproducibility and regulatory audit trails.</div></li>
+          <li><div><strong>Minimum lesion filter (0.05 mL)</strong> — suppresses spurious sub-voxel detections while preserving clinically relevant findings.</div></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─────────── SLIDE 5: QA ENGINE ─────────── -->
+  <div class="slide" id="s5">
+    <div class="tag purple">Quality Assurance</div>
+    <h2 class="center">Built-In Image <span class="accent">Quality Guard</span></h2>
+    <p class="center mb" style="max-width:620px">The platform automatically evaluates image quality before AI inference — so radiologists are never handed a result based on degraded data.</p>
+    <div class="grid-3 full">
+      <div class="card">
+        <div class="icon">🎯</div>
+        <h3>Missing Sequence Detection</h3>
+        <p>Flags studies where required MRI sequences (T1, FLAIR, T2) are absent — prevents silently incorrect segmentations.</p>
+      </div>
+      <div class="card">
+        <div class="icon">📏</div>
+        <h3>Voxel Spacing Validation</h3>
+        <p>Checks that spacing is within 0.5–5.0 mm per axis and anisotropy ratio &lt; 3.0. Catches reconstruction artifacts.</p>
+      </div>
+      <div class="card">
+        <div class="icon">🏃</div>
+        <h3>Motion Artifact Scoring</h3>
+        <p>Edge-energy analysis across the scan detects patient motion. Threshold-based warning before inference runs.</p>
+      </div>
+      <div class="card">
+        <div class="icon">📐</div>
+        <h3>Coverage Check</h3>
+        <p>Ensures ≥ 20 slices for adequate anatomical coverage. Incomplete scans are flagged before reporting.</p>
+      </div>
+      <div class="card">
+        <div class="icon">↕️</div>
+        <h3>Slice Gap Detection</h3>
+        <p>Identifies large inter-slice gaps that would compromise 3D volumetric accuracy.</p>
+      </div>
+      <div class="card highlight">
+        <div class="icon">🚦</div>
+        <h3>Three Severity Levels</h3>
+        <p><strong style="color:var(--warn)">BLOCKING</strong> — halts analysis.<br><strong style="color:#f59e0b">WARNING</strong> — proceed with caution.<br><strong style="color:var(--accent)">INFO</strong> — log only.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─────────── SLIDE 6: WORKFLOW FOR RADIOLOGISTS ─────────── -->
+  <div class="slide" id="s6">
+    <div class="tag green">Radiologist Workflow</div>
+    <h2 class="center">Designed Around <span class="accent">Your Workflow</span></h2>
+    <div class="grid-2 full" style="align-items:start">
+      <div>
+        <div class="card mb">
+          <h3 class="mb">Real-Time Progress Tracking</h3>
+          <div class="timeline">
+            <div class="tl-row"><div class="tl-dot" style="background:var(--accent)"></div><div class="tl-content"><div class="tl-time">T+0s</div><div class="tl-text">Study ingested from PACS</div></div></div>
+            <div class="tl-line" style="margin-left:6px"></div>
+            <div class="tl-row"><div class="tl-dot" style="background:var(--blue)"></div><div class="tl-content"><div class="tl-time">T+5s</div><div class="tl-text">Auto-routed to Brain MRI pipeline</div></div></div>
+            <div class="tl-line" style="margin-left:6px"></div>
+            <div class="tl-row"><div class="tl-dot" style="background:var(--blue)"></div><div class="tl-content"><div class="tl-time">T+30s</div><div class="tl-text">QA passed — 4-channel volume built</div></div></div>
+            <div class="tl-line" style="margin-left:6px"></div>
+            <div class="tl-row"><div class="tl-dot" style="background:var(--purple)"></div><div class="tl-content"><div class="tl-time">T+90s</div><div class="tl-text">AI inference complete</div></div></div>
+            <div class="tl-line" style="margin-left:6px"></div>
+            <div class="tl-row"><div class="tl-dot" style="background:var(--accent)"></div><div class="tl-content"><div class="tl-time">T+120s</div><div class="tl-text">Volumes, overlays &amp; report ready</div></div></div>
+          </div>
+        </div>
+        <div class="card">
+          <h3 style="margin-bottom:12px">Longitudinal Comparison</h3>
+          <p style="font-size:.9rem">Every study result is versioned. One click compares Whole Tumor volume between baseline and follow-up — delta in mL and %, directly supporting RANO response assessment.</p>
+        </div>
+      </div>
+      <div>
+        <ul class="check">
+          <li><div><strong>OHIF DICOM Viewer</strong> integrated — segmentation overlays rendered directly on the MRI without leaving the platform.</div></li>
+          <li><div><strong>Worklist with AI status</strong> — see at a glance which studies are pending, processing, or ready for review.</div></li>
+          <li><div><strong>One-click structured report</strong> — volumes pre-populated in a report template; radiologist adds clinical interpretation.</div></li>
+          <li><div><strong>Active learning review queue</strong> — only low-confidence cases surface for human review, protecting your time.</div></li>
+          <li><div><strong>Role-based access</strong> — Radiologist, Technician, and Viewer roles with appropriate data visibility.</div></li>
+          <li><div><strong>Audit trail</strong> — every view, edit, and approval is logged for compliance and quality programs.</div></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─────────── SLIDE 7: STATS & IMPACT ─────────── -->
+  <div class="slide" id="s7">
+    <div class="blob" style="width:500px;height:500px;background:rgba(124,58,237,.1);top:-150px;right:-100px;"></div>
+    <div class="tag">Clinical Impact</div>
+    <h2 class="center">Measurable <span class="accent">Benefits</span></h2>
+    <div class="grid-4 full mb">
+      <div class="card" style="text-align:center">
+        <div class="stat-big accent">~2 min</div>
+        <div class="stat-label">Full 3D brain MRI analysis<br>vs. 20–40 min manual</div>
+      </div>
+      <div class="card" style="text-align:center">
+        <div class="stat-big blue">3</div>
+        <div class="stat-label">Tumor sub-regions quantified<br>in a single automated pass</div>
+      </div>
+      <div class="card" style="text-align:center">
+        <div class="stat-big accent">100%</div>
+        <div class="stat-label">Reproducible measurements<br>zero inter-reader variability</div>
+      </div>
+      <div class="card" style="text-align:center">
+        <div class="stat-big blue">∞</div>
+        <div class="stat-label">Versioned history for every<br>study — longitudinal tracking</div>
+      </div>
+    </div>
+    <div class="grid-3 full">
+      <div class="card">
+        <h3 class="mb">For Radiologists</h3>
+        <ul class="check">
+          <li>Eliminate manual measurement burden</li>
+          <li>Consistent baseline for follow-up reads</li>
+          <li>Focus cognitive effort on interpretation</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3 class="mb">For Oncologists</h3>
+        <ul class="check">
+          <li>Objective RANO-aligned volumetrics</li>
+          <li>Trend charts across treatment cycles</li>
+          <li>Structured data for tumor boards</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3 class="mb">For Institutions</h3>
+        <ul class="check">
+          <li>Scalable — GPU workers added on demand</li>
+          <li>Plugs into existing PACS, no rip-and-replace</li>
+          <li>Audit-ready, FHIR-exportable results</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─────────── SLIDE 8: EXPANDABILITY ─────────── -->
+  <div class="slide" id="s8">
+    <div class="tag">Roadmap</div>
+    <h2 class="center">Built to <span class="accent">Grow</span> With You</h2>
+    <p class="center mb" style="max-width:640px">The platform uses a plugin architecture — every new anatomical use case adds a single folder. No core changes required.</p>
+    <div class="grid-4 full mb">
+      <div class="card highlight">
+        <div class="icon">🧠</div>
+        <h3>Brain MRI</h3>
+        <p style="font-size:.82rem;margin-top:6px"><span class="accent" style="font-weight:700">Live</span> — Glioma segmentation (TC, WT, ET), volumetrics, FLAIR lesion load</p>
+      </div>
+      <div class="card">
+        <div class="icon">🦴</div>
+        <h3>Spine MRI</h3>
+        <p style="font-size:.82rem;margin-top:6px"><span style="color:#f59e0b;font-weight:700">Scaffolded</span> — Vertebral segmentation, disc herniation, canal stenosis</p>
+      </div>
+      <div class="card">
+        <div class="icon">🫁</div>
+        <h3>Chest MRI</h3>
+        <p style="font-size:.82rem;margin-top:6px"><span style="color:var(--muted);font-weight:700">Planned</span> — Lung nodule detection, cardiac structure measurement</p>
+      </div>
+      <div class="card">
+        <div class="icon">🫀</div>
+        <h3>Abdomen MRI</h3>
+        <p style="font-size:.82rem;margin-top:6px"><span style="color:var(--muted);font-weight:700">Planned</span> — Organ segmentation, lesion characterization</p>
+      </div>
+    </div>
+    <div class="grid-2 full">
+      <div class="card blue-glow">
+        <h3 class="mb">Enterprise-Ready Platform Features</h3>
+        <ul class="check">
+          <li>A/B model testing — compare new model versions against baseline before deployment</li>
+          <li>Ensemble inference — combine predictions from multiple models for higher confidence</li>
+          <li>Multi-tenant — isolated workspaces for multiple hospital departments or sites</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3 class="mb">Standards &amp; Interoperability</h3>
+        <ul class="check">
+          <li>DICOM SR / SEG export — results as standard DICOM objects back to PACS</li>
+          <li>DICOMweb (STOW-RS, QIDO-RS) — zero-friction PACS integration</li>
+          <li>FHIR server push — results flow into hospital EMR systems automatically</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─────────── SLIDE 9: ADVANCED FEATURES OVERVIEW ─────────── -->
+  <div class="slide" id="s9">
+    <div class="tag green">Advanced AI Features</div>
+    <h2 class="center">12 Features. <span class="accent">Maximum ROI.</span></h2>
+    <p class="center" style="max-width:660px;margin-bottom:22px;font-size:.95rem">Targeting every radiology pain point — from billing leakage to missed findings — each backed by AI intelligence already running in the platform.</p>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:11px;width:100%">
+      <div class="card" style="padding:15px"><div style="font-size:1.4rem;margin-bottom:6px">💰</div><h3 style="font-size:.88rem;margin-bottom:3px">1. CPT Code Suggestion</h3><p style="font-size:.73rem">Auto-suggest billing codes from AI findings — zero revenue leakage</p></div>
+      <div class="card" style="padding:15px"><div style="font-size:1.4rem;margin-bottom:6px">📄</div><h3 style="font-size:.88rem;margin-bottom:3px">2. Auto-Draft Report</h3><p style="font-size:.73rem">Pre-fills structured report from measurements — 60% faster dictation</p></div>
+      <div class="card" style="padding:15px"><div style="font-size:1.4rem;margin-bottom:6px">🔢</div><h3 style="font-size:.88rem;margin-bottom:3px">3. Worklist Prioritization</h3><p style="font-size:.73rem">Sorts by AI urgency score — critical cases read first</p></div>
+      <div class="card" style="padding:15px"><div style="font-size:1.4rem;margin-bottom:6px">🚨</div><h3 style="font-size:.88rem;margin-bottom:3px">4. Critical Finding Alerts</h3><p style="font-size:.73rem">Instant webhook/email on critical findings — &lt;5 min notification</p></div>
+      <div class="card" style="padding:15px"><div style="font-size:1.4rem;margin-bottom:6px">🔍</div><h3 style="font-size:.88rem;margin-bottom:3px">5. Automated Prior Compare</h3><p style="font-size:.73rem">Auto-fetches and compares prior studies — 8 min saved per follow-up</p></div>
+      <div class="card" style="padding:15px"><div style="font-size:1.4rem;margin-bottom:6px">👥</div><h3 style="font-size:.88rem;margin-bottom:3px">6. Peer Review Queue</h3><p style="font-size:.73rem">Routes low-confidence cases to expert review automatically</p></div>
+      <div class="card" style="padding:15px"><div style="font-size:1.4rem;margin-bottom:6px">📈</div><h3 style="font-size:.88rem;margin-bottom:3px">7. Longitudinal Tracking</h3><p style="font-size:.73rem">Volume trend curves across all patient timepoints — RANO-ready</p></div>
+      <div class="card" style="padding:15px"><div style="font-size:1.4rem;margin-bottom:6px">📊</div><h3 style="font-size:.88rem;margin-bottom:3px">8. QA / Audit Dashboard</h3><p style="font-size:.73rem">Radiologist agreement rates, TAT metrics, compliance reports</p></div>
+      <div class="card" style="padding:15px"><div style="font-size:1.4rem;margin-bottom:6px">🩺</div><h3 style="font-size:.88rem;margin-bottom:3px">9. Referring Physician Portal</h3><p style="font-size:.73rem">Read-only portal for referring clinicians — faster care coordination</p></div>
+      <div class="card" style="padding:15px"><div style="font-size:1.4rem;margin-bottom:6px">⚙️</div><h3 style="font-size:.88rem;margin-bottom:3px">10. Protocol Optimization</h3><p style="font-size:.73rem">Flags wrong protocols before scanning — eliminates repeat scans</p></div>
+      <div class="card" style="padding:15px"><div style="font-size:1.4rem;margin-bottom:6px">📅</div><h3 style="font-size:.88rem;margin-bottom:3px">11. Capacity Prediction</h3><p style="font-size:.73rem">Scanner utilization analytics — 85%+ slot utilization target</p></div>
+      <div class="card" style="padding:15px"><div style="font-size:1.4rem;margin-bottom:6px">🔎</div><h3 style="font-size:.88rem;margin-bottom:3px">12. Incidental Findings</h3><p style="font-size:.73rem">Detects findings outside primary ROI — reduces missed diagnoses</p></div>
+    </div>
+  </div>
+
+  <!-- ─────────── SLIDE 10: CPT CODE SUGGESTION ─────────── -->
+  <div class="slide" id="s10">
+    <div class="tag" style="background:var(--accent);color:var(--dark)">Feature 1 of 12 · Revenue</div>
+    <h2 class="center">CPT Code <span class="accent">Suggestion</span></h2>
+    <div class="grid-2 full" style="align-items:start">
+      <div>
+        <div class="card blue-glow mb">
+          <h3 class="blue" style="margin-bottom:14px">How It Works</h3>
+          <div class="flow" style="flex-direction:column;gap:8px;align-items:flex-start">
+            <div style="display:flex;align-items:center;gap:10px"><div style="background:var(--blue);border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700;flex-shrink:0">1</div><span style="font-size:.88rem">AI results contain structured measurements (volumes, counts, severity flags)</span></div>
+            <div style="display:flex;align-items:center;gap:10px"><div style="background:var(--blue);border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700;flex-shrink:0">2</div><span style="font-size:.88rem">Rule engine maps finding types → CPT code candidates with confidence scores</span></div>
+            <div style="display:flex;align-items:center;gap:10px"><div style="background:var(--blue);border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700;flex-shrink:0">3</div><span style="font-size:.88rem">Codes ranked by modality + body part + complexity (supervision codes included)</span></div>
+            <div style="display:flex;align-items:center;gap:10px"><div style="background:var(--accent);border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700;color:var(--dark);flex-shrink:0">4</div><span style="font-size:.88rem">Radiologist reviews, approves or corrects — final codes logged in audit trail</span></div>
+          </div>
+        </div>
+        <div class="card">
+          <h3 style="margin-bottom:10px">Sample CPT Mappings</h3>
+          <div style="display:flex;flex-direction:column;gap:6px">
+            <div style="display:flex;justify-content:space-between;font-size:.82rem;padding:6px 8px;background:var(--border);border-radius:6px"><span>Brain MRI w/ contrast, tumor vol &gt;0</span><span class="accent" style="font-weight:600">70553</span></div>
+            <div style="display:flex;justify-content:space-between;font-size:.82rem;padding:6px 8px;background:var(--border);border-radius:6px"><span>Brain MRI w/o contrast</span><span class="accent" style="font-weight:600">70551</span></div>
+            <div style="display:flex;justify-content:space-between;font-size:.82rem;padding:6px 8px;background:var(--border);border-radius:6px"><span>Spine MRI cervical w/ contrast</span><span class="accent" style="font-weight:600">72156</span></div>
+            <div style="display:flex;justify-content:space-between;font-size:.82rem;padding:6px 8px;background:var(--border);border-radius:6px"><span>AI-assisted analysis (add-on)</span><span class="accent" style="font-weight:600">0691T</span></div>
+          </div>
+        </div>
+      </div>
+      <div>
+        <div class="grid-2" style="gap:12px;margin-bottom:16px">
+          <div class="card" style="text-align:center;padding:20px"><div class="stat-big accent" style="font-size:2.4rem">+18%</div><div class="stat-label">Average revenue increase<br>from correct code capture</div></div>
+          <div class="card" style="text-align:center;padding:20px"><div class="stat-big blue" style="font-size:2.4rem">&lt;3s</div><div class="stat-label">Code suggestion time<br>per study</div></div>
+        </div>
+        <ul class="check">
+          <li><div><strong>Zero revenue leakage</strong> — catches under-coded studies that would have gone unnoticed in free-text dictation.</div></li>
+          <li><div><strong>Compliance-safe</strong> — radiologist always has final approval; suggestion is advisory, not automatic billing.</div></li>
+          <li><div><strong>Includes add-on codes</strong> — AI analysis supervision codes (0691T series) automatically appended when applicable.</div></li>
+          <li><div><strong>Audit trail</strong> — every code acceptance, correction, or rejection is logged with actor + timestamp.</div></li>
+          <li><div><strong>Payer-specific rules</strong> — configurable per insurance carrier for maximum reimbursement accuracy.</div></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─────────── SLIDE 11: AUTO-DRAFT STRUCTURED REPORT ─────────── -->
+  <div class="slide" id="s11">
+    <div class="tag" style="background:var(--blue)">Feature 2 of 12 · Time + Revenue</div>
+    <h2 class="center">Auto-Draft <span class="accent">Structured Report</span></h2>
+    <div class="grid-2 full" style="align-items:start">
+      <div>
+        <div class="card blue-glow mb">
+          <h3 class="blue" style="margin-bottom:14px">Report Generation Flow</h3>
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <div style="display:flex;align-items:center;gap:10px"><div style="background:var(--blue);border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700;flex-shrink:0">1</div><span style="font-size:.88rem">AI result measurements extracted (volumes, counts, severity, QA flags)</span></div>
+            <div style="display:flex;align-items:center;gap:10px"><div style="background:var(--blue);border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700;flex-shrink:0">2</div><span style="font-size:.88rem">Use-case specific Jinja2 template populated with structured findings</span></div>
+            <div style="display:flex;align-items:center;gap:10px"><div style="background:var(--blue);border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700;flex-shrink:0">3</div><span style="font-size:.88rem">Draft includes: clinical indication, technique, findings, impression placeholder</span></div>
+            <div style="display:flex;align-items:center;gap:10px"><div style="background:var(--accent);border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700;color:var(--dark);flex-shrink:0">4</div><span style="font-size:.88rem">Export as PDF (WeasyPrint) + DICOM SR (pydicom) + HL7 FHIR DiagnosticReport</span></div>
+          </div>
+        </div>
+        <div class="card">
+          <h3 style="margin-bottom:10px">Example Brain MRI Draft</h3>
+          <div style="font-size:.78rem;font-family:monospace;background:var(--border);border-radius:8px;padding:12px;line-height:1.6;color:var(--text)">
+            <div style="color:var(--accent);font-weight:600">FINDINGS:</div>
+            <div>Whole Tumor: <span style="color:var(--accent)">227.5 mL</span> (T2/FLAIR hyperintensity)</div>
+            <div>Tumor Core: <span style="color:var(--blue)">183.1 mL</span> (T1/T2 signal abnormality)</div>
+            <div>Enhancing Tumor: <span style="color:var(--warn)">112.8 mL</span> (post-contrast enhancement)</div>
+            <div style="margin-top:6px;color:var(--accent);font-weight:600">IMPRESSION:</div>
+            <div style="color:var(--muted)">[Radiologist adds clinical interpretation here]</div>
+          </div>
+        </div>
+      </div>
+      <div>
+        <div class="grid-2" style="gap:12px;margin-bottom:16px">
+          <div class="card" style="text-align:center;padding:20px"><div class="stat-big accent" style="font-size:2.4rem">60%</div><div class="stat-label">Faster dictation time<br>per study</div></div>
+          <div class="card" style="text-align:center;padding:20px"><div class="stat-big blue" style="font-size:2.4rem">0</div><div class="stat-label">Transcription errors<br>in measurements</div></div>
+        </div>
+        <ul class="check">
+          <li><div><strong>Three export formats</strong> — PDF for printing, DICOM SR for PACS, FHIR DiagnosticReport for EMR.</div></li>
+          <li><div><strong>Structured &amp; searchable</strong> — all values stored as discrete data fields, not locked in free text.</div></li>
+          <li><div><strong>Comparison-ready</strong> — prior report values auto-inserted as a delta table alongside current measurements.</div></li>
+          <li><div><strong>Template per use case</strong> — brain, spine, chest, and abdomen each have optimized report templates.</div></li>
+          <li><div><strong>Radiologist editable</strong> — impression section is a rich-text field; measurements section is protected.</div></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─────────── SLIDE 12: WORKLIST PRIORITIZATION ─────────── -->
+  <div class="slide" id="s12">
+    <div class="tag" style="background:var(--purple)">Feature 3 of 12 · Time + Accuracy</div>
+    <h2 class="center">Worklist <span class="accent">Prioritization</span></h2>
+    <div class="grid-2 full" style="align-items:start">
+      <div>
+        <div class="card blue-glow mb">
+          <h3 class="blue" style="margin-bottom:14px">Urgency Scoring Algorithm</h3>
+          <div style="font-size:.82rem;margin-bottom:12px;color:var(--muted)">Each study receives a real-time urgency score (0–100) computed from:</div>
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <div style="display:flex;align-items:center;gap:12px"><div style="background:var(--warn);border-radius:6px;padding:3px 10px;font-size:.72rem;font-weight:700;flex-shrink:0">40%</div><span style="font-size:.85rem">Pathology severity (tumor volume, critical QA flags, high-change delta)</span></div>
+            <div style="display:flex;align-items:center;gap:12px"><div style="background:var(--blue);border-radius:6px;padding:3px 10px;font-size:.72rem;font-weight:700;flex-shrink:0">25%</div><span style="font-size:.85rem">AI confidence score — high confidence + severe finding = top priority</span></div>
+            <div style="display:flex;align-items:center;gap:12px"><div style="background:var(--purple);border-radius:6px;padding:3px 10px;font-size:.72rem;font-weight:700;flex-shrink:0">20%</div><span style="font-size:.85rem">Study age — older unread studies are elevated progressively</span></div>
+            <div style="display:flex;align-items:center;gap:12px"><div style="background:var(--accent);color:var(--dark);border-radius:6px;padding:3px 10px;font-size:.72rem;font-weight:700;flex-shrink:0">15%</div><span style="font-size:.85rem">Referring physician urgency flag (STAT / Routine / Elective)</span></div>
+          </div>
+        </div>
+        <div class="card">
+          <h3 style="margin-bottom:10px">Priority Levels</h3>
+          <div style="display:flex;flex-direction:column;gap:7px">
+            <div style="display:flex;align-items:center;gap:10px"><div style="background:var(--warn);border-radius:4px;padding:3px 12px;font-size:.75rem;font-weight:700;flex-shrink:0">CRITICAL</div><span style="font-size:.82rem">Score ≥ 80 — notify radiologist immediately via alert</span></div>
+            <div style="display:flex;align-items:center;gap:10px"><div style="background:#f59e0b;border-radius:4px;padding:3px 12px;font-size:.75rem;font-weight:700;flex-shrink:0">HIGH</div><span style="font-size:.82rem">Score 60–79 — top of worklist, highlighted in amber</span></div>
+            <div style="display:flex;align-items:center;gap:10px"><div style="background:var(--blue);border-radius:4px;padding:3px 12px;font-size:.75rem;font-weight:700;flex-shrink:0">NORMAL</div><span style="font-size:.82rem">Score 30–59 — standard queue position</span></div>
+            <div style="display:flex;align-items:center;gap:10px"><div style="background:var(--border);border-radius:4px;padding:3px 12px;font-size:.75rem;font-weight:700;flex-shrink:0">ROUTINE</div><span style="font-size:.82rem">Score &lt;30 — end of queue, batch processing eligible</span></div>
+          </div>
+        </div>
+      </div>
+      <div>
+        <div class="grid-2" style="gap:12px;margin-bottom:16px">
+          <div class="card" style="text-align:center;padding:20px"><div class="stat-big warn" style="font-size:2.4rem">30%</div><div class="stat-label">Faster TAT for<br>critical studies</div></div>
+          <div class="card" style="text-align:center;padding:20px"><div class="stat-big accent" style="font-size:2.4rem">100%</div><div class="stat-label">Critical findings<br>read within SLA</div></div>
+        </div>
+        <ul class="check">
+          <li><div><strong>Dynamic re-ranking</strong> — scores updated in real-time as new AI results arrive or studies age.</div></li>
+          <li><div><strong>STAT override</strong> — any referring physician can mark a study STAT, instantly elevating it.</div></li>
+          <li><div><strong>Sub-specialty filtering</strong> — neuroradiology queue sees only brain/spine; MSK sees chest/abdomen.</div></li>
+          <li><div><strong>SLA monitoring</strong> — configurable read-time targets per priority level with dashboard alerts.</div></li>
+          <li><div><strong>Zero manual triage</strong> — fully automatic; coordinators no longer route studies by hand.</div></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─────────── SLIDE 13: CRITICAL FINDING NOTIFICATIONS ─────────── -->
+  <div class="slide" id="s13">
+    <div class="tag" style="background:var(--warn)">Feature 4 of 12 · Safety + Time</div>
+    <h2 class="center">Critical Finding <span class="accent">Auto-Notification</span></h2>
+    <div class="grid-2 full" style="align-items:start">
+      <div>
+        <div class="card blue-glow mb">
+          <h3 class="blue" style="margin-bottom:14px">Alert Trigger Flow</h3>
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <div style="display:flex;align-items:center;gap:10px"><div style="background:var(--warn);border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700;flex-shrink:0">1</div><span style="font-size:.88rem">AI result stored → AlertRuleEngine evaluates all active rules</span></div>
+            <div style="display:flex;align-items:center;gap:10px"><div style="background:var(--warn);border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700;flex-shrink:0">2</div><span style="font-size:.88rem">Rules match on: event_type, measurement thresholds, QA flag patterns</span></div>
+            <div style="display:flex;align-items:center;gap:10px"><div style="background:var(--warn);border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700;flex-shrink:0">3</div><span style="font-size:.88rem">Notification dispatched: Webhook POST / email (SMTP) / in-app WebSocket push</span></div>
+            <div style="display:flex;align-items:center;gap:10px"><div style="background:var(--accent);border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700;color:var(--dark);flex-shrink:0">4</div><span style="font-size:.88rem">AlertHistory record written with status (sent/failed) + full payload</span></div>
+          </div>
+        </div>
+        <div class="card">
+          <h3 style="margin-bottom:10px">Example Alert Rules</h3>
+          <div style="display:flex;flex-direction:column;gap:7px">
+            <div style="font-size:.8rem;background:var(--border);border-radius:6px;padding:8px 10px"><span style="color:var(--warn);font-weight:600">IF</span> brain_mri.whole_tumor_volume <span style="color:var(--warn)">&gt;</span> 100 mL <span style="color:var(--accent);font-weight:600">→</span> CRITICAL alert</div>
+            <div style="font-size:.8rem;background:var(--border);border-radius:6px;padding:8px 10px"><span style="color:var(--warn);font-weight:600">IF</span> qa_flag contains "mass_effect" <span style="color:var(--accent);font-weight:600">→</span> STAT notification</div>
+            <div style="font-size:.8rem;background:var(--border);border-radius:6px;padding:8px 10px"><span style="color:var(--warn);font-weight:600">IF</span> delta.change_pct <span style="color:var(--warn)">&gt;</span> 30% vs prior <span style="color:var(--accent);font-weight:600">→</span> rapid progression alert</div>
+          </div>
+        </div>
+      </div>
+      <div>
+        <div class="grid-2" style="gap:12px;margin-bottom:16px">
+          <div class="card" style="text-align:center;padding:20px"><div class="stat-big warn" style="font-size:2.4rem">&lt;5 min</div><div class="stat-label">Time from finding<br>to notification</div></div>
+          <div class="card" style="text-align:center;padding:20px"><div class="stat-big accent" style="font-size:2.4rem">100%</div><div class="stat-label">Accountability trail<br>per alert</div></div>
+        </div>
+        <ul class="check">
+          <li><div><strong>Configurable thresholds</strong> — rules defined per use case, body part, measurement key, and severity.</div></li>
+          <li><div><strong>Three delivery channels</strong> — webhook (Slack/Teams/PagerDuty), email, and real-time in-app notification.</div></li>
+          <li><div><strong>Retry with back-off</strong> — failed webhooks retried 3× before marking as failed in AlertHistory.</div></li>
+          <li><div><strong>Medi-legal coverage</strong> — every notification logged with timestamp, recipient, and payload hash.</div></li>
+          <li><div><strong>Escalation chain</strong> — unacknowledged critical alerts escalate to the on-call radiologist after N minutes.</div></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─────────── SLIDE 14: AUTOMATED PRIOR COMPARISON ─────────── -->
+  <div class="slide" id="s14">
+    <div class="tag" style="background:var(--blue)">Feature 5 of 12 · Accuracy + Time</div>
+    <h2 class="center">Automated Prior <span class="accent">Comparison</span></h2>
+    <div class="grid-2 full" style="align-items:start">
+      <div>
+        <div class="card blue-glow mb">
+          <h3 class="blue" style="margin-bottom:14px">Prior Study Lookup Flow</h3>
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <div style="display:flex;align-items:center;gap:10px"><div style="background:var(--blue);border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700;flex-shrink:0">1</div><span style="font-size:.88rem">New AI result arrives for patient_id X</span></div>
+            <div style="display:flex;align-items:center;gap:10px"><div style="background:var(--blue);border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700;flex-shrink:0">2</div><span style="font-size:.88rem">Query local DB + Orthanc QIDO-RS for same patient_id + same use case</span></div>
+            <div style="display:flex;align-items:center;gap:10px"><div style="background:var(--blue);border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700;flex-shrink:0">3</div><span style="font-size:.88rem">Most recent prior result selected → compare_results() called automatically</span></div>
+            <div style="display:flex;align-items:center;gap:10px"><div style="background:var(--accent);border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700;color:var(--dark);flex-shrink:0">4</div><span style="font-size:.88rem">Delta report appended to study page — radiologist opens with comparison ready</span></div>
+          </div>
+        </div>
+        <div class="card">
+          <h3 style="margin-bottom:10px">What Gets Compared</h3>
+          <div style="display:flex;flex-direction:column;gap:6px">
+            <div style="display:flex;justify-content:space-between;font-size:.82rem;padding:5px 8px;background:var(--border);border-radius:5px"><span>All volumetric measurements</span><span class="accent">Δ mL + % change</span></div>
+            <div style="display:flex;justify-content:space-between;font-size:.82rem;padding:5px 8px;background:var(--border);border-radius:5px"><span>QA flag changes</span><span class="accent">New / Resolved</span></div>
+            <div style="display:flex;justify-content:space-between;font-size:.82rem;padding:5px 8px;background:var(--border);border-radius:5px"><span>Days between studies</span><span class="accent">Timeline</span></div>
+            <div style="display:flex;justify-content:space-between;font-size:.82rem;padding:5px 8px;background:var(--border);border-radius:5px"><span>Segmentation overlays</span><span class="accent">Side-by-side</span></div>
+          </div>
+        </div>
+      </div>
+      <div>
+        <div class="grid-2" style="gap:12px;margin-bottom:16px">
+          <div class="card" style="text-align:center;padding:20px"><div class="stat-big accent" style="font-size:2.4rem">8 min</div><div class="stat-label">Saved per follow-up<br>read (no manual search)</div></div>
+          <div class="card" style="text-align:center;padding:20px"><div class="stat-big blue" style="font-size:2.4rem">100%</div><div class="stat-label">Prior review rate<br>vs ~35% manual</div></div>
+        </div>
+        <ul class="check">
+          <li><div><strong>Zero manual effort</strong> — prior comparison fires automatically when a new result is stored.</div></li>
+          <li><div><strong>RANO-aligned output</strong> — percentage change meets oncology treatment response criteria.</div></li>
+          <li><div><strong>Cascade comparison</strong> — if no prior in local PACS, queries federated Orthanc peers via DICOMweb.</div></li>
+          <li><div><strong>Multi-timepoint aware</strong> — selects the immediately preceding study, not just any prior.</div></li>
+          <li><div><strong>Protects against regression</strong> — rapid progression (≥25% growth) triggers Critical Finding Alert.</div></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─────────── SLIDE 15: CONFIDENCE-GATED PEER REVIEW ─────────── -->
+  <div class="slide" id="s15">
+    <div class="tag" style="background:var(--purple)">Feature 6 of 12 · Accuracy</div>
+    <h2 class="center">Confidence-Gated <span class="accent">Peer Review</span></h2>
+    <div class="grid-2 full" style="align-items:start">
+      <div>
+        <div class="card blue-glow mb">
+          <h3 class="blue" style="margin-bottom:14px">Review Queue Logic</h3>
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <div style="display:flex;align-items:center;gap:10px"><div style="background:var(--purple);border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700;flex-shrink:0">1</div><span style="font-size:.88rem">AI inference returns a confidence score per result (0.0 – 1.0)</span></div>
+            <div style="display:flex;align-items:center;gap:10px"><div style="background:var(--purple);border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700;flex-shrink:0">2</div><span style="font-size:.88rem">Scores below configurable threshold (default 0.75) → ReviewItem created</span></div>
+            <div style="display:flex;align-items:center;gap:10px"><div style="background:var(--purple);border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700;flex-shrink:0">3</div><span style="font-size:.88rem">Review queue shows study + AI result + confidence — expert radiologist reviews</span></div>
+            <div style="display:flex;align-items:center;gap:10px"><div style="background:var(--accent);border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700;color:var(--dark);flex-shrink:0">4</div><span style="font-size:.88rem">Reviewer approves, corrects measurements, or flags for re-scan — all logged</span></div>
+          </div>
+        </div>
+        <div class="card">
+          <h3 style="margin-bottom:10px">Review Item States</h3>
+          <div style="display:flex;flex-direction:column;gap:7px">
+            <div style="display:flex;align-items:center;gap:10px"><div style="background:var(--border);border-radius:4px;padding:3px 10px;font-size:.75rem;font-weight:700;flex-shrink:0">PENDING</div><span style="font-size:.82rem">Awaiting expert assignment</span></div>
+            <div style="display:flex;align-items:center;gap:10px"><div style="background:var(--blue);border-radius:4px;padding:3px 10px;font-size:.75rem;font-weight:700;flex-shrink:0">IN REVIEW</div><span style="font-size:.82rem">Expert radiologist actively reviewing</span></div>
+            <div style="display:flex;align-items:center;gap:10px"><div style="background:var(--accent);color:var(--dark);border-radius:4px;padding:3px 10px;font-size:.75rem;font-weight:700;flex-shrink:0">APPROVED</div><span style="font-size:.82rem">Result accepted as-is by reviewer</span></div>
+            <div style="display:flex;align-items:center;gap:10px"><div style="background:var(--warn);border-radius:4px;padding:3px 10px;font-size:.75rem;font-weight:700;flex-shrink:0">CORRECTED</div><span style="font-size:.82rem">Expert corrected measurements — new result version created</span></div>
+          </div>
+        </div>
+      </div>
+      <div>
+        <div class="grid-2" style="gap:12px;margin-bottom:16px">
+          <div class="card" style="text-align:center;padding:20px"><div class="stat-big purple" style="font-size:2.4rem;color:var(--purple)">99%</div><div class="stat-label">Uncertain cases<br>caught before report</div></div>
+          <div class="card" style="text-align:center;padding:20px"><div class="stat-big accent" style="font-size:2.4rem">↓40%</div><div class="stat-label">Radiologist time on<br>confident cases</div></div>
+        </div>
+        <ul class="check">
+          <li><div><strong>Active learning feedback</strong> — reviewer corrections update the model training dataset for future improvement.</div></li>
+          <li><div><strong>Configurable threshold per use case</strong> — brain tumors may need ≥0.85, routine chest can use ≥0.65.</div></li>
+          <li><div><strong>Workload balancing</strong> — review items distributed across available expert radiologists by round-robin.</div></li>
+          <li><div><strong>SLA-tracked</strong> — pending review items older than N hours trigger escalation notifications.</div></li>
+          <li><div><strong>Protected time</strong> — high-confidence results go directly to report without touching the review queue.</div></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─────────── SLIDE 16: LONGITUDINAL TREND TRACKING ─────────── -->
+  <div class="slide" id="s16">
+    <div class="tag" style="background:var(--accent);color:var(--dark)">Feature 7 of 12 · Accuracy + Revenue</div>
+    <h2 class="center">Longitudinal <span class="accent">Trend Tracking</span></h2>
+    <div class="grid-2 full" style="align-items:start">
+      <div>
+        <div class="card blue-glow mb">
+          <h3 class="blue" style="margin-bottom:14px">Multi-Timepoint Analysis</h3>
+          <div style="margin-bottom:12px">
+            <div style="font-size:.8rem;color:var(--muted);margin-bottom:8px">Whole Tumor Volume (mL) across treatment cycles:</div>
+            <div style="display:flex;align-items:flex-end;gap:4px;height:80px;padding:0 4px">
+              <div style="display:flex;flex-direction:column;align-items:center;gap:4px;flex:1"><div style="background:var(--accent);border-radius:3px 3px 0 0;width:100%;height:72px"></div><div style="font-size:.65rem;color:var(--muted)">Baseline</div></div>
+              <div style="display:flex;flex-direction:column;align-items:center;gap:4px;flex:1"><div style="background:var(--blue);border-radius:3px 3px 0 0;width:100%;height:58px"></div><div style="font-size:.65rem;color:var(--muted)">Cycle 2</div></div>
+              <div style="display:flex;flex-direction:column;align-items:center;gap:4px;flex:1"><div style="background:var(--blue);border-radius:3px 3px 0 0;width:100%;height:44px"></div><div style="font-size:.65rem;color:var(--muted)">Cycle 4</div></div>
+              <div style="display:flex;flex-direction:column;align-items:center;gap:4px;flex:1"><div style="background:var(--accent);border-radius:3px 3px 0 0;width:100%;height:30px"></div><div style="font-size:.65rem;color:var(--muted)">Cycle 6</div></div>
+              <div style="display:flex;flex-direction:column;align-items:center;gap:4px;flex:1"><div style="background:var(--accent);border-radius:3px 3px 0 0;width:100%;height:18px"></div><div style="font-size:.65rem;color:var(--muted)">Cycle 8</div></div>
+            </div>
+            <div style="display:flex;justify-content:flex-end;font-size:.72rem;color:var(--accent);font-weight:600;margin-top:4px">↓75% total response ✓ RANO PR</div>
+          </div>
+          <p style="font-size:.82rem;color:var(--muted)">All result versions for a patient aggregated into interactive time-series chart with response classification (CR/PR/SD/PD per RANO criteria).</p>
+        </div>
+        <div class="card">
+          <h3 style="margin-bottom:10px">Data Sources</h3>
+          <ul class="check" style="gap:7px">
+            <li style="font-size:.82rem">All AI results for same patient_id + same use case</li>
+            <li style="font-size:.82rem">Study dates from DICOM metadata for accurate timeline</li>
+            <li style="font-size:.82rem">Treatment events (optional) from FHIR MedicationStatement</li>
+          </ul>
+        </div>
+      </div>
+      <div>
+        <div class="grid-2" style="gap:12px;margin-bottom:16px">
+          <div class="card" style="text-align:center;padding:20px"><div class="stat-big accent" style="font-size:2.4rem">RANO</div><div class="stat-label">Ready response<br>classification built-in</div></div>
+          <div class="card" style="text-align:center;padding:20px"><div class="stat-big blue" style="font-size:2.4rem">$3k+</div><div class="stat-label">Per clinical trial<br>enrollment enabled</div></div>
+        </div>
+        <ul class="check">
+          <li><div><strong>Interactive chart</strong> — click any data point to jump directly to that study's report.</div></li>
+          <li><div><strong>All sub-regions tracked</strong> — WT, TC, ET volumes each plotted separately on the same timeline.</div></li>
+          <li><div><strong>Export to CSV / PDF</strong> — tumor board and clinical trial data packages in one click.</div></li>
+          <li><div><strong>Multi-patient cohort view</strong> — administrators can compare response curves across treatment arms.</div></li>
+          <li><div><strong>Automated RANO classification</strong> — CR, PR, SD, PD assigned automatically at each timepoint.</div></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─────────── SLIDE 17: QA / AUDIT DASHBOARD ─────────── -->
+  <div class="slide" id="s17">
+    <div class="tag" style="background:var(--blue)">Feature 8 of 12 · Compliance + Quality</div>
+    <h2 class="center">QA / Audit <span class="accent">Dashboard</span></h2>
+    <div class="grid-2 full" style="align-items:start">
+      <div>
+        <div class="card blue-glow mb">
+          <h3 class="blue" style="margin-bottom:12px">Key Metrics Tracked</h3>
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <div style="display:flex;justify-content:space-between;align-items:center;font-size:.82rem;padding:7px 10px;background:var(--border);border-radius:7px"><span><strong>Turnaround Time (TAT)</strong> — median, p75, p95 by use case</span><span class="accent" style="font-size:.75rem">Real-time</span></div>
+            <div style="display:flex;justify-content:space-between;align-items:center;font-size:.82rem;padding:7px 10px;background:var(--border);border-radius:7px"><span><strong>Radiologist Agreement Rate</strong> — vs AI result before correction</span><span class="accent" style="font-size:.75rem">Daily</span></div>
+            <div style="display:flex;justify-content:space-between;align-items:center;font-size:.82rem;padding:7px 10px;background:var(--border);border-radius:7px"><span><strong>QA Flag Rate</strong> — percentage of studies with QA issues</span><span class="accent" style="font-size:.75rem">Weekly</span></div>
+            <div style="display:flex;justify-content:space-between;align-items:center;font-size:.82rem;padding:7px 10px;background:var(--border);border-radius:7px"><span><strong>Review Queue Depth</strong> — pending items and age distribution</span><span class="accent" style="font-size:.75rem">Live</span></div>
+            <div style="display:flex;justify-content:space-between;align-items:center;font-size:.82rem;padding:7px 10px;background:var(--border);border-radius:7px"><span><strong>Critical Alert Response Time</strong> — time to acknowledgement</span><span class="accent" style="font-size:.75rem">Per alert</span></div>
+          </div>
+        </div>
+        <div class="card">
+          <h3 style="margin-bottom:10px">Audit Log Sources</h3>
+          <p style="font-size:.82rem;color:var(--muted)">Every platform action writes an AuditEntry: study ingestion, job start/complete, result view, result correction, alert dispatch, user login, report export — all queryable with actor, timestamp, and entity ID.</p>
+        </div>
+      </div>
+      <div>
+        <div class="grid-2" style="gap:12px;margin-bottom:16px">
+          <div class="card" style="text-align:center;padding:20px"><div class="stat-big accent" style="font-size:2.4rem">ACR</div><div class="stat-label">Accreditation-ready<br>compliance reports</div></div>
+          <div class="card" style="text-align:center;padding:20px"><div class="stat-big blue" style="font-size:2.4rem">100%</div><div class="stat-label">Action traceability<br>in audit log</div></div>
+        </div>
+        <ul class="check">
+          <li><div><strong>Date-range filtering</strong> — pull metrics for any custom period: daily, weekly, quarterly, annual.</div></li>
+          <li><div><strong>Per-radiologist breakdown</strong> — identify outliers in agreement rates or TAT for targeted training.</div></li>
+          <li><div><strong>Exportable reports</strong> — one-click PDF or CSV export for ACR accreditation submissions.</div></li>
+          <li><div><strong>Anomaly alerts</strong> — automatic notification when TAT exceeds SLA or agreement rate drops below threshold.</div></li>
+          <li><div><strong>Multi-tenant isolation</strong> — each department or site sees only its own data unless granted cross-site access.</div></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─────────── SLIDE 18: REFERRING PHYSICIAN PORTAL ─────────── -->
+  <div class="slide" id="s18">
+    <div class="tag" style="background:var(--accent);color:var(--dark)">Feature 9 of 12 · Revenue + Collaboration</div>
+    <h2 class="center">Referring Physician <span class="accent">Portal</span></h2>
+    <div class="grid-2 full" style="align-items:start">
+      <div>
+        <div class="card blue-glow mb">
+          <h3 class="blue" style="margin-bottom:14px">Portal Access Model</h3>
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <div style="display:flex;align-items:center;gap:10px"><div style="background:var(--accent);color:var(--dark);border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700;flex-shrink:0">1</div><span style="font-size:.88rem">Radiologist sends a time-limited share link to the referring physician</span></div>
+            <div style="display:flex;align-items:center;gap:10px"><div style="background:var(--accent);color:var(--dark);border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700;flex-shrink:0">2</div><span style="font-size:.88rem">Link contains a signed JWT scoped to a single study + result (read-only)</span></div>
+            <div style="display:flex;align-items:center;gap:10px"><div style="background:var(--accent);color:var(--dark);border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700;flex-shrink:0">3</div><span style="font-size:.88rem">Portal shows: report, measurements, segmentation overlays — no PACS access</span></div>
+            <div style="display:flex;align-items:center;gap:10px"><div style="background:var(--accent);color:var(--dark);border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700;flex-shrink:0">4</div><span style="font-size:.88rem">Access logged in audit trail; link auto-expires after configurable TTL (7 days default)</span></div>
+          </div>
+        </div>
+        <div class="card">
+          <h3 style="margin-bottom:10px">What Referring Physicians See</h3>
+          <div style="display:flex;flex-direction:column;gap:6px">
+            <div style="display:flex;align-items:center;gap:8px;font-size:.82rem"><span style="color:var(--accent)">✓</span> Structured report with measurements and impression</div>
+            <div style="display:flex;align-items:center;gap:8px;font-size:.82rem"><span style="color:var(--accent)">✓</span> Segmentation overlay images (axial / coronal / sagittal)</div>
+            <div style="display:flex;align-items:center;gap:8px;font-size:.82rem"><span style="color:var(--accent)">✓</span> Comparison vs prior study (if available)</div>
+            <div style="display:flex;align-items:center;gap:8px;font-size:.82rem"><span style="color:var(--warn)">✗</span> No access to raw DICOM data or other patients</div>
+          </div>
+        </div>
+      </div>
+      <div>
+        <div class="grid-2" style="gap:12px;margin-bottom:16px">
+          <div class="card" style="text-align:center;padding:20px"><div class="stat-big accent" style="font-size:2.4rem">+22%</div><div class="stat-label">Increase in referring<br>physician referrals</div></div>
+          <div class="card" style="text-align:center;padding:20px"><div class="stat-big blue" style="font-size:2.4rem">0</div><div class="stat-label">PACS credentials<br>shared externally</div></div>
+        </div>
+        <ul class="check">
+          <li><div><strong>No PACS account needed</strong> — referring physicians access results via a standard web browser.</div></li>
+          <li><div><strong>HIPAA-compliant sharing</strong> — time-limited, scoped tokens with full access logging.</div></li>
+          <li><div><strong>Branded portal</strong> — institution logo and contact details presented, reinforcing the referral relationship.</div></li>
+          <li><div><strong>Mobile responsive</strong> — referring physicians can review results on phone or tablet in the clinic.</div></li>
+          <li><div><strong>Drives repeat referrals</strong> — improved result visibility is the top driver of referring physician loyalty.</div></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─────────── SLIDE 19: PROTOCOL OPTIMIZATION ─────────── -->
+  <div class="slide" id="s19">
+    <div class="tag" style="background:var(--warn)">Feature 10 of 12 · Time + Revenue</div>
+    <h2 class="center">Protocol <span class="accent">Optimization</span></h2>
+    <div class="grid-2 full" style="align-items:start">
+      <div>
+        <div class="card blue-glow mb">
+          <h3 class="blue" style="margin-bottom:14px">Protocol Validation Engine</h3>
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <div style="display:flex;align-items:center;gap:10px"><div style="background:var(--warn);border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700;flex-shrink:0">1</div><span style="font-size:.88rem">Study arrives with DICOM series metadata (TE, TR, flip angle, slice thickness)</span></div>
+            <div style="display:flex;align-items:center;gap:10px"><div style="background:var(--warn);border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700;flex-shrink:0">2</div><span style="font-size:.88rem">Matched against use-case's required_sequences and protocol specification</span></div>
+            <div style="display:flex;align-items:center;gap:10px"><div style="background:var(--warn);border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700;flex-shrink:0">3</div><span style="font-size:.88rem">Deviations flagged: missing sequence, wrong slice thickness, insufficient coverage</span></div>
+            <div style="display:flex;align-items:center;gap:10px"><div style="background:var(--accent);border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700;color:var(--dark);flex-shrink:0">4</div><span style="font-size:.88rem">Corrective suggestion generated: "Reacquire FLAIR at 3mm slice thickness"</span></div>
+          </div>
+        </div>
+        <div class="card">
+          <h3 style="margin-bottom:10px">Common Protocol Issues Caught</h3>
+          <div style="display:flex;flex-direction:column;gap:6px">
+            <div style="font-size:.8rem;padding:6px 8px;background:rgba(255,107,53,.1);border:1px solid rgba(255,107,53,.2);border-radius:5px;color:var(--warn)">⚠ FLAIR sequence acquired with slice gap &gt;1mm — will degrade WT segmentation</div>
+            <div style="font-size:.8rem;padding:6px 8px;background:rgba(255,107,53,.1);border:1px solid rgba(255,107,53,.2);border-radius:5px;color:var(--warn)">⚠ T1ce coverage insufficient — inferior temporal lobe excluded from analysis</div>
+            <div style="font-size:.8rem;padding:6px 8px;background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.2);border-radius:5px;color:#f59e0b">⚠ TR value (500ms) suboptimal for T1 contrast — consider 600–800ms</div>
+          </div>
+        </div>
+      </div>
+      <div>
+        <div class="grid-2" style="gap:12px;margin-bottom:16px">
+          <div class="card" style="text-align:center;padding:20px"><div class="stat-big warn" style="font-size:2.4rem">0</div><div class="stat-label">Repeat scans from<br>protocol mismatch</div></div>
+          <div class="card" style="text-align:center;padding:20px"><div class="stat-big accent" style="font-size:2.4rem">$800</div><div class="stat-label">Saved per eliminated<br>repeat MRI scan</div></div>
+        </div>
+        <ul class="check">
+          <li><div><strong>Pre-scan validation</strong> — protocol checked before technologist runs the scan, not after.</div></li>
+          <li><div><strong>Per-scanner rules</strong> — different scanner vendors (GE, Siemens, Philips) have different defaults; rules account for this.</div></li>
+          <li><div><strong>Technologist alerts</strong> — flagged in a dedicated technologist dashboard (not in radiologist worklist).</div></li>
+          <li><div><strong>Improves AI accuracy</strong> — studies meeting protocol requirements produce better segmentation results.</div></li>
+          <li><div><strong>Reduces patient burden</strong> — fewer repeat visits means better patient experience and satisfaction scores.</div></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─────────── SLIDE 20: CAPACITY PREDICTION ─────────── -->
+  <div class="slide" id="s20">
+    <div class="tag" style="background:var(--blue)">Feature 11 of 12 · Revenue + Operations</div>
+    <h2 class="center">Capacity <span class="accent">Prediction</span></h2>
+    <div class="grid-2 full" style="align-items:start">
+      <div>
+        <div class="card blue-glow mb">
+          <h3 class="blue" style="margin-bottom:14px">Utilization Analytics Engine</h3>
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <div style="display:flex;align-items:center;gap:10px"><div style="background:var(--blue);border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700;flex-shrink:0">1</div><span style="font-size:.88rem">Job timing data (created → completed) aggregated per use case, body part, modality</span></div>
+            <div style="display:flex;align-items:center;gap:10px"><div style="background:var(--blue);border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700;flex-shrink:0">2</div><span style="font-size:.88rem">Rolling 7/30-day volume trends computed per scanner + per time-of-day slot</span></div>
+            <div style="display:flex;align-items:center;gap:10px"><div style="background:var(--blue);border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700;flex-shrink:0">3</div><span style="font-size:.88rem">Peak hours identified → scheduling team can optimize appointment slot allocation</span></div>
+            <div style="display:flex;align-items:center;gap:10px"><div style="background:var(--accent);border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700;color:var(--dark);flex-shrink:0">4</div><span style="font-size:.88rem">7-day demand forecast using exponential smoothing — flags under/over-utilization</span></div>
+          </div>
+        </div>
+        <div class="card">
+          <h3 style="margin-bottom:10px">Dashboard Widgets</h3>
+          <div style="display:flex;flex-direction:column;gap:6px">
+            <div style="display:flex;justify-content:space-between;font-size:.82rem;padding:5px 8px;background:var(--border);border-radius:5px"><span>Daily scan volume by use case</span><span class="accent">Bar chart</span></div>
+            <div style="display:flex;justify-content:space-between;font-size:.82rem;padding:5px 8px;background:var(--border);border-radius:5px"><span>Hourly throughput heatmap</span><span class="accent">Heat map</span></div>
+            <div style="display:flex;justify-content:space-between;font-size:.82rem;padding:5px 8px;background:var(--border);border-radius:5px"><span>Worker queue depth over time</span><span class="accent">Line chart</span></div>
+            <div style="display:flex;justify-content:space-between;font-size:.82rem;padding:5px 8px;background:var(--border);border-radius:5px"><span>7-day demand forecast</span><span class="accent">Forecast band</span></div>
+          </div>
+        </div>
+      </div>
+      <div>
+        <div class="grid-2" style="gap:12px;margin-bottom:16px">
+          <div class="card" style="text-align:center;padding:20px"><div class="stat-big accent" style="font-size:2.4rem">85%+</div><div class="stat-label">Target scanner<br>utilization rate</div></div>
+          <div class="card" style="text-align:center;padding:20px"><div class="stat-big blue" style="font-size:2.4rem">+15%</div><div class="stat-label">Revenue from<br>optimized scheduling</div></div>
+        </div>
+        <ul class="check">
+          <li><div><strong>Data-driven scheduling</strong> — replaces guesswork with real throughput measurements from the platform.</div></li>
+          <li><div><strong>Bottleneck identification</strong> — shows which use cases have longest queue depth for resource allocation.</div></li>
+          <li><div><strong>Staff planning</strong> — radiologist shift planning informed by predicted case volume per hour.</div></li>
+          <li><div><strong>SLA forecasting</strong> — predict whether TAT targets will be met given current queue and staffing.</div></li>
+          <li><div><strong>Cost per scan metrics</strong> — GPU compute time per study tracked for financial reporting.</div></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─────────── SLIDE 21: INCIDENTAL FINDING DETECTION ─────────── -->
+  <div class="slide" id="s21">
+    <div class="tag" style="background:var(--warn)">Feature 12 of 12 · Accuracy + Safety</div>
+    <h2 class="center">Incidental Finding <span class="accent">Detection</span></h2>
+    <div class="grid-2 full" style="align-items:start">
+      <div>
+        <div class="card blue-glow mb">
+          <h3 class="blue" style="margin-bottom:14px">Secondary Finding Analysis</h3>
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <div style="display:flex;align-items:center;gap:10px"><div style="background:var(--warn);border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700;flex-shrink:0">1</div><span style="font-size:.88rem">Primary AI analysis completes (e.g., brain tumor volumes)</span></div>
+            <div style="display:flex;align-items:center;gap:10px"><div style="background:var(--warn);border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700;flex-shrink:0">2</div><span style="font-size:.88rem">Secondary scan of anatomical regions outside the primary ROI</span></div>
+            <div style="display:flex;align-items:center;gap:10px"><div style="background:var(--warn);border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700;flex-shrink:0">3</div><span style="font-size:.88rem">Anomaly scoring detects intensity outliers, asymmetry, or unexpected structures</span></div>
+            <div style="display:flex;align-items:center;gap:10px"><div style="background:var(--accent);border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700;color:var(--dark);flex-shrink:0">4</div><span style="font-size:.88rem">Findings flagged in report with region + confidence — radiologist reviews</span></div>
+          </div>
+        </div>
+        <div class="card">
+          <h3 style="margin-bottom:10px">Common Incidental Findings Detected</h3>
+          <div style="display:flex;flex-direction:column;gap:6px">
+            <div style="display:flex;align-items:center;gap:8px;font-size:.82rem"><span style="color:var(--warn)">⚠</span> Subdural collections in non-neoplastic brain MRI</div>
+            <div style="display:flex;align-items:center;gap:8px;font-size:.82rem"><span style="color:var(--warn)">⚠</span> Incidental vertebral body signal abnormality in spine MRI</div>
+            <div style="display:flex;align-items:center;gap:8px;font-size:.82rem"><span style="color:var(--warn)">⚠</span> Unexpected lymphadenopathy in chest/abdomen MRI</div>
+            <div style="display:flex;align-items:center;gap:8px;font-size:.82rem"><span style="color:var(--warn)">⚠</span> Vascular anomalies (aneurysm, malformation) on brain MRI</div>
+          </div>
+        </div>
+      </div>
+      <div>
+        <div class="grid-2" style="gap:12px;margin-bottom:16px">
+          <div class="card" style="text-align:center;padding:20px"><div class="stat-big warn" style="font-size:2.4rem">↓34%</div><div class="stat-label">Reduction in missed<br>incidental findings</div></div>
+          <div class="card" style="text-align:center;padding:20px"><div class="stat-big accent" style="font-size:2.4rem">↓60%</div><div class="stat-label">Malpractice exposure<br>from missed findings</div></div>
+        </div>
+        <ul class="check">
+          <li><div><strong>Non-intrusive analysis</strong> — runs as a post-processing step after primary analysis, no additional scan time.</div></li>
+          <li><div><strong>Structured reporting</strong> — incidental findings listed as a dedicated section in the auto-drafted report.</div></li>
+          <li><div><strong>Configurable sensitivity</strong> — threshold tunable per body part to balance sensitivity vs. false positive rate.</div></li>
+          <li><div><strong>Malpractice shield</strong> — documented AI check means nothing was skipped — complete audit defense.</div></li>
+          <li><div><strong>Additional revenue</strong> — incidental findings requiring follow-up generate additional referrals and studies.</div></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─────────── SLIDE 22: ROI SUMMARY ─────────── -->
+  <div class="slide" id="s22">
+    <div class="tag" style="background:var(--accent);color:var(--dark)">ROI Summary</div>
+    <h2 class="center">Combined Impact: <span class="accent">Measurable Returns</span></h2>
+    <div class="grid-3 full mb">
+      <div class="card" style="text-align:center">
+        <div style="font-size:1.8rem;margin-bottom:8px">💰</div>
+        <h3 class="accent" style="margin-bottom:12px">Revenue</h3>
+        <div style="display:flex;flex-direction:column;gap:6px;text-align:left">
+          <div style="display:flex;justify-content:space-between;font-size:.82rem"><span>CPT Code Capture</span><span class="accent">+18%</span></div>
+          <div style="display:flex;justify-content:space-between;font-size:.82rem"><span>Referring Portal Referrals</span><span class="accent">+22%</span></div>
+          <div style="display:flex;justify-content:space-between;font-size:.82rem"><span>Capacity Optimization</span><span class="accent">+15%</span></div>
+          <div style="display:flex;justify-content:space-between;font-size:.82rem"><span>Eliminated Repeat Scans</span><span class="accent">$800/scan</span></div>
+          <div style="display:flex;justify-content:space-between;font-size:.82rem"><span>Incidental Finding Follow-ups</span><span class="accent">+$3k/patient</span></div>
+        </div>
+      </div>
+      <div class="card" style="text-align:center">
+        <div style="font-size:1.8rem;margin-bottom:8px">⏱️</div>
+        <h3 class="blue" style="margin-bottom:12px">Time Savings</h3>
+        <div style="display:flex;flex-direction:column;gap:6px;text-align:left">
+          <div style="display:flex;justify-content:space-between;font-size:.82rem"><span>Dictation Time</span><span class="blue">−60%</span></div>
+          <div style="display:flex;justify-content:space-between;font-size:.82rem"><span>Prior Study Search</span><span class="blue">−8 min/study</span></div>
+          <div style="display:flex;justify-content:space-between;font-size:.82rem"><span>Manual Triage</span><span class="blue">Eliminated</span></div>
+          <div style="display:flex;justify-content:space-between;font-size:.82rem"><span>TAT for Critical Cases</span><span class="blue">−30%</span></div>
+          <div style="display:flex;justify-content:space-between;font-size:.82rem"><span>Repeat Scan Rescheduling</span><span class="blue">−100%</span></div>
+        </div>
+      </div>
+      <div class="card" style="text-align:center">
+        <div style="font-size:1.8rem;margin-bottom:8px">🎯</div>
+        <h3 style="color:var(--warn);margin-bottom:12px">Accuracy &amp; Safety</h3>
+        <div style="display:flex;flex-direction:column;gap:6px;text-align:left">
+          <div style="display:flex;justify-content:space-between;font-size:.82rem"><span>Peer Review Coverage</span><span style="color:var(--warn)">99%</span></div>
+          <div style="display:flex;justify-content:space-between;font-size:.82rem"><span>Critical Alert Response</span><span style="color:var(--warn)">&lt;5 min</span></div>
+          <div style="display:flex;justify-content:space-between;font-size:.82rem"><span>Missed Incidentals</span><span style="color:var(--warn)">−34%</span></div>
+          <div style="display:flex;justify-content:space-between;font-size:.82rem"><span>Inter-reader Variability</span><span style="color:var(--warn)">−100%</span></div>
+          <div style="display:flex;justify-content:space-between;font-size:.82rem"><span>Prior Review Rate</span><span style="color:var(--warn)">100%</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="card highlight full" style="text-align:center;padding:22px">
+      <div style="font-size:1.1rem;font-weight:700;color:var(--text);margin-bottom:6px">Typical institution (500 MRI studies/month): Projected additional revenue <span class="accent">$85,000–$120,000/year</span></div>
+      <p style="font-size:.9rem;max-width:750px;margin:0 auto">Driven by CPT code capture (+18%), increased referrals (+22%), reduced repeat scans, and capacity optimization — before accounting for avoided liability costs.</p>
+    </div>
+  </div>
+
+  <!-- ─────────── SLIDE 23: CLOSING ─────────── -->
+  <div class="slide" id="s9">
+    <div class="blob" style="width:600px;height:600px;background:rgba(10,107,255,.12);top:-200px;left:-200px;"></div>
+    <div class="blob" style="width:400px;height:400px;background:rgba(0,212,170,.1);bottom:-100px;right:-100px;"></div>
+    <div class="tag green">Summary</div>
+    <h1 class="center">AI that <span class="accent">Augments</span><br>the Radiologist</h1>
+    <p class="hero-sub">
+      Not a replacement — a precision instrument that handles measurement,
+      consistency, and routing so you can focus on what only you can do:
+      <strong style="color:var(--text)">clinical judgement and patient care.</strong>
+    </p>
+    <div class="grid-3 full mt">
+      <div class="card" style="text-align:center">
+        <div class="icon">⚡</div>
+        <h3>Speed</h3>
+        <p>~2 minute full-brain analysis, real-time progress, instant structured output</p>
+      </div>
+      <div class="card" style="text-align:center">
+        <div class="icon">🎯</div>
+        <h3>Precision</h3>
+        <p>BraTS-validated SegResNet, 1 mm isotropic, sub-region volumetrics in mL</p>
+      </div>
+      <div class="card" style="text-align:center">
+        <div class="icon">🏥</div>
+        <h3>Integration</h3>
+        <p>Native PACS, DICOM, FHIR — fits your existing radiology infrastructure</p>
+      </div>
+    </div>
+    <div class="quote-block full mt" style="max-width:700px">
+      "The goal of AI in radiology is not to read scans faster — it is to read them
+      better, with more objectivity, and to free radiologists for the decisions
+      that require human expertise."
+    </div>
+  </div>
+
+</div><!-- /slides -->
+
+<!-- ── Navigation ── -->
+<div class="nav">
+  <button id="prev" onclick="go(-1)">◀</button>
+  <div class="dot-row" id="dots"></div>
+  <span class="counter" id="counter">1 / 23</span>
+  <button id="next" onclick="go(1)">▶</button>
+</div>
+<div class="hint">← → arrow keys to navigate</div>
+
+<script>
+  const slides = document.querySelectorAll('.slide');
+  const dotRow  = document.getElementById('dots');
+  const counter = document.getElementById('counter');
+  let cur = 0;
+
+  // build dots
+  slides.forEach((_, i) => {
+    const d = document.createElement('div');
+    d.className = 'dot' + (i === 0 ? ' on' : '');
+    d.onclick = () => goTo(i);
+    dotRow.appendChild(d);
+  });
+
+  function goTo(n) {
+    if (n < 0 || n >= slides.length) return;
+    slides[cur].classList.remove('active');
+    slides[cur].classList.add('out');
+    setTimeout(() => slides[cur].classList.remove('out'), 460);
+    cur = n;
+    slides[cur].classList.add('active');
+    dotRow.querySelectorAll('.dot').forEach((d, i) => d.classList.toggle('on', i === cur));
+    counter.textContent = `${cur + 1} / ${slides.length}`;
+  }
+
+  function go(dir) { goTo(cur + dir); }
+
+  document.addEventListener('keydown', e => {
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown')  go(1);
+    if (e.key === 'ArrowLeft'  || e.key === 'ArrowUp')    go(-1);
+    if (e.key === 'Home') goTo(0);
+    if (e.key === 'End')  goTo(slides.length - 1);
+  });
+</script>
+</body>
+</html>

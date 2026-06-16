@@ -1,0 +1,19 @@
+name: pet_ct
+version: "1.0.0"
+description: >
+  Whole-body PET/CT oncology pipeline. Detects FDG-avid lesions, computes
+  SUVmax, SUVmean, SUVpeak, metabolic tumour volume (MTV), and total lesion
+  glycolysis (TLG). Produces lesion-level and whole-body summary metrics.
+  Supports PERCIST 1.0 and Deauville score output.
+supported_body_parts:
+  - WHOLEBODY
+  - CHEST
+  - ABDOMEN
+  - PELVIS
+  - NECK
+  - THORAX
+required_sequences:
+  - PET
+  - CT
+model_type: swin_unetr
+enabled: true

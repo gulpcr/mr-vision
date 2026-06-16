@@ -1,0 +1,74 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --foreground: #171717;
+  --background: #f8fafc;
+}
+
+body {
+  color: var(--foreground);
+  background: var(--background);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+.status-badge {
+  @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
+}
+.status-pending { @apply bg-gray-100 text-gray-800; }
+.status-preprocessing, .status-routing { @apply bg-blue-100 text-blue-800; }
+.status-inferring { @apply bg-yellow-100 text-yellow-800; }
+.status-postprocessing { @apply bg-indigo-100 text-indigo-800; }
+.status-completed { @apply bg-green-100 text-green-800; }
+.status-failed { @apply bg-red-100 text-red-800; }
+
+/* Sidebar */
+.sidebar-transition {
+  transition: width 200ms ease-in-out;
+}
+
+/* Medical Report Print Styles */
+@media print {
+  .sidebar, .no-print { display: none !important; }
+  main { margin: 0 !important; padding: 0 !important; max-width: 100% !important; }
+  .report-container {
+    box-shadow: none !important;
+    border: 1px solid #ccc !important;
+  }
+  .report-header { border-bottom: 2px solid #1e3a5f; }
+  .report-footer { border-top: 1px solid #ccc; page-break-inside: avoid; }
+}
+
+/* Report Styles */
+.report-container {
+  @apply bg-white rounded-lg shadow-sm border border-gray-200;
+}
+
+.report-header {
+  @apply border-b-2 border-primary-900 px-6 py-5;
+}
+
+.report-section {
+  @apply px-6 py-4 border-b border-gray-100;
+}
+
+.report-section-title {
+  @apply text-xs font-semibold text-primary-900 uppercase tracking-wider mb-3;
+}
+
+.report-footer {
+  @apply px-6 py-4 bg-gray-50 rounded-b-lg text-xs text-gray-500;
+}
+
+.measurement-table th {
+  @apply text-left py-2 px-3 text-xs font-semibold text-gray-500 uppercase tracking-wider bg-gray-50 border-b;
+}
+
+.measurement-table td {
+  @apply py-2.5 px-3 text-sm border-b border-gray-50;
+}
+
+.measurement-table tr:hover td {
+  @apply bg-blue-50;
+}

@@ -1,0 +1,129 @@
+{
+  "title": "Chest MRI Analysis",
+  "description": "AI-powered chest MRI segmentation: lungs, heart, and aorta volumetrics",
+  "sections": [
+    {
+      "id": "summary",
+      "title": "Summary",
+      "type": "key_value",
+      "data_path": "summary",
+      "fields": [
+        {
+          "key": "lesion_detected",
+          "label": "Lesion Detected",
+          "format": "boolean"
+        },
+        {
+          "key": "bilateral_analysis",
+          "label": "Bilateral Analysis",
+          "format": "boolean"
+        },
+        {
+          "key": "lung_volume_ratio",
+          "label": "Right / Left Lung Volume Ratio",
+          "format": "number",
+          "precision": 2
+        },
+        {
+          "key": "sequences_used",
+          "label": "Sequences Used",
+          "format": "array"
+        },
+        {
+          "key": "processing_notes",
+          "label": "Notes",
+          "format": "text"
+        }
+      ]
+    },
+    {
+      "id": "volumes",
+      "title": "Volumetric Measurements",
+      "type": "key_value",
+      "data_path": "measurements",
+      "fields": [
+        {
+          "key": "right_lung_volume_ml",
+          "label": "Right Lung Volume",
+          "unit": "mL",
+          "format": "number",
+          "precision": 1
+        },
+        {
+          "key": "left_lung_volume_ml",
+          "label": "Left Lung Volume",
+          "unit": "mL",
+          "format": "number",
+          "precision": 1
+        },
+        {
+          "key": "total_lung_volume_ml",
+          "label": "Total Lung Volume",
+          "unit": "mL",
+          "format": "number",
+          "precision": 1
+        },
+        {
+          "key": "heart_volume_ml",
+          "label": "Heart Volume",
+          "unit": "mL",
+          "format": "number",
+          "precision": 1
+        },
+        {
+          "key": "aorta_volume_ml",
+          "label": "Aorta Volume",
+          "unit": "mL",
+          "format": "number",
+          "precision": 1
+        }
+      ]
+    },
+    {
+      "id": "qa",
+      "title": "Quality Assurance",
+      "type": "qa_panel",
+      "flags_path": "qa_flags",
+      "details_path": "qa_details",
+      "severity_map": {
+        "missing_sequence": "warning",
+        "spacing_inconsistency": "warning",
+        "motion_artifact": "error",
+        "incomplete_coverage": "warning",
+        "slice_gap": "info",
+        "no_model_weights": "warning"
+      }
+    },
+    {
+      "id": "overlays",
+      "title": "Segmentation Overlay",
+      "type": "overlay",
+      "artifact_filter": "segmentation_nifti",
+      "colormap": {
+        "1": { "label": "Right Lung", "color": "#74B9E8" },
+        "2": { "label": "Left Lung", "color": "#4A9FD4" },
+        "3": { "label": "Heart", "color": "#FF6B6B" },
+        "4": { "label": "Aorta", "color": "#E84393" }
+      }
+    },
+    {
+      "id": "model_info",
+      "title": "Model Information",
+      "type": "key_value",
+      "fields": [
+        {
+          "key": "model_version",
+          "label": "Model Version",
+          "format": "text",
+          "data_path": "model_version"
+        },
+        {
+          "key": "model_checksum",
+          "label": "Model Checksum",
+          "format": "text",
+          "data_path": "model_checksum"
+        }
+      ]
+    }
+  ]
+}

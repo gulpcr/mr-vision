@@ -1,0 +1,37 @@
+{
+  "Name": "MRI AI Platform - Orthanc",
+  "StorageDirectory": "/var/lib/orthanc/db",
+  "IndexDirectory": "/var/lib/orthanc/db",
+  "StorageCompression": false,
+  "MaximumStorageSize": 0,
+  "MaximumPatientCount": 0,
+  "HttpServerEnabled": true,
+  "HttpPort": 8042,
+  "DicomServerEnabled": true,
+  "DicomPort": 4242,
+  "DicomCheckCalledAet": false,
+  "DicomAet": "MRI_AI",
+  "RemoteAccessAllowed": true,
+  "AuthenticationEnabled": false,
+  "RegisteredUsers": {},
+  "DicomWeb": {
+    "Enable": true,
+    "Root": "/dicom-web/",
+    "EnableWado": true,
+    "WadoRoot": "/wado",
+    "Host": "0.0.0.0",
+    "Ssl": false,
+    "StudiesMetadata": "Full",
+    "SeriesMetadata": "Full"
+  },
+  "StableAge": 10,
+  "Plugins": [
+    "/usr/share/orthanc/plugins/",
+    "/usr/local/share/orthanc/plugins/"
+  ],
+  "ConcurrentJobs": 4,
+  "JobsHistorySize": 20,
+  "DicomAlwaysAllowEcho": true,
+  "DicomAlwaysAllowStore": true,
+  "LuaScripts": ["/etc/orthanc/on_stable_study.lua"]
+}

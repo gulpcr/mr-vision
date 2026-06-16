@@ -1,0 +1,71 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Spine MRI Segmentation Result",
+  "type": "object",
+  "required": ["summary", "measurements", "qa_flags", "qa_details", "model_version", "model_checksum", "artifacts"],
+  "properties": {
+    "summary": {
+      "type": "object",
+      "required": ["levels_analyzed", "stenosis_suspected", "cord_compression_suspected"],
+      "properties": {
+        "levels_analyzed": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "List of vertebral levels covered by the scan, e.g. [\"C3\",\"C4\",\"L1\"]"
+        },
+        "stenosis_suspected": { "type": "boolean" },
+        "cord_compression_suspected": { "type": "boolean" },
+        "segmentation_labels": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "sequences_used": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "processing_notes": { "type": "string" }
+      }
+    },
+    "measurements": {
+      "type": "object",
+      "required": ["disc_count", "canal_area_mm2", "cord_area_mm2", "vertebra_count"],
+      "properties": {
+        "disc_count": { "type": "integer", "minimum": 0 },
+        "canal_area_mm2": { "type": "number", "minimum": 0 },
+        "cord_area_mm2": { "type": "number", "minimum": 0 },
+        "vertebra_count": { "type": "integer", "minimum": 0 },
+        "voxel_spacing_mm": {
+          "type": "array",
+          "items": { "type": "number" }
+        },
+        "image_dimensions": {
+          "type": "array",
+          "items": { "type": "integer" }
+        }
+      }
+    },
+    "qa_flags": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "qa_details": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "model_version": { "type": "string" },
+    "model_checksum": { "type": "string" },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "artifact_type", "local_path", "content_type"],
+        "properties": {
+          "name": { "type": "string" },
+          "artifact_type": { "type": "string" },
+          "local_path": { "type": "string" },
+          "content_type": { "type": "string" }
+        }
+      }
+    }
+  }
+}

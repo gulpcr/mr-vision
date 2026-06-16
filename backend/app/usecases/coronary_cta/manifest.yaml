@@ -1,0 +1,25 @@
+name: coronary_cta
+version: "0.1.0"
+description: >
+  Coronary CT angiography (CCTA) pipeline. Computes a coronary artery calcium
+  (Agatston) score from the non-contrast gated series and, when a trained
+  coronary lumen-segmentation model is available, grades per-segment stenosis
+  on the SCCT 18-segment model and derives a CAD-RADS 2.0 category.
+
+  Dual-mode: deep-learning lumen/stenosis analysis when
+  ``model.custom_ccta_weights_path`` is set in inference_config.yaml, otherwise
+  a deterministic Agatston-only fallback. Calcium scoring is always computed
+  from the non-contrast series and does not require the DL model.
+supported_body_parts:
+  - HEART
+  - CARDIAC
+  - CHEST
+  - THORAX
+# Two acquisitions matter clinically: the contrast-enhanced CCTA drives lumen /
+# stenosis analysis; the non-contrast gated scan is required for a valid
+# Agatston score. The pipeline degrades gracefully when only one is present.
+required_sequences:
+  - CTA
+  - CT
+model_type: swin_unetr
+enabled: true

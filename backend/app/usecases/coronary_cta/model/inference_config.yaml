@@ -1,0 +1,51 @@
+model:
+  architecture: swin_unetr
+  # Path to a .pt weights file for learned coronary lumen segmentation.
+  # When null, the pipeline runs in Agatston-only fallback mode (no stenosis
+  # grading / CAD-RADS). Lumen segmentation + stenosis grading are NOT yet
+  # implemented (see pipeline._run_lumen_segmentation); setting this path will
+  # currently still fall back until that method is filled in.
+  custom_ccta_weights_path: null
+  # SwinUNETR architecture hyperparameters — must match the trained checkpoint.
+  in_channels: 1           # contrast CCTA HU volume (single channel)
+  out_channels: 2          # 2 = softmax (background + lumen); 1 = sigmoid binary
+  feature_size: 48
+  use_checkpoint: false
+
+inference:
+  device: auto             # "cuda" | "cpu" | "auto"
+  roi_size: [96, 96, 96]
+  sw_batch_size: 1
+  overlap: 0.5
+  mode: gaussian
+  dl_lumen_threshold: 0.5
+
+# ── Coronary artery calcium (Agatston) scoring ────────────────────────────────
+# Agatston is defined on the NON-CONTRAST gated series. HU >= 130 within the
+# cardiac ROI is counted; each lesion is weighted 1-4 by peak HU.
+calcium_scoring:
+  hu_threshold: 130            # standard Agatston detection threshold (HU)
+  min_lesion_area_mm2: 1.0     # minimum contiguous in-plane area to count a lesion
+  reference_slice_thickness_mm: 3.0   # Agatston reference; score scaled by actual/ref
+  # Crude central-cardiac ROI as fractions of the volume extent. This is a
+  # heuristic stand-in for a heart-segmentation mask and over/under-counts at
+  # the margins (sets the calcium_roi_approximate QA flag). Replace with a
+  # learned heart mask for clinically accurate per-vessel attribution.
+  roi_x_lo: 0.30
+  roi_x_hi: 0.80
+  roi_y_lo: 0.25
+  roi_y_hi: 0.78
+  roi_z_lo: 0.10
+  roi_z_hi: 0.90
+
+postprocessing:
+  generate_overlay: true
+  hu_window_center: 300        # display window for calcium overlay PNGs
+  hu_window_width: 1500
+  overlay_top_n_slices: 3      # render the N slices with the most calcium
+
+quality_checks:
+  min_slices: 30
+  # Native (non-contrast) calcium scans are typically acquired at 2.5-3.0 mm.
+  # Thin-slice or contrast-enhanced inputs make the Agatston score unreliable.
+  max_calcium_slice_thickness_mm: 3.5

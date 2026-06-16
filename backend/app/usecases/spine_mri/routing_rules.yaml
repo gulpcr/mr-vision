@@ -1,0 +1,22 @@
+rules:
+  - body_parts:
+      - SPINE
+      - CSPINE
+      - TSPINE
+      - LSPINE
+    study_description_patterns:
+      - "(?i)spine"
+      - "(?i)lumbar"
+      - "(?i)cervical"
+      - "(?i)thoracic"
+      - "(?i)c.spine"
+      - "(?i)l.spine"
+      - "(?i)t.spine"
+    series_description_patterns:
+      - "(?i)sag.*t2"
+      - "(?i)t2.*sag"
+      - "(?i)ax.*t2"
+      - "(?i)t2.*ax"
+    modality: MR
+    priority: 10
+    enabled: true

@@ -1,0 +1,14 @@
+name: brain_mri
+version: "1.0.0"
+description: >
+  Brain MRI segmentation using nnU-Net v2. Segments brain structures
+  including white matter, gray matter, CSF, and detects lesions.
+  Computes volumetric measurements and QA checks.
+supported_body_parts:
+  - BRAIN
+  - HEAD
+required_sequences:
+  - T1
+  - FLAIR
+model_type: segresnet
+enabled: true

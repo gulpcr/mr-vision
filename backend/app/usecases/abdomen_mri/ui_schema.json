@@ -1,0 +1,111 @@
+{
+  "title": "Abdomen MRI Analysis",
+  "description": "AI-powered abdominal organ segmentation: liver, spleen, kidneys, pancreas",
+  "sections": [
+    {
+      "id": "summary",
+      "title": "Summary",
+      "type": "key_value",
+      "data_path": "summary",
+      "fields": [
+        {
+          "key": "organ_count_segmented",
+          "label": "Organs Segmented",
+          "format": "integer"
+        },
+        {
+          "key": "hepatomegaly_suspected",
+          "label": "Hepatomegaly Suspected",
+          "format": "boolean"
+        },
+        {
+          "key": "splenomegaly_suspected",
+          "label": "Splenomegaly Suspected",
+          "format": "boolean"
+        },
+        {
+          "key": "sequences_used",
+          "label": "Sequences Used",
+          "format": "array"
+        },
+        {
+          "key": "processing_notes",
+          "label": "Notes",
+          "format": "text"
+        }
+      ]
+    },
+    {
+      "id": "organ_volumes",
+      "title": "Organ Volumes",
+      "type": "table",
+      "data_path": "measurements.volumes_ml",
+      "columns": [
+        { "key": "_key", "label": "Organ", "format": "text" },
+        { "key": "_value", "label": "Volume (mL)", "format": "number", "precision": 1 }
+      ]
+    },
+    {
+      "id": "total_volume",
+      "title": "Total Parenchymal Volume",
+      "type": "key_value",
+      "data_path": "measurements",
+      "fields": [
+        {
+          "key": "total_parenchymal_volume_ml",
+          "label": "Total Parenchymal Volume",
+          "unit": "mL",
+          "format": "number",
+          "precision": 1
+        }
+      ]
+    },
+    {
+      "id": "qa",
+      "title": "Quality Assurance",
+      "type": "qa_panel",
+      "flags_path": "qa_flags",
+      "details_path": "qa_details",
+      "severity_map": {
+        "missing_sequence": "warning",
+        "spacing_inconsistency": "warning",
+        "motion_artifact": "error",
+        "incomplete_coverage": "warning",
+        "slice_gap": "info",
+        "no_model_weights": "warning"
+      }
+    },
+    {
+      "id": "overlays",
+      "title": "Segmentation Overlay",
+      "type": "overlay",
+      "artifact_filter": "segmentation_nifti",
+      "colormap": {
+        "1": { "label": "Liver", "color": "#C8A96E" },
+        "2": { "label": "Spleen", "color": "#9B59B6" },
+        "3": { "label": "Right Kidney", "color": "#E74C3C" },
+        "4": { "label": "Left Kidney", "color": "#E67E22" },
+        "5": { "label": "Pancreas", "color": "#2ECC71" }
+      }
+    },
+    {
+      "id": "model_info",
+      "title": "Model Information",
+      "type": "key_value",
+      "fields": [
+        {
+          "key": "model_version",
+          "label": "Model Version",
+          "format": "text",
+          "data_path": "model_version"
+        },
+        {
+          "key": "model_checksum",
+          "label": "Model Checksum",
+          "format": "text",
+          "data_path": "model_checksum"
+        }
+      ]
+    }
+  ]
+}

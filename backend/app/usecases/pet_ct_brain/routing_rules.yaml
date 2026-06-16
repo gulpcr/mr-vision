@@ -1,0 +1,22 @@
+rules:
+  - body_parts:
+      - BRAIN
+      - HEAD
+    study_description_patterns:
+      - "(?i)brain.*pet"
+      - "(?i)pet.*brain"
+      - "(?i)fdg.*brain"
+      - "(?i)amyloid"
+      - "(?i)tau.*pet"
+      - "(?i)psma.*brain"
+      - "(?i)neuro.*pet"
+      - "(?i)dementia.*pet"
+      - "(?i)alzheimer"
+    series_description_patterns:
+      - "(?i)pet"
+      - "(?i)suv"
+      - "(?i)emission"
+      - "(?i)ac.*pet"
+    modality: PT
+    priority: 20
+    enabled: true

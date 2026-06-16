@@ -1,0 +1,47 @@
+{
+  "sections": [
+    {
+      "key": "summary",
+      "title": "Brain PET Summary",
+      "fields": [
+        { "key": "summary.tracer_type", "label": "Tracer Type", "type": "badge",
+          "badge_colors": { "fdg": "blue", "amyloid": "purple", "tau": "orange", "unknown": "gray" } },
+        { "key": "summary.reference_region", "label": "Reference Region", "type": "string" },
+        { "key": "summary.global_suvr", "label": "Global SUVR", "type": "number", "precision": 3 },
+        { "key": "summary.centiloid", "label": "Centiloid Score", "type": "number", "precision": 1 },
+        { "key": "summary.processing_notes", "label": "Notes", "type": "text" }
+      ]
+    },
+    {
+      "key": "lobe_summary",
+      "title": "Lobe-Level SUVR",
+      "type": "key_value",
+      "source": "measurements.lobe_summary",
+      "value_precision": 3
+    },
+    {
+      "key": "asymmetry",
+      "title": "Asymmetry Index",
+      "type": "key_value",
+      "source": "measurements.asymmetry_index",
+      "value_precision": 3
+    },
+    {
+      "key": "regional_suvr",
+      "title": "Regional SUVR (AAL3)",
+      "type": "key_value",
+      "source": "measurements.regional_suvr",
+      "value_precision": 3,
+      "collapsible": true
+    },
+    {
+      "key": "calibration",
+      "title": "SUV Calibration",
+      "fields": [
+        { "key": "measurements.suv_params.patient_weight_kg", "label": "Patient Weight (kg)", "type": "number", "precision": 1 },
+        { "key": "measurements.suv_params.injected_dose_mbq", "label": "Injected Dose (MBq)", "type": "number", "precision": 1 },
+        { "key": "measurements.suv_params.units", "label": "Image Units", "type": "string" }
+      ]
+    }
+  ]
+}

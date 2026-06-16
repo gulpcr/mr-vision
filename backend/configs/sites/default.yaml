@@ -1,0 +1,5 @@
+site_id: default
+site_name: Default Hospital Site
+dicom_ae_title: MRI_AI_PLATFORM
+
+routing_overrides: []

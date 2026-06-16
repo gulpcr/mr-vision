@@ -1,0 +1,37 @@
+rules:
+  - body_parts:
+      - WHOLEBODY
+      - CHEST
+      - ABDOMEN
+      - PELVIS
+    study_description_patterns:
+      - "(?i)pet"
+      - "(?i)pet.*ct"
+      - "(?i)fdg"
+      - "(?i)positron"
+      - "(?i)nuclear"
+    series_description_patterns:
+      - "(?i)pet"
+      - "(?i)suv"
+      - "(?i)emission"
+      - "(?i)attenuation.*corrected"
+      - "(?i)ac.*pet"
+      - "(?i)nac.*pet"
+    modality: PT
+    priority: 15
+    enabled: true
+
+  - body_parts:
+      - WHOLEBODY
+      - CHEST
+      - ABDOMEN
+    study_description_patterns:
+      - "(?i)pet.*ct"
+      - "(?i)fdg"
+    series_description_patterns:
+      - "(?i)ct.*ac"
+      - "(?i)low.*dose.*ct"
+      - "(?i)attenuation"
+    modality: CT
+    priority: 14
+    enabled: true

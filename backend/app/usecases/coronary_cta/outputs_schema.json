@@ -1,0 +1,76 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Coronary CTA Analysis Result",
+  "type": "object",
+  "required": ["summary", "measurements", "qa_flags", "model_version", "artifacts"],
+  "properties": {
+    "summary": {
+      "type": "object",
+      "required": ["calcium_score_agatston", "calcium_category", "stenosis_analysis_available"],
+      "properties": {
+        "calcium_score_agatston":      { "type": "number",  "minimum": 0 },
+        "calcium_category":            { "type": "string" },
+        "calcium_volume_mm3":          { "type": "number",  "minimum": 0 },
+        "calcium_lesion_count":        { "type": "integer", "minimum": 0 },
+        "stenosis_analysis_available": { "type": "boolean" },
+        "max_stenosis_pct":            { "type": ["number", "null"], "minimum": 0, "maximum": 100 },
+        "cad_rads":                    { "type": ["integer", "null"], "minimum": 0, "maximum": 5 },
+        "diagnosis":                   { "type": "string" },
+        "inference_method":            { "type": "string" },
+        "processing_notes":            { "type": "string" }
+      }
+    },
+    "measurements": {
+      "type": "object",
+      "properties": {
+        "calcium_per_vessel": {
+          "type": "object",
+          "additionalProperties": { "type": "number" }
+        },
+        "segments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["segment", "stenosis_pct"],
+            "properties": {
+              "segment":      { "type": "string" },
+              "vessel":       { "type": "string" },
+              "stenosis_pct": { "type": "number", "minimum": 0, "maximum": 100 },
+              "plaque_type":  { "type": "string" },
+              "min_lumen_area_mm2": { "type": "number" }
+            }
+          }
+        },
+        "voxel_spacing_mm": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "image_dimensions": {
+          "type": "array",
+          "items": { "type": "integer" },
+          "minItems": 3,
+          "maxItems": 3
+        }
+      }
+    },
+    "qa_flags":       { "type": "array",  "items": { "type": "string" } },
+    "qa_details":     { "type": "object", "additionalProperties": true },
+    "model_version":  { "type": "string" },
+    "model_checksum": { "type": "string" },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "artifact_type", "local_path"],
+        "properties": {
+          "name":          { "type": "string" },
+          "artifact_type": { "type": "string" },
+          "local_path":    { "type": "string" },
+          "content_type":  { "type": "string" }
+        }
+      }
+    }
+  }
+}

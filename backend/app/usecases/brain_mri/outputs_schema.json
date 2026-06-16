@@ -1,0 +1,68 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Brain MRI Segmentation Result",
+  "type": "object",
+  "required": ["summary", "measurements", "qa_flags", "model_version", "artifacts"],
+  "properties": {
+    "summary": {
+      "type": "object",
+      "required": ["total_brain_volume_ml", "segmentation_labels", "sequences_used"],
+      "properties": {
+        "total_brain_volume_ml": { "type": "number" },
+        "segmentation_labels": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "sequences_used": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "processing_notes": { "type": "string" }
+      }
+    },
+    "measurements": {
+      "type": "object",
+      "properties": {
+        "volumes_ml": {
+          "type": "object",
+          "additionalProperties": { "type": "number" }
+        },
+        "volumes_percent": {
+          "type": "object",
+          "additionalProperties": { "type": "number" }
+        },
+        "voxel_spacing_mm": {
+          "type": "array",
+          "items": { "type": "number" }
+        },
+        "image_dimensions": {
+          "type": "array",
+          "items": { "type": "integer" }
+        }
+      }
+    },
+    "qa_flags": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "qa_details": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "model_version": { "type": "string" },
+    "model_checksum": { "type": "string" },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "artifact_type", "local_path"],
+        "properties": {
+          "name": { "type": "string" },
+          "artifact_type": { "type": "string" },
+          "local_path": { "type": "string" },
+          "content_type": { "type": "string" }
+        }
+      }
+    }
+  }
+}

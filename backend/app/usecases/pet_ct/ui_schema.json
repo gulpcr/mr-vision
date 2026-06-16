@@ -1,0 +1,99 @@
+{
+  "title": "PET/CT Oncology Analysis",
+  "description": "Whole-body FDG-PET/CT lesion detection, SUV quantification, MTV, TLG, PERCIST & Deauville scoring",
+  "sections": [
+    {
+      "id": "summary",
+      "title": "Clinical Summary",
+      "type": "key_value",
+      "data_path": "summary",
+      "fields": [
+        { "key": "lesions_detected",    "label": "FDG-Avid Lesions Found", "format": "boolean" },
+        { "key": "lesion_count",        "label": "Total Lesion Count",      "format": "number" },
+        { "key": "mtv_total_ml",        "label": "Metabolic Tumour Volume", "unit": "mL",  "format": "number", "precision": 1 },
+        { "key": "tlg_total",           "label": "Total Lesion Glycolysis", "unit": "g",   "format": "number", "precision": 1 },
+        { "key": "suvmax_body",         "label": "Whole-Body SUVmax",       "format": "number", "precision": 2 },
+        { "key": "radiopharmaceutical", "label": "Radiopharmaceutical",     "format": "text" },
+        { "key": "diagnosis",           "label": "Diagnosis",               "format": "text" },
+        { "key": "percist_score",       "label": "PERCIST 1.0 Score",       "format": "text" },
+        { "key": "deauville_score",     "label": "Deauville Score (1–5)",   "format": "number" },
+        { "key": "processing_notes",    "label": "Notes",                   "format": "text" }
+      ]
+    },
+    {
+      "id": "lesion_table",
+      "title": "Lesion-Level Metrics",
+      "type": "table",
+      "data_path": "measurements.lesions",
+      "columns": [
+        { "key": "id",                "label": "#",              "format": "number" },
+        { "key": "anatomical_region", "label": "Location",       "format": "text" },
+        { "key": "suv_max",           "label": "SUVmax",         "format": "number", "precision": 2 },
+        { "key": "suv_mean",          "label": "SUVmean",        "format": "number", "precision": 2 },
+        { "key": "suv_peak",          "label": "SUVpeak",        "format": "number", "precision": 2 },
+        { "key": "volume_ml",         "label": "Volume (mL)",    "format": "number", "precision": 1 },
+        { "key": "tlg",               "label": "TLG (g)",        "format": "number", "precision": 1 }
+      ]
+    },
+    {
+      "id": "reference_organs",
+      "title": "Reference Organ SUV",
+      "type": "key_value",
+      "data_path": "measurements.reference_organs",
+      "fields": [
+        { "key": "liver_suv_mean",       "label": "Liver SUVmean",        "format": "number", "precision": 2 },
+        { "key": "liver_suv_sd",         "label": "Liver SUV SD",         "format": "number", "precision": 2 },
+        { "key": "mediastinum_suv_mean", "label": "Mediastinum SUVmean",  "format": "number", "precision": 2 }
+      ]
+    },
+    {
+      "id": "qa",
+      "title": "Quality Assurance",
+      "type": "qa_panel",
+      "flags_path": "qa_flags",
+      "details_path": "qa_details",
+      "severity_map": {
+        "missing_suv_params":        "error",
+        "scan_delay_exceeded":       "warning",
+        "dose_out_of_range":         "warning",
+        "weight_missing":            "error",
+        "insufficient_pet_slices":   "error",
+        "insufficient_ct_slices":    "warning",
+        "suv_range_suspicious":      "warning",
+        "missing_calibration_data":  "error",
+        "no_ct_series":              "warning",
+        "non_bqml_units":            "warning"
+      }
+    },
+    {
+      "id": "overlays",
+      "title": "PET/CT Overlay",
+      "type": "overlay",
+      "artifact_filter": "overlay_png",
+      "colormap": {
+        "1": { "label": "FDG-Avid Lesion", "color": "#FF4444" }
+      }
+    },
+    {
+      "id": "fused",
+      "title": "Fused PET/CT Images",
+      "type": "image",
+      "artifact_filter": "fused_png"
+    },
+    {
+      "id": "mip",
+      "title": "Maximum Intensity Projection",
+      "type": "image",
+      "artifact_filter": "mip_png"
+    },
+    {
+      "id": "model_info",
+      "title": "Model Information",
+      "type": "key_value",
+      "fields": [
+        { "key": "model_version",  "label": "Model Version",  "format": "text", "data_path": "model_version" },
+        { "key": "model_checksum", "label": "Model Checksum", "format": "text", "data_path": "model_checksum" }
+      ]
+    }
+  ]
+}

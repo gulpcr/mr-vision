@@ -1,0 +1,28 @@
+rules:
+  - body_parts:
+      - CHEST
+      - THORAX
+      - LUNG
+    study_description_patterns:
+      - "(?i)chest"
+      - "(?i)thorax"
+      - "(?i)thoracic"
+      - "(?i)lung"
+      - "(?i)pulmon"
+      - "(?i)cardiac.*mri"
+      - "(?i)mri.*chest"
+    series_description_patterns:
+      - "(?i)haste"
+      - "(?i)t2.*haste"
+      - "(?i)haste.*t2"
+      - "(?i)t1.*gre"
+      - "(?i)gre.*t1"
+      - "(?i)stir"
+      - "(?i)true.*fisp"
+      - "(?i)truefisp"
+      - "(?i)fisp"
+      - "(?i)t2.*tse.*cor"
+      - "(?i)t2.*tse.*sag"
+    modality: MR
+    priority: 10
+    enabled: true

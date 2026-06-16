@@ -1,0 +1,33 @@
+rules:
+  - body_parts:
+      - ABDOMEN
+      - LIVER
+      - PANCREAS
+      - KIDNEY
+    study_description_patterns:
+      - "(?i)abdomen"
+      - "(?i)abdominal"
+      - "(?i)liver"
+      - "(?i)pancreas"
+      - "(?i)kidney"
+      - "(?i)renal"
+      - "(?i)hepatic"
+      - "(?i)mrcp"
+      - "(?i)upper.*abdomen"
+    series_description_patterns:
+      - "(?i)t2.*haste"
+      - "(?i)haste"
+      - "(?i)t1.*ip"
+      - "(?i)in.*phase"
+      - "(?i)t1.*op"
+      - "(?i)out.*phase"
+      - "(?i)dwi"
+      - "(?i)diffusion"
+      - "(?i)dce"
+      - "(?i)dynamic"
+      - "(?i)t1.*vibe"
+      - "(?i)t1.*lava"
+      - "(?i)t2.*cor"
+    modality: MR
+    priority: 10
+    enabled: true

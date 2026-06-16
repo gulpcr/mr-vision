@@ -1,0 +1,60 @@
+model:
+  architecture: swin_unetr
+  # Path to a .pt weights file for learned PET lesion segmentation.
+  # When null, the pipeline falls back to PERCIST 1.0 SUV-threshold detection.
+  custom_pet_weights_path: null
+  # SwinUNETR architecture hyperparameters — must match the trained checkpoint.
+  in_channels: 2           # 2 = [SUV, CT_HU] dual-channel; 1 = SUV only
+  out_channels: 2          # 2 = softmax (background + lesion); 1 = sigmoid binary
+  feature_size: 48         # SwinUNETR hidden feature size (24/36/48/96)
+  use_checkpoint: false    # gradient checkpointing (saves VRAM, slower training)
+
+inference:
+  device: auto             # "cuda" | "cpu" | "auto" (prefer CUDA if available)
+  # Sliding-window inference params (match training roi_size)
+  roi_size: [96, 96, 96]
+  sw_batch_size: 1
+  overlap: 0.5
+  mode: gaussian           # "gaussian" | "constant" (window blending)
+  # DL output threshold: sigmoid/softmax class-1 probability above this → lesion
+  dl_lesion_threshold: 0.5
+
+  # Fallback PERCIST threshold params (used when custom_pet_weights_path is null)
+  percist_liver_factor: 1.5
+  suv_threshold_absolute: 2.5
+  min_lesion_volume_ml: 1.2
+  suv_peak_sphere_radius_mm: 6.204
+
+preprocessing:
+  # Normalisation applied before DL inference
+  clip_suv_max: 20.0       # SUV clipped to [0, clip_suv_max] → divided by clip_suv_max → [0,1]
+  clip_ct_min: -1000.0     # HU clip range → (HU - clip_ct_min) / (clip_ct_max - clip_ct_min) → [0,1]
+  clip_ct_max: 1000.0
+
+  pet_series_patterns:
+    - "(?i)\\bpt\\b"
+    - "(?i)\\bpet\\b"
+    - "(?i)emission"
+    - "(?i)fdg"
+    - "(?i)wholebody"
+  ct_series_patterns:
+    - "(?i)\\bct\\b"
+    - "(?i)attenuation"
+    - "(?i)transmission"
+    - "(?i)low.*dose"
+    - "(?i)scout"
+  f18_half_life_seconds: 6586.2
+
+postprocessing:
+  generate_mip: true
+  generate_fused: true
+  mip_colormap: hot
+  liver_hu_min: 40
+  liver_hu_max: 80
+  mediastinum_hu_min: 20
+  mediastinum_hu_max: 55
+
+quality_checks:
+  min_slices: 100
+  max_expected_suv: 50.0
+  warn_on_missing_calibration: true

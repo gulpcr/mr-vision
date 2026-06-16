@@ -1,0 +1,53 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Docker
+docker-compose.override.yml
+
+# Environment
+.env
+.env.local
+.env.production
+
+# Model weights (large files)
+backend/app/usecases/*/model/weights/*.pt
+backend/app/usecases/*/model/weights/*.pth
+backend/app/usecases/*/model/weights/*.onnx
+
+# Node
+node_modules/
+.next/
+out/
+
+# OS
+.DS_Store
+Thumbs.db
+nul
+
+# Test artifacts
+preview_test.png
+
+# Database
+*.sql.bak
+
+# MinIO data
+minio_data/
+
+
+#  Dataset
+DICOMS/
+./DICOMS/*

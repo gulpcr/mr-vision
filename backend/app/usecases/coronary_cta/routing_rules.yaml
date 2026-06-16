@@ -1,0 +1,39 @@
+rules:
+  # Contrast-enhanced coronary CTA acquisition
+  - body_parts:
+      - HEART
+      - CARDIAC
+      - CHEST
+      - THORAX
+    study_description_patterns:
+      - "(?i)coronary"
+      - "(?i)ccta"
+      - "(?i)\\bcta\\b.*(?i)card"
+      - "(?i)cardiac.*angio"
+      - "(?i)cardiac.*ct"
+    series_description_patterns:
+      - "(?i)coronary"
+      - "(?i)ccta"
+      - "(?i)arterial"
+      - "(?i)cardiac.*ct"
+    modality: CT
+    priority: 16
+    enabled: true
+
+  # Non-contrast gated calcium-score acquisition (often a separate study/series)
+  - body_parts:
+      - HEART
+      - CARDIAC
+    study_description_patterns:
+      - "(?i)calcium.*score"
+      - "(?i)agatston"
+      - "(?i)\\bcac\\b"
+      - "(?i)ca.*scoring"
+    series_description_patterns:
+      - "(?i)calcium"
+      - "(?i)agatston"
+      - "(?i)\\bcac\\b"
+      - "(?i)score"
+    modality: CT
+    priority: 16
+    enabled: true

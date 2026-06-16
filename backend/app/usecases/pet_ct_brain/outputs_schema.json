@@ -1,0 +1,79 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Brain PET/CT Analysis Result",
+  "type": "object",
+  "required": ["summary", "measurements", "qa_flags", "model_version", "artifacts"],
+  "properties": {
+    "summary": {
+      "type": "object",
+      "required": ["tracer", "global_suvr", "reference_region"],
+      "properties": {
+        "tracer":                      { "type": "string" },
+        "global_suvr":                 { "type": "number" },
+        "reference_region":            { "type": "string" },
+        "amyloid_positive":            { "type": ["boolean", "null"] },
+        "centiloid":                   { "type": ["number", "null"] },
+        "fdg_pattern":                 { "type": ["string", "null"] },
+        "most_hypometabolic_region":   { "type": ["string", "null"] },
+        "most_hypermetabolic_region":  { "type": ["string", "null"] },
+        "processing_notes":            { "type": "string" }
+      }
+    },
+    "measurements": {
+      "type": "object",
+      "properties": {
+        "regional": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["region", "suvr", "suv_mean", "suv_max", "volume_ml"],
+            "properties": {
+              "region":    { "type": "string" },
+              "suvr":      { "type": "number" },
+              "suv_mean":  { "type": "number" },
+              "suv_max":   { "type": "number" },
+              "volume_ml": { "type": "number" },
+              "ai":        { "type": ["number", "null"] }
+            }
+          }
+        },
+        "reference": {
+          "type": "object",
+          "properties": {
+            "region":   { "type": "string" },
+            "suv_mean": { "type": "number" }
+          }
+        },
+        "voxel_spacing_mm": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "image_dimensions": {
+          "type": "array",
+          "items": { "type": "integer" },
+          "minItems": 3,
+          "maxItems": 3
+        }
+      }
+    },
+    "qa_flags":       { "type": "array",  "items": { "type": "string" } },
+    "qa_details":     { "type": "object", "additionalProperties": true },
+    "model_version":  { "type": "string" },
+    "model_checksum": { "type": "string" },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "artifact_type", "local_path"],
+        "properties": {
+          "name":          { "type": "string" },
+          "artifact_type": { "type": "string" },
+          "local_path":    { "type": "string" },
+          "content_type":  { "type": "string" }
+        }
+      }
+    }
+  }
+}

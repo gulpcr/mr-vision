@@ -1,0 +1,87 @@
+{
+  "title": "Brain MRI Analysis",
+  "description": "AI-powered brain tumor segmentation and volumetric analysis (BraTS SegResNet)",
+  "sections": [
+    {
+      "id": "summary",
+      "title": "Summary",
+      "type": "key_value",
+      "data_path": "summary",
+      "fields": [
+        {
+          "key": "tumor_detected",
+          "label": "Tumor Detected",
+          "format": "boolean"
+        },
+        {
+          "key": "total_lesion_volume_ml",
+          "label": "Total Lesion Volume",
+          "unit": "mL",
+          "format": "number",
+          "precision": 2
+        },
+        {
+          "key": "sequences_used",
+          "label": "Sequences Used",
+          "format": "array"
+        },
+        {
+          "key": "processing_notes",
+          "label": "Notes",
+          "format": "text"
+        }
+      ]
+    },
+    {
+      "id": "volumes",
+      "title": "Regional Volumes",
+      "type": "table",
+      "data_path": "measurements.volumes_ml",
+      "columns": [
+        { "key": "_key", "label": "Structure", "format": "text" },
+        { "key": "_value", "label": "Volume (mL)", "format": "number", "precision": 2 }
+      ],
+      "supplementary": {
+        "data_path": "measurements.volumes_percent",
+        "label": "% of Total",
+        "format": "percent",
+        "precision": 1
+      }
+    },
+    {
+      "id": "qa",
+      "title": "Quality Assurance",
+      "type": "qa_panel",
+      "flags_path": "qa_flags",
+      "details_path": "qa_details",
+      "severity_map": {
+        "missing_sequence": "warning",
+        "spacing_inconsistency": "warning",
+        "motion_artifact": "error",
+        "low_resolution": "info",
+        "incomplete_coverage": "warning",
+        "slice_gap": "info"
+      }
+    },
+    {
+      "id": "overlays",
+      "title": "Segmentation Overlay",
+      "type": "overlay",
+      "artifact_filter": "segmentation_nifti",
+      "colormap": {
+        "1": { "label": "Tumor Core", "color": "#FF6B6B" },
+        "2": { "label": "Whole Tumor", "color": "#4ECDC4" },
+        "3": { "label": "Enhancing Tumor", "color": "#FFCC02" }
+      }
+    },
+    {
+      "id": "model_info",
+      "title": "Model Information",
+      "type": "key_value",
+      "fields": [
+        { "key": "model_version", "label": "Model Version", "format": "text", "data_path": "model_version" },
+        { "key": "model_checksum", "label": "Model Checksum", "format": "text", "data_path": "model_checksum" }
+      ]
+    }
+  ]
+}

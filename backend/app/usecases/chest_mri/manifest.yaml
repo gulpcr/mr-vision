@@ -1,0 +1,16 @@
+name: chest_mri
+version: "1.0.0"
+description: >
+  Chest MRI segmentation and volumetric analysis. Segments right lung,
+  left lung, heart, and aorta. Computes individual lung volumes, total
+  lung volume, heart volume, and flags lesion detection. Supports HASTE,
+  T1 GRE, STIR, and TrueFISP sequences.
+supported_body_parts:
+  - CHEST
+  - THORAX
+  - LUNG
+required_sequences:
+  - T2_HASTE
+  - T1_GRE
+model_type: segresnet
+enabled: true
