@@ -25,6 +25,36 @@ inference:
   min_lesion_volume_ml: 1.2
   suv_peak_sphere_radius_mm: 6.204
 
+  # ── Physiologic FDG suppression (reduces false positives from normal uptake) ──
+  # Anatomy-aware: segments organs on the co-registered CT with TotalSegmentator
+  # and excludes their voxels from threshold-based detection. Falls back to the
+  # coarse geometric brain/thyroid/bladder mask when CT or TotalSegmentator is
+  # unavailable. Only applied to threshold detection — a trained DL model is
+  # trusted to discriminate physiologic uptake on its own.
+  physiologic_suppression:
+    enabled: true
+    totalseg_task: total
+    totalseg_weights_dir: /model_cache/totalsegmentator
+    dilate_voxels: 1
+    # Organs whose physiologic / excretory FDG uptake is excluded from detection.
+    # Conservative default (high-uptake, low primary-tumour-risk sites). Add
+    # liver / spleen / stomach / small_bowel / colon if bowel or hepatic false
+    # positives dominate — but note that excluding an organ also hides any true
+    # lesion located within it.
+    exclude_organs:
+      - brain
+      - heart
+      - urinary_bladder
+      - kidney_left
+      - kidney_right
+
+  # ── CT concordance: reject foci with no soft-tissue correlate (e.g. bowel gas) ──
+  ct_concordance:
+    enabled: true
+    min_mean_hu: -150.0    # reject a focus whose mean CT HU is air/gas
+    air_hu: -200.0
+    max_air_fraction: 0.5  # reject if > this fraction of the focus is air voxels
+
 preprocessing:
   # Normalisation applied before DL inference
   clip_suv_max: 20.0       # SUV clipped to [0, clip_suv_max] → divided by clip_suv_max → [0,1]

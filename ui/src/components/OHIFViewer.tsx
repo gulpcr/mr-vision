@@ -9,7 +9,8 @@ interface OHIFViewerProps {
 
 export function OHIFViewer({ studyInstanceUID }: OHIFViewerProps) {
   const [expanded, setExpanded] = useState(false);
-  const ohifUrl = `/ohif/viewer?StudyInstanceUIDs=${studyInstanceUID}`;
+  // TMTV mode opens PET/CT already fused (CT + PET + fused PET-on-CT + MIP).
+  const ohifUrl = `/ohif/tmtv?StudyInstanceUIDs=${studyInstanceUID}`;
 
   return (
     <div className={`relative ${expanded ? "fixed inset-0 z-50 bg-black" : ""}`}>

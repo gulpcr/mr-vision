@@ -30,12 +30,122 @@ def _get_cmap(name: str):
         return cm.get_cmap(name)
 
 
+def slice_count(suv_arr: np.ndarray, view: str) -> int:
+    """Number of slices available for a view (the size along that view's axis)."""
+    if view not in _VIEW_AXES:
+        raise ValueError(f"view must be one of {VIEWS}, got {view!r}")
+    return int(suv_arr.shape[_VIEW_AXES[view]])
+
+
+def best_slice(suv_arr: np.ndarray, view: str) -> int:
+    """Slice index with the most PET uptake along the view axis.
+
+    Used as the initial slice for the interactive viewer so it opens on an
+    anatomically interesting (high-uptake) plane rather than an empty edge.
+    """
+    if view not in _VIEW_AXES:
+        raise ValueError(f"view must be one of {VIEWS}, got {view!r}")
+    axis = _VIEW_AXES[view]
+    other = tuple(a for a in range(suv_arr.ndim) if a != axis)
+    sums = np.clip(suv_arr, 0, None).sum(axis=other)
+    if sums.size == 0:
+        return int(suv_arr.shape[axis] // 2)
+    return int(np.argmax(sums))
+
+
+def compute_suv_display_range(suv_arr: np.ndarray) -> tuple[float, float]:
+    """Per-volume PET display window (vmin, vmax), computed once and cached so
+    per-slice rendering doesn't re-scan the whole volume."""
+    valid = suv_arr[suv_arr > 0]
+    if len(valid) == 0:
+        return 0.0, 5.0
+    vmax = max(min(float(np.percentile(valid, 99.5)), 10.0), 0.1)
+    vmin = float(np.percentile(valid, 5))
+    return vmin, vmax
+
+
+def generate_fused_slice_fast(
+    suv_arr: np.ndarray,
+    ct_arr: np.ndarray | None,
+    view: str,
+    slice_index: int,
+    suv_vmin: float,
+    suv_vmax: float,
+    colormap: str = "hot",
+    alpha: float = 0.65,
+    out_size: int = 512,
+) -> bytes:
+    """Fast fused-slice PNG using numpy + PIL (no matplotlib figure).
+
+    ~10x faster than :func:`generate_fused_png_bytes`, intended for the
+    interactive viewer's per-slice requests. Same look: CT grayscale background +
+    PET `colormap` overlay shown only above 20 % of the display SUV-max.
+    Orientation matches the matplotlib renderer (transpose + vertical flip, i.e.
+    origin='lower'). Display window (vmin/vmax) is passed in pre-computed.
+    """
+    if view not in _VIEW_AXES:
+        raise ValueError(f"view must be one of {VIEWS}, got {view!r}")
+
+    from PIL import Image
+
+    axis = _VIEW_AXES[view]
+    n_slices = suv_arr.shape[axis]
+    idx = int(max(0, min(slice_index, n_slices - 1)))
+
+    pet_sl = np.flipud(_slice2d(suv_arr, axis, idx).T)
+    h, w = pet_sl.shape
+
+    if ct_arr is not None and ct_arr.shape == suv_arr.shape:
+        ct_sl = np.flipud(_slice2d(ct_arr, axis, idx).T)
+        ct_norm = np.clip((ct_sl + 1000.0) / 2000.0, 0.0, 1.0)
+    else:
+        ct_norm = np.zeros((h, w), dtype=np.float32)
+    rgb = np.repeat((ct_norm * 255.0)[..., None], 3, axis=2)
+
+    denom = max(suv_vmax - suv_vmin, 1e-6)
+    pet_norm = np.clip((pet_sl - suv_vmin) / denom, 0.0, 1.0)
+    cmap_fn = _get_cmap(colormap)
+    pet_rgb = np.asarray(cmap_fn(pet_norm), dtype=np.float64)[..., :3] * 255.0
+    threshold = suv_vmax * 0.20
+    a = np.where(pet_sl >= threshold, alpha, 0.0).astype(np.float64)[..., None]
+    out = rgb * (1.0 - a) + pet_rgb * a
+
+    img = Image.fromarray(np.clip(out, 0, 255).astype(np.uint8), mode="RGB")
+    if out_size and max(h, w) > 0 and max(h, w) < out_size:
+        scale = out_size / max(h, w)
+        img = img.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.BILINEAR)
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return buf.read()
+
+
+def resample_ct_to_suv(suv_arr: np.ndarray, ct_arr: np.ndarray | None) -> np.ndarray | None:
+    """Resample CT onto the SUV grid once so per-slice rendering needs no zoom.
+
+    The interactive viewer caches the result, so the expensive 3-D zoom runs a
+    single time per study instead of on every slice request.
+    """
+    if ct_arr is None or ct_arr.shape == suv_arr.shape:
+        return ct_arr
+    try:
+        from scipy.ndimage import zoom as nd_zoom
+
+        factors = tuple(p / c for p, c in zip(suv_arr.shape, ct_arr.shape))
+        return nd_zoom(ct_arr, factors, order=1).astype(np.float32)
+    except Exception as exc:
+        logger.warning("fused_ct_zoom_failed", error=str(exc))
+        return None
+
+
 def generate_fused_png_bytes(
     suv_arr: np.ndarray,
     ct_arr: np.ndarray | None,
     view: str,
     colormap: str = "hot",
     alpha: float = 0.65,
+    slice_index: int | None = None,
 ) -> bytes:
     """Generate a single fused PET/CT PNG and return the raw PNG bytes.
 
@@ -53,8 +163,11 @@ def generate_fused_png_bytes(
     from matplotlib.colors import Normalize
 
     axis = _VIEW_AXES[view]
-    x, y, z = suv_arr.shape
-    idx = (x // 2, y // 2, z // 2)[axis]
+    n_slices = suv_arr.shape[axis]
+    if slice_index is None:
+        idx = n_slices // 2
+    else:
+        idx = int(max(0, min(slice_index, n_slices - 1)))
 
     valid = suv_arr[suv_arr > 0]
     suv_max_disp = min(float(np.percentile(valid, 99.5)), 10.0) if len(valid) > 0 else 5.0
@@ -87,7 +200,10 @@ def generate_fused_png_bytes(
         ax.imshow(pet_rgba, aspect="auto", origin="lower")
 
         ax.axis("off")
-        ax.set_title(f"{view.capitalize()} — Fused PET/CT", color="white", fontsize=9, pad=4)
+        title = f"{view.capitalize()} — Fused PET/CT"
+        if slice_index is not None:
+            title += f"  [{idx + 1}/{n_slices}]"
+        ax.set_title(title, color="white", fontsize=9, pad=4)
 
         buf = io.BytesIO()
         fig.savefig(buf, dpi=120, bbox_inches="tight", facecolor="black", format="png")

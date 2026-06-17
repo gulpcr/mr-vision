@@ -22,6 +22,80 @@ logger = structlog.get_logger(__name__)
 router = APIRouter(tags=["results"])
 
 
+# ── Interactive fused PET/CT viewer ───────────────────────────────────────────
+# The lean fused viewer scrolls through every slice, so it would otherwise
+# re-download and re-parse the (large) SUV + CT NIfTI volumes on every request.
+# Instead we load them once per (study, usecase), resample CT onto the SUV grid
+# a single time, and cache the in-memory arrays. Per-slice requests then only run
+# a fast 2-D matplotlib render. Bounded LRU so memory stays under control.
+import asyncio
+from collections import OrderedDict
+
+_FUSED_VOL_CACHE: "OrderedDict[tuple[str, str], dict]" = OrderedDict()
+_FUSED_VOL_CACHE_MAX = 2
+_fused_cache_lock = asyncio.Lock()
+
+
+async def _load_fused_volumes(service: "ResultService", study_uid: str, usecase: str) -> dict:
+    """Load (and cache) the SUV + CT volumes and per-view slice metadata."""
+    import os
+
+    import nibabel as nib
+    import numpy as np
+
+    from app.services.fused_image_service import (
+        VIEWS,
+        best_slice,
+        compute_suv_display_range,
+        resample_ct_to_suv,
+        slice_count,
+    )
+
+    key = (study_uid, usecase)
+    async with _fused_cache_lock:
+        cached = _FUSED_VOL_CACHE.get(key)
+        if cached is not None:
+            _FUSED_VOL_CACHE.move_to_end(key)
+            return cached
+
+        try:
+            suv_data = await service.get_artifact_data(study_uid, usecase, "pet_suv")
+        except Exception as exc:
+            raise HTTPException(404, f"PET SUV artifact not found for {usecase}: {exc}")
+
+        with tempfile.TemporaryDirectory(prefix="fusedvol_") as tmpdir:
+            suv_path = os.path.join(tmpdir, "suv.nii.gz")
+            with open(suv_path, "wb") as fh:
+                fh.write(suv_data)
+            suv_arr = nib.load(suv_path).get_fdata().astype(np.float32)
+
+            ct_arr = None
+            try:
+                ct_data = await service.get_artifact_data(study_uid, usecase, "ct")
+                ct_path = os.path.join(tmpdir, "ct.nii.gz")
+                with open(ct_path, "wb") as fh:
+                    fh.write(ct_data)
+                ct_arr = nib.load(ct_path).get_fdata().astype(np.float32)
+                ct_arr = resample_ct_to_suv(suv_arr, ct_arr)
+            except Exception:
+                ct_arr = None
+
+        suv_vmin, suv_vmax = compute_suv_display_range(suv_arr)
+        vols = {
+            "suv": suv_arr,
+            "ct": ct_arr,
+            "vmin": suv_vmin,
+            "vmax": suv_vmax,
+            "counts": {v: slice_count(suv_arr, v) for v in VIEWS},
+            "defaults": {v: best_slice(suv_arr, v) for v in VIEWS},
+        }
+        _FUSED_VOL_CACHE[key] = vols
+        _FUSED_VOL_CACHE.move_to_end(key)
+        while len(_FUSED_VOL_CACHE) > _FUSED_VOL_CACHE_MAX:
+            _FUSED_VOL_CACHE.popitem(last=False)
+        return vols
+
+
 @router.post("/compare", response_model=CompareResponse)
 async def compare_results(
     body: CompareRequest,
@@ -50,6 +124,56 @@ async def compare_results(
             qa_flags_resolved=d["qa_flags_resolved"],
             days_between=d["days_between"],
         ),
+    )
+
+
+# NOTE: This route MUST be declared before "/results/{study_uid}/{usecase}".
+# Both are 3-component paths; Starlette matches in declaration order, so the
+# generic 2-param route would otherwise capture "/results/{id}/report.pdf" with
+# usecase="report.pdf" and 404 — breaking the study page's Download PDF button.
+@router.get("/results/{result_id}/report.pdf")
+async def download_report_pdf(
+    result_id: str,
+    service: Annotated[ResultService, Depends(get_result_service)],
+    session: Annotated["AsyncSession", Depends(get_session)],
+):
+    """Generate and download a PDF auto-draft report for the given result ID."""
+    from fastapi.responses import StreamingResponse
+    import io
+
+    result = await service.get_result_by_id(result_id)
+    if not result:
+        raise HTTPException(404, "Result not found")
+
+    from app.infrastructure.database.models import StudyRecord
+    from sqlalchemy import select
+
+    stmt = select(StudyRecord).where(StudyRecord.study_instance_uid == result.study_instance_uid)
+    res = await session.execute(stmt)
+    study_rec = res.scalar_one_or_none()
+
+    from app.application.report_service import generate_report_pdf
+
+    qa_flags = [f.value if hasattr(f, "value") else f for f in result.qa_flags]
+    pdf_bytes = generate_report_pdf(
+        study_uid=result.study_instance_uid,
+        patient_name=study_rec.patient_name if study_rec else None,
+        patient_id=study_rec.patient_id if study_rec else None,
+        study_date=study_rec.study_date if study_rec else None,
+        study_description=study_rec.study_description if study_rec else None,
+        institution=study_rec.institution_name if study_rec else None,
+        usecase_name=result.usecase_name,
+        model_version=result.model_version,
+        measurements=result.measurements,
+        summary=result.summary,
+        qa_flags=qa_flags,
+        result_created_at=result.created_at,
+    )
+
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="report_{result_id[:8]}.pdf"'},
     )
 
 
@@ -100,52 +224,6 @@ async def get_cpt_suggestions(
         qa_flags=qa_flags,
     )
     return {"result_id": result.id, "usecase_name": usecase, "suggestions": suggestions}
-
-
-@router.get("/results/{result_id}/report.pdf")
-async def download_report_pdf(
-    result_id: str,
-    service: Annotated[ResultService, Depends(get_result_service)],
-    session: Annotated["AsyncSession", Depends(get_session)],
-):
-    """Generate and download a PDF auto-draft report for the given result ID."""
-    from fastapi.responses import StreamingResponse
-    import io
-
-    result = await service.get_result_by_id(result_id)
-    if not result:
-        raise HTTPException(404, "Result not found")
-
-    from app.infrastructure.database.models import StudyRecord
-    from sqlalchemy import select
-
-    stmt = select(StudyRecord).where(StudyRecord.study_instance_uid == result.study_instance_uid)
-    res = await session.execute(stmt)
-    study_rec = res.scalar_one_or_none()
-
-    from app.application.report_service import generate_report_pdf
-
-    qa_flags = [f.value if hasattr(f, "value") else f for f in result.qa_flags]
-    pdf_bytes = generate_report_pdf(
-        study_uid=result.study_instance_uid,
-        patient_name=study_rec.patient_name if study_rec else None,
-        patient_id=study_rec.patient_id if study_rec else None,
-        study_date=study_rec.study_date if study_rec else None,
-        study_description=study_rec.study_description if study_rec else None,
-        institution=study_rec.institution_name if study_rec else None,
-        usecase_name=result.usecase_name,
-        model_version=result.model_version,
-        measurements=result.measurements,
-        summary=result.summary,
-        qa_flags=qa_flags,
-        result_created_at=result.created_at,
-    )
-
-    return StreamingResponse(
-        io.BytesIO(pdf_bytes),
-        media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="report_{result_id[:8]}.pdf"'},
-    )
 
 
 @router.post("/results/{result_id}/share")
@@ -348,6 +426,55 @@ async def get_preview(
     except Exception as e:
         logger.error("preview_generation_failed", error=str(e))
         raise HTTPException(500, f"Preview generation failed: {str(e)}")
+
+
+# NOTE: declared before "/fused/{study_uid}/{usecase}/{view}" so the literal
+# "meta" segment isn't captured as a view by the generic route (Starlette matches
+# in declaration order).
+@router.get("/fused/{study_uid}/{usecase}/meta")
+async def get_fused_meta(
+    study_uid: str,
+    usecase: str,
+    service: Annotated[ResultService, Depends(get_result_service)],
+):
+    """Slice counts and a sensible default (max-uptake) slice per view, for the
+    interactive fused viewer's sliders."""
+    vols = await _load_fused_volumes(service, study_uid, usecase)
+    return {
+        "views": vols["counts"],
+        "defaults": vols["defaults"],
+        "has_ct": vols["ct"] is not None,
+    }
+
+
+@router.get("/fused/{study_uid}/{usecase}/{view}/{slice_index}")
+async def get_fused_slice(
+    study_uid: str,
+    usecase: str,
+    view: str,
+    slice_index: int,
+    service: Annotated[ResultService, Depends(get_result_service)],
+):
+    """Serve the fused PET/CT PNG for a specific slice of a view (interactive viewer)."""
+    if view not in ("axial", "coronal", "sagittal"):
+        raise HTTPException(400, "view must be axial, coronal, or sagittal")
+
+    vols = await _load_fused_volumes(service, study_uid, usecase)
+    from app.services.fused_image_service import generate_fused_slice_fast
+
+    try:
+        png_bytes = generate_fused_slice_fast(
+            vols["suv"], vols["ct"], view, slice_index, vols["vmin"], vols["vmax"]
+        )
+    except Exception as exc:
+        logger.error("fused_slice_failed", study_uid=study_uid, usecase=usecase, error=str(exc))
+        raise HTTPException(500, f"Fused slice generation failed: {exc}")
+
+    return Response(
+        content=png_bytes,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
 
 
 @router.get("/fused/{study_uid}/{usecase}/{view}")

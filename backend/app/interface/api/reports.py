@@ -192,15 +192,23 @@ async def generate_pdf_report(
             qa_flags=result.qa_flags,
         )
 
-    from app.reports.pdf_generator import PDFReportGenerator
+    from app.reports.pdf_generator import PDFReportGenerator, build_petct_patient_info
+
+    # Pull patient/study demographics from the Study record for the report header.
+    from sqlalchemy import select
+
+    from app.infrastructure.database.models import StudyRecord
+
+    async_session = service._result_repo._session
+    study_rec = (
+        await async_session.execute(
+            select(StudyRecord).where(StudyRecord.study_instance_uid == study_uid)
+        )
+    ).scalar_one_or_none()
 
     generator = PDFReportGenerator()
-    patient_info = {
-        "study_uid": study_uid,
-        "patient_name": result.summary.get("patient_name", ""),
-        "patient_id": result.summary.get("patient_id", ""),
-        "study_date": result.summary.get("study_date", ""),
-    }
+    patient_info = build_petct_patient_info(study_rec)
+    patient_info["study_uid"] = study_uid
 
     pdf_bytes = generator.generate(
         study_uid=study_uid,

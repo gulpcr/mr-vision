@@ -16,7 +16,7 @@ Before touching a single file, execute this research sequence in order:
 3. Grep for the class/function/pattern you need — it probably already exists.
 4. Read the base class or interface that defines the contract.
 5. Read backend/app/config.py — check if a feature flag already exists.
-6. Read backend/alembic/versions/ — know the last migration number (currently 014).
+6. Read backend/alembic/versions/ — know the last migration number (currently 015).
 7. Read backend/app/infrastructure/queue/tasks.py — if your change touches the pipeline.
 8. Confirm every import path exists on disk before writing it.
 ```
@@ -130,7 +130,8 @@ backend/
   alembic/
     versions/
       001_initial_schema.py … 013_features.py
-      014_critical_alerts.py           ← LATEST migration (down_revision="013")
+      014_critical_alerts.py           ← down_revision="013"
+      015_patient_demographics.py      ← LATEST migration (down_revision="014")
 ui/
   src/
     app/
@@ -202,11 +203,15 @@ interface/       ← FastAPI routers + Pydantic schemas + WebSocket.
 
 ## 5. Database State
 
-**Latest migration: `014_critical_alerts.py` (`down_revision="013"`)**
+**Latest migration: `015_patient_demographics.py` (`down_revision="014"`)**
+
+`015` adds `patient_sex`, `patient_age`, `patient_weight_kg`, `patient_height_cm`
+to the `studies` table (all nullable; populated at ingest from DICOM tags, used by
+the FDG PET-CT report layout).
 
 The next new migration must be:
-- File: `backend/alembic/versions/015_<descriptive_name>.py`
-- `revision = "015"`, `down_revision = "014"`
+- File: `backend/alembic/versions/016_<descriptive_name>.py`
+- `revision = "016"`, `down_revision = "015"`
 
 ### ORM Tables (all in `backend/app/infrastructure/database/models.py`)
 
@@ -621,7 +626,7 @@ Copy this into your working notes for every task:
 [ ] Confirmed all import paths exist on disk with Glob/Read
 [ ] Checked config.py for existing feature flags covering this feature
 [ ] If new feature flag needed: added to Settings with typed default
-[ ] Checked alembic/versions/ — next migration is 015_...
+[ ] Checked alembic/versions/ — next migration is 016_...
 [ ] Read tasks.py if the change affects pipeline execution order
 [ ] Verified no layer boundary violations in the planned design
 [ ] Confirmed postprocess() returns all required keys
@@ -659,6 +664,6 @@ Model weights: `model_bundles` named volume, auto-downloaded via MONAI bundle on
 
 ---
 
-*Contract version: 2026-06-06 (rev 2). Reflects migration 014, Phases 1–7 + PET/CT fused viewer + stale job cleanup implemented.*
+*Contract version: 2026-06-16 (rev 3). Reflects migration 015 (patient demographics), Phases 1–7 + PET/CT fused viewer + OHIF /ohif/ subpath fix + stale job cleanup implemented.*
 
 

@@ -5,12 +5,13 @@ import { useParams } from "next/navigation";
 import { api, Study, Job, Result, CptSuggestion, ProtocolCheckResult, ComparisonData } from "@/lib/api";
 import { StatusBadge } from "@/components/StatusBadge";
 import { ReportView } from "@/components/ReportView";
+import { FusedViewer } from "@/components/FusedViewer";
 import { ComparePanel } from "@/components/ComparePanel";
 import { formatDate, formatPatientName } from "@/lib/format";
 import Link from "next/link";
 import {
   ArrowLeft, ExternalLink, ArrowLeftRight, FileDown, Share2, AlertTriangle,
-  CheckCircle, DollarSign, Stethoscope, ChevronDown, ChevronUp, Link2, X, TrendingUp
+  CheckCircle, DollarSign, Stethoscope, ChevronDown, ChevronUp, Link2, X, TrendingUp, FileText
 } from "lucide-react";
 
 // ── Sequence type detector ────────────────────────────────────────────────────
@@ -211,10 +212,19 @@ export default function StudyPage() {
   // Use OHIF only when the DICOM data actually contains PT (PET) series.
   // Never infer from the usecase_name — a pet_ct pipeline can be run on
   // non-PET data (mis-routing) and OHIF would show nothing in that case.
+  // For PET/CT, open OHIF's TMTV mode ("/ohif/tmtv") rather than the basic
+  // viewer: TMTV's hanging protocol auto-lays out CT, PET, and a fused
+  // PET-on-CT viewport (+ rotating PET MIP), so the study opens already fused.
   const hasPetSeries = study.series.some((s) => s.modality === "PT");
   const viewerUrl = hasPetSeries
-    ? `/ohif/viewer?StudyInstanceUIDs=${uid}`
+    ? `/ohif/tmtv?StudyInstanceUIDs=${uid}`
     : `/orthanc/stone-webviewer/index.html?study=${uid}`;
+
+  // The lean native fused PET/CT viewer renders from the stored SUV + CT
+  // artifacts, so it's only available once a pet_ct result exists. Until then
+  // (or for the full interactive experience), the OHIF TMTV mode is used.
+  const petResult = results.find((r) => r.usecase_name.startsWith("pet_ct"));
+  const showNativeFused = hasPetSeries && !!petResult;
 
   return (
     <div className="space-y-6">
@@ -368,11 +378,15 @@ export default function StudyPage() {
         <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">DICOM Viewer</h2>
-            {hasPetSeries && (
+            {showNativeFused ? (
+              <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full font-medium">
+                Fused PET/CT
+              </span>
+            ) : hasPetSeries ? (
               <span className="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full font-medium">
                 OHIF — PET/CT Fusion
               </span>
-            )}
+            ) : null}
           </div>
           <a
             href={viewerUrl}
@@ -380,16 +394,21 @@ export default function StudyPage() {
             rel="noopener noreferrer"
             className="text-xs text-primary-600 hover:text-primary-700 flex items-center gap-1"
           >
-            Open in new tab <ExternalLink className="w-3 h-3" />
+            {hasPetSeries ? "Open full viewer (OHIF)" : "Open in new tab"}{" "}
+            <ExternalLink className="w-3 h-3" />
           </a>
         </div>
-        <iframe
-          src={viewerUrl}
-          className="w-full border-0"
-          style={{ height: hasPetSeries ? "700px" : "500px" }}
-          title={hasPetSeries ? "OHIF PET/CT Viewer" : "DICOM Viewer"}
-          allow="fullscreen"
-        />
+        {showNativeFused && petResult ? (
+          <FusedViewer studyUid={uid} usecase={petResult.usecase_name} />
+        ) : (
+          <iframe
+            src={viewerUrl}
+            className="w-full border-0"
+            style={{ height: hasPetSeries ? "700px" : "500px" }}
+            title={hasPetSeries ? "OHIF PET/CT Viewer" : "DICOM Viewer"}
+            allow="fullscreen"
+          />
+        )}
       </div>
 
       {/* AI Results - Tabs + Actions */}
@@ -446,6 +465,14 @@ export default function StudyPage() {
                     <ArrowLeftRight className="w-4 h-4" />
                     {priorLoading ? "Loading..." : "Prior Comparison"}
                   </button>
+                  {["pet_ct", "pet_ct_brain"].includes(selectedResult.usecase_name) && (
+                    <Link
+                      href={`/study/${uid}/molecular?usecase=${selectedResult.usecase_name}`}
+                      className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-indigo-700 border border-indigo-200 rounded-lg hover:bg-indigo-50 transition-colors"
+                    >
+                      <FileText className="w-4 h-4" /> PET-CT Report
+                    </Link>
+                  )}
                   <button
                     onClick={handleDownloadPdf}
                     disabled={pdfLoading}

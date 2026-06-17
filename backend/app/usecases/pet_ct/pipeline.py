@@ -207,21 +207,24 @@ def _build_suv_nifti(dicom_dir: str, suv_params: dict, output_path: str) -> str:
         suv = bqml / (p99 / 8.0)
         logger.warning("suv_calibration_fallback", reason="missing_weight_or_dose")
 
-    spacing = img.GetSpacing()        # (X, Y, Z) in mm
-    origin = img.GetOrigin()          # (X, Y, Z)
-    direction = np.array(img.GetDirection()).reshape(3, 3)
-    affine = np.eye(4)
-    affine[:3, :3] = direction * np.array(spacing)
-    affine[:3, 3] = origin
-
-    # SimpleITK array (Z, Y, X) → NIfTI (X, Y, Z)
-    suv_xyz = suv.transpose(2, 1, 0)
-    nib.save(nib.Nifti1Image(suv_xyz, affine), output_path)
+    # Write the SUV NIfTI the SAME way the CT series is converted
+    # (OrthancPACSClient._convert_dicom_to_nifti → sitk.WriteImage): build a
+    # SimpleITK image from the SUV array and inherit the PET DICOM geometry, then
+    # write with sitk. Previously the affine was assembled by hand from SITK's
+    # (LPS) direction/origin and saved via nibabel, producing an LPS-signed NIfTI
+    # inconsistent with the RAS NIfTI sitk writes for the CT — so the CT resampled
+    # to PET space came out entirely -1000 (air): no fused CT background, no
+    # organ-based physiologic suppression, and broken reference-region stats.
+    suv_img = sitk.GetImageFromArray(suv)   # suv is (Z, Y, X) — SITK index order
+    suv_img.SetSpacing(img.GetSpacing())
+    suv_img.SetOrigin(img.GetOrigin())
+    suv_img.SetDirection(img.GetDirection())
+    sitk.WriteImage(suv_img, output_path)
 
     logger.info(
         "suv_nifti_built",
-        shape=list(suv_xyz.shape),
-        suv_max=round(float(np.percentile(suv_xyz[suv_xyz > 0], 99.9)) if np.any(suv_xyz > 0) else 0.0, 2),
+        shape=list(suv.shape[::-1]),  # report as (X, Y, Z)
+        suv_max=round(float(np.percentile(suv[suv > 0], 99.9)) if np.any(suv > 0) else 0.0, 2),
         suv_factor=round(suv_factor, 4),
     )
     return output_path
@@ -702,6 +705,73 @@ class Pipeline(BasePipeline):
 
         return (lesion_prob >= dl_threshold).astype(np.int32)
 
+    def _run_physiologic_organ_exclusion(
+        self,
+        ct_nifti_path: str,
+        suv_shape: tuple,
+        working_dir: str,
+        supp_cfg: dict[str, Any],
+    ) -> tuple[np.ndarray, list[str]] | None:
+        """Anatomy-aware physiologic FDG exclusion mask via TotalSegmentator.
+
+        Segments the configured organs on the (PET-grid) CT and ORs them into a
+        boolean exclusion mask aligned with the SUV grid. Returns (mask, organs)
+        or None on any failure so the caller can fall back to the geometric mask.
+        """
+        from totalsegmentator.python_api import totalsegmentator as ts_run
+
+        task = supp_cfg.get("totalseg_task", "total")
+        organs = list(supp_cfg.get("exclude_organs", []) or [])
+        dilate = int(supp_cfg.get("dilate_voxels", 0))
+        if not organs:
+            return None
+
+        import torch
+
+        device = "gpu" if torch.cuda.is_available() else "cpu"
+        ts_out = os.path.join(working_dir, "petct_physio_seg")
+        os.makedirs(ts_out, exist_ok=True)
+
+        # Weights are located via the TOTALSEG_WEIGHTS_PATH env var (set on the
+        # worker) and downloaded there on first use — the python_api takes no
+        # weights_dir argument.
+        logger.info("physiologic_totalseg_start", task=task, device=device, organs=organs)
+        ts_run(
+            input=Path(ct_nifti_path),
+            output=Path(ts_out),
+            task=task,
+            device=device,
+            quiet=True,
+            roi_subset=organs,
+        )
+
+        excl = np.zeros(suv_shape, dtype=bool)
+        found: list[str] = []
+        for organ in organs:
+            organ_path = os.path.join(ts_out, f"{organ}.nii.gz")
+            if not os.path.exists(organ_path):
+                logger.warning("physiologic_organ_missing", organ=organ)
+                continue
+            mask = nib.load(organ_path).get_fdata() > 0.5
+            if mask.shape != tuple(suv_shape):
+                logger.warning(
+                    "physiologic_organ_shape_mismatch",
+                    organ=organ, organ_shape=mask.shape, suv_shape=tuple(suv_shape),
+                )
+                continue
+            excl |= mask
+            found.append(organ)
+
+        if not found:
+            return None
+        if dilate > 0:
+            excl = ndimage.binary_dilation(excl, iterations=dilate)
+        logger.info(
+            "physiologic_totalseg_complete",
+            excluded_organs=found, excluded_voxels=int(excl.sum()),
+        )
+        return excl, found
+
     # ── Series classification ─────────────────────────────────────────────────
 
     def _classify_series(self, series: list[Series]) -> dict[str, Series]:
@@ -921,11 +991,57 @@ class Pipeline(BasePipeline):
             raw_mask = (suv_arr >= threshold).astype(np.int32)
             inference_method = "threshold"
 
-        # Apply physiological exclusion, connected-component labelling
-        excl_mask = _build_physiological_exclusion_mask(suv_arr.shape, cfg_post)
+        # Apply physiologic exclusion, connected-component labelling.
+        # Threshold detection lights up all FDG-avid tissue, so suppress normal
+        # uptake: prefer anatomy-aware organ masking (TotalSegmentator on the CT)
+        # and fall back to the coarse geometric mask. A trained DL model is
+        # trusted to discriminate physiologic uptake itself, so it keeps the
+        # original geometric behaviour.
+        supp_cfg = cfg_inf.get("physiologic_suppression", {})
+        excl_mask = None
+        suppression_method = "geometric"
+        excluded_organs: list[str] = []
+        if (
+            inference_method in ("threshold", "threshold_fallback")
+            and supp_cfg.get("enabled", True)
+            and preprocessed.get("ct_nifti_path")
+        ):
+            try:
+                result = self._run_physiologic_organ_exclusion(
+                    preprocessed["ct_nifti_path"], suv_arr.shape, working_dir, supp_cfg
+                )
+                if result is not None:
+                    excl_mask, excluded_organs = result
+                    suppression_method = "totalsegmentator"
+            except Exception as exc:
+                logger.warning("physiologic_organ_exclusion_failed", error=str(exc))
+                excl_mask = None
+        if excl_mask is None:
+            excl_mask = _build_physiological_exclusion_mask(suv_arr.shape, cfg_post)
         raw_mask[excl_mask] = 0
         labeled, n_components = ndimage.label(raw_mask)
         lesion_mask = raw_mask
+
+        # CT concordance: a true tumour has a soft-tissue correlate on CT;
+        # physiologic uptake in hollow organs (bowel gas) does not.
+        conc_cfg = cfg_inf.get("ct_concordance", {})
+        conc_enabled = bool(conc_cfg.get("enabled", True)) and ct_arr is not None
+        # Safety guard: if the CT is degenerate (e.g. failed PET/CT
+        # co-registration → effectively all air), concordance cannot discriminate
+        # and would wrongly reject EVERY focus (including a true tumour). Disable
+        # it in that case rather than nuke all detections.
+        if conc_enabled:
+            ct_soft_frac = float(np.mean(ct_arr > -150.0))
+            if ct_soft_frac < 0.01:
+                logger.warning(
+                    "ct_concordance_disabled_degenerate_ct",
+                    soft_tissue_fraction=round(ct_soft_frac, 4),
+                )
+                conc_enabled = False
+        conc_min_hu = float(conc_cfg.get("min_mean_hu", -150.0))
+        conc_air_hu = float(conc_cfg.get("air_hu", -200.0))
+        conc_max_air = float(conc_cfg.get("max_air_fraction", 0.5))
+        n_rejected_concordance = 0
 
         min_vol_ml = cfg_inf.get("min_lesion_volume_ml", 1.2)
         sphere_r_mm = cfg_inf.get("suv_peak_sphere_radius_mm", 6.204)
@@ -937,6 +1053,16 @@ class Pipeline(BasePipeline):
             if vol_ml < min_vol_ml:
                 labeled[comp_mask] = 0
                 continue
+
+            if conc_enabled:
+                comp_ct = ct_arr[comp_mask]
+                if comp_ct.size > 0:
+                    mean_hu = float(np.mean(comp_ct))
+                    air_frac = float(np.mean(comp_ct < conc_air_hu))
+                    if mean_hu < conc_min_hu or air_frac > conc_max_air:
+                        labeled[comp_mask] = 0
+                        n_rejected_concordance += 1
+                        continue
 
             comp_suv = suv_arr[comp_mask]
             suv_max = float(np.max(comp_suv))
@@ -965,6 +1091,9 @@ class Pipeline(BasePipeline):
         logger.info(
             "pet_ct_inference_complete",
             inference_method=inference_method,
+            suppression_method=suppression_method,
+            excluded_organs=excluded_organs,
+            rejected_non_concordant=n_rejected_concordance,
             threshold=round(threshold, 2),
             lesion_count=len(lesions),
             total_mtv=round(sum(x["volume_ml"] for x in lesions), 1),
@@ -972,6 +1101,9 @@ class Pipeline(BasePipeline):
 
         return {
             "lesions": lesions,
+            "suppression_method": suppression_method,
+            "excluded_organs": excluded_organs,
+            "rejected_non_concordant": n_rejected_concordance,
             "lesion_mask_array": (labeled > 0).astype(np.uint8),
             "suv_array": suv_arr,
             "ct_array": ct_arr if preprocessed.get("ct_nifti_path") else None,
@@ -1083,9 +1215,15 @@ class Pipeline(BasePipeline):
             }]
 
         inference_method = inference_output.get("inference_method", "threshold")
+        suppression_method = inference_output.get("suppression_method", "geometric")
+        excluded_organs = inference_output.get("excluded_organs", []) or []
+        rejected_non_concordant = int(inference_output.get("rejected_non_concordant", 0) or 0)
         diagnosis = _derive_diagnosis(lesions, deauville, percist_threshold)
         processing_notes = self._build_notes(
-            lesions, qa_flags, percist_threshold, deauville, inference_method
+            lesions, qa_flags, percist_threshold, deauville, inference_method,
+            suppression_method=suppression_method,
+            excluded_organs=excluded_organs,
+            rejected_non_concordant=rejected_non_concordant,
         )
 
         result = {
@@ -1163,6 +1301,9 @@ class Pipeline(BasePipeline):
         lesions: list[dict], qa_flags: list[str],
         threshold: float, deauville: int,
         inference_method: str = "threshold",
+        suppression_method: str = "geometric",
+        excluded_organs: list[str] | None = None,
+        rejected_non_concordant: int = 0,
     ) -> str:
         parts: list[str] = []
 
@@ -1172,6 +1313,24 @@ class Pipeline(BasePipeline):
             "threshold": "PERCIST SUV-threshold",
         }.get(inference_method, inference_method)
         parts.append(f"Detection method: {method_label}.")
+
+        # Physiologic-uptake suppression transparency (threshold detection only).
+        if "threshold" in inference_method:
+            if suppression_method == "totalsegmentator" and excluded_organs:
+                parts.append(
+                    "Physiologic suppression: anatomy-aware (TotalSegmentator) — excluded "
+                    + ", ".join(o.replace("_", " ") for o in excluded_organs) + "."
+                )
+            else:
+                parts.append(
+                    "Physiologic suppression: geometric brain/thyroid/bladder mask "
+                    "(CT organ segmentation unavailable)."
+                )
+            if rejected_non_concordant > 0:
+                parts.append(
+                    f"Rejected {rejected_non_concordant} focus/foci lacking a CT "
+                    "soft-tissue correlate (e.g. bowel gas)."
+                )
 
         if lesions:
             total_mtv = sum(x["volume_ml"] for x in lesions)

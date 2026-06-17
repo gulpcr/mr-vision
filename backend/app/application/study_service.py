@@ -60,10 +60,25 @@ class StudyService:
             except (ValueError, TypeError):
                 pass
 
+        # Patient demographics for reporting (PatientWeight in kg, PatientSize in m)
+        def _to_float(raw: Any) -> float | None:
+            try:
+                return float(raw) if raw not in (None, "") else None
+            except (ValueError, TypeError):
+                return None
+
+        weight_kg = _to_float(ext(study_meta, "PatientWeight"))
+        size_m = _to_float(ext(study_meta, "PatientSize"))
+        height_cm = round(size_m * 100.0, 1) if size_m else None
+
         study = Study(
             study_instance_uid=study_instance_uid,
             patient_id=ext(study_meta, "PatientID"),
             patient_name=ext(study_meta, "PatientName"),
+            patient_sex=ext(study_meta, "PatientSex"),
+            patient_age=ext(study_meta, "PatientAge"),
+            patient_weight_kg=weight_kg,
+            patient_height_cm=height_cm,
             study_date=study_date,
             study_description=ext(study_meta, "StudyDescription"),
             accession_number=ext(study_meta, "AccessionNumber"),

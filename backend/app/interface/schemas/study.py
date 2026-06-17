@@ -21,6 +21,10 @@ class StudyResponse(BaseModel):
     study_instance_uid: str
     patient_id: str | None = None
     patient_name: str | None = None
+    patient_sex: str | None = None
+    patient_age: str | None = None
+    patient_weight_kg: float | None = None
+    patient_height_cm: float | None = None
     study_date: datetime | None = None
     study_description: str | None = None
     accession_number: str | None = None

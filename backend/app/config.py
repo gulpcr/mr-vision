@@ -119,6 +119,12 @@ class Settings(BaseSettings):
     longitudinal_enabled: bool = False
     longitudinal_max_prior_studies: int = 5
 
+    # PET-CT Molecular Imaging report layout (renders the formal departmental
+    # FDG PET-CT report for the pet_ct / pet_ct_brain use cases).
+    report_institution_name: str = "DEPARTMENT OF MOLECULAR IMAGING"
+    report_signatory_primary: str = "Dr. Salman Habib"
+    report_signatory_secondary: str = "Dr. Saifullah Sethar"
+
     @property
     def database_url(self) -> str:
         return (

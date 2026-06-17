@@ -84,6 +84,11 @@ class OrthancPACSClient(PACSClient):
             "InstitutionName": "00080080",
             "PatientID": "00100020",
             "PatientName": "00100010",
+            "PatientSex": "00100040",
+            "PatientBirthDate": "00100030",
+            "PatientAge": "00101010",
+            "PatientWeight": "00101030",
+            "PatientSize": "00101020",
         }
         result: dict[str, Any] = {}
         all_tags = {**tags, **patient}

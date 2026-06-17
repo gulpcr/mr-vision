@@ -105,7 +105,12 @@
       "Bash(grep '\"\\\\/api\\\\/')",
       "Bash(docker-compose build *)",
       "Bash(docker-compose up *)",
-      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('Re-ingested:', d.get\\('study_instance_uid','ERR'\\)[:45]\\)\")"
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('Re-ingested:', d.get\\('study_instance_uid','ERR'\\)[:45]\\)\")",
+      "Bash(echo \"reload exit: $?\")",
+      "Bash(npx --version)",
+      "Bash(npm ls *)",
+      "Bash(grep -oE 'isNotLocalDevelopment[^;]{0,120}')",
+      "Bash(grep -rnA 25 \"def download_series_as_nifti\" backend/app/infrastructure/orthanc/client.py)"
     ]
   }
 }

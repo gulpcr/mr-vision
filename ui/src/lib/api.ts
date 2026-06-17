@@ -51,6 +51,10 @@ export interface Study {
   study_instance_uid: string;
   patient_id: string | null;
   patient_name: string | null;
+  patient_sex: string | null;
+  patient_age: string | null;
+  patient_weight_kg: number | null;
+  patient_height_cm: number | null;
   study_date: string | null;
   study_description: string | null;
   accession_number: string | null;
@@ -564,7 +568,18 @@ export const api = {
     get: (studyUid: string, usecase: string) =>
       fetchAPI<ComparisonData>(`/admin/studies/${studyUid}/prior-comparison/${usecase}`),
   },
+  fused: {
+    // Slice counts + default (max-uptake) slice per view for the interactive viewer.
+    meta: (studyUid: string, usecase: string) =>
+      fetchAPI<FusedMeta>(`/fused/${studyUid}/${usecase}/meta`),
+  },
 };
+
+export interface FusedMeta {
+  views: Record<"axial" | "coronal" | "sagittal", number>;
+  defaults: Record<"axial" | "coronal" | "sagittal", number>;
+  has_ct: boolean;
+}
 
 export function getFusedUrl(
   studyUid: string,
@@ -572,6 +587,16 @@ export function getFusedUrl(
   view: "axial" | "coronal" | "sagittal"
 ): string {
   return `${API_BASE}/fused/${studyUid}/${usecase}/${view}`;
+}
+
+// Fused PET/CT for a specific slice of a view — used by the interactive viewer.
+export function getFusedSliceUrl(
+  studyUid: string,
+  usecase: string,
+  view: "axial" | "coronal" | "sagittal",
+  slice: number
+): string {
+  return `${API_BASE}/fused/${studyUid}/${usecase}/${view}/${slice}`;
 }
 
 export function getArtifactUrl(
