@@ -579,6 +579,7 @@ export interface FusedMeta {
   views: Record<"axial" | "coronal" | "sagittal", number>;
   defaults: Record<"axial" | "coronal" | "sagittal", number>;
   has_ct: boolean;
+  has_lesions: boolean;
 }
 
 export function getFusedUrl(
@@ -590,13 +591,16 @@ export function getFusedUrl(
 }
 
 // Fused PET/CT for a specific slice of a view — used by the interactive viewer.
+// `showLesions` toggles the cyan detected-lesion contour overlay (included in
+// the URL so toggled views are cached independently).
 export function getFusedSliceUrl(
   studyUid: string,
   usecase: string,
   view: "axial" | "coronal" | "sagittal",
-  slice: number
+  slice: number,
+  showLesions: boolean = true
 ): string {
-  return `${API_BASE}/fused/${studyUid}/${usecase}/${view}/${slice}`;
+  return `${API_BASE}/fused/${studyUid}/${usecase}/${view}/${slice}?lesions=${showLesions}`;
 }
 
 export function getArtifactUrl(

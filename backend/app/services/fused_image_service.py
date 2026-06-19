@@ -74,6 +74,8 @@ def generate_fused_slice_fast(
     colormap: str = "hot",
     alpha: float = 0.65,
     out_size: int = 512,
+    mask_arr: np.ndarray | None = None,
+    show_lesions: bool = True,
 ) -> bytes:
     """Fast fused-slice PNG using numpy + PIL (no matplotlib figure).
 
@@ -82,6 +84,11 @@ def generate_fused_slice_fast(
     PET `colormap` overlay shown only above 20 % of the display SUV-max.
     Orientation matches the matplotlib renderer (transpose + vertical flip, i.e.
     origin='lower'). Display window (vmin/vmax) is passed in pre-computed.
+
+    When ``mask_arr`` (the detected-lesion segmentation, same grid as ``suv_arr``)
+    is supplied and ``show_lesions`` is True, the boundary of each detected lesion
+    is outlined in cyan so the user can distinguish *flagged* foci from raw
+    physiologic uptake in the hot colormap.
     """
     if view not in _VIEW_AXES:
         raise ValueError(f"view must be one of {VIEWS}, got {view!r}")
@@ -109,6 +116,16 @@ def generate_fused_slice_fast(
     threshold = suv_vmax * 0.20
     a = np.where(pet_sl >= threshold, alpha, 0.0).astype(np.float64)[..., None]
     out = rgb * (1.0 - a) + pet_rgb * a
+
+    # Outline detected lesions (same orientation transform as the SUV slice).
+    if show_lesions and mask_arr is not None and mask_arr.shape == suv_arr.shape:
+        mask_sl = np.flipud(_slice2d(mask_arr, axis, idx).T) > 0
+        if mask_sl.any():
+            from scipy import ndimage
+
+            boundary = mask_sl ^ ndimage.binary_erosion(mask_sl)
+            boundary = ndimage.binary_dilation(boundary)  # thicken for visibility
+            out[boundary] = np.array([0.0, 255.0, 255.0])  # cyan
 
     img = Image.fromarray(np.clip(out, 0, 255).astype(np.uint8), mode="RGB")
     if out_size and max(h, w) > 0 and max(h, w) < out_size:

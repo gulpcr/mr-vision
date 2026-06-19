@@ -94,6 +94,11 @@ export function MolecularReport({ study, result }: MolecularReportProps) {
     (grouped[sec] ||= []).push(l);
   }
 
+  const lowConfidence = summary.confidence === "low";
+  const confidenceReasons: string[] = Array.isArray(summary.confidence_reasons)
+    ? summary.confidence_reasons
+    : [];
+
   const Field = ({ label, value }: { label: string; value: string }) => (
     <div className="flex gap-1">
       <span className="font-bold whitespace-nowrap">{label}:</span>
@@ -116,6 +121,27 @@ export function MolecularReport({ study, result }: MolecularReportProps) {
 
       <div className="border border-gray-300 rounded-lg p-8 text-sm leading-relaxed print:border-0 print:p-0">
         <h1 className="text-center text-lg font-bold tracking-wide mb-3">{REPORT_INSTITUTION}</h1>
+
+        {lowConfidence && (
+          <div className="mb-4 rounded-md border-2 border-amber-500 bg-amber-50 px-4 py-3 print:border print:border-black">
+            <p className="font-bold text-amber-900 uppercase tracking-wide text-[13px]">
+              ⚠ Low-confidence result — interpret with caution
+            </p>
+            {summary.quantitative === false && (
+              <p className="text-amber-900 mt-1">
+                Quantitative SUV could not be calibrated; uptake values are relative,
+                not absolute SUV.
+              </p>
+            )}
+            {confidenceReasons.length > 0 && (
+              <ul className="list-disc pl-6 mt-1 text-amber-900 space-y-0.5">
+                {confidenceReasons.map((r, i) => (
+                  <li key={i}>{r}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
 
         {/* Patient table */}
         <div className="grid grid-cols-3 gap-x-6 gap-y-1 border border-gray-800 rounded p-3 mb-4">

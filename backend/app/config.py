@@ -45,11 +45,37 @@ class Settings(BaseSettings):
     celery_result_backend: str = "redis://redis:6379/1"
     celery_worker_concurrency: int = 2
 
+    # Job cancellation: signal sent to a running worker child when a job is
+    # stopped from the worklist. SIGTERM lets billiard reap the child and free
+    # GPU memory; switch to SIGKILL for an immediate hard stop if a pipeline is
+    # blocked in a long native/CUDA call and ignores SIGTERM.
+    job_cancel_signal: str = "SIGTERM"
+
     # GPU
     enable_gpu: bool = True
 
     # Site
     site_id: str = "default"
+
+    # Routing / auto-classification
+    # When True, a rule that declares region conditions (body parts / study or
+    # series description patterns) only matches a study that positively matches at
+    # least one of them — modality is necessary but NOT sufficient. This stops an
+    # MR study with sparse DICOM tags from routing to every MR use case. Set False
+    # for legacy OR-matching (modality OR any region condition).
+    routing_require_region_match: bool = True
+
+    # Viewer: hide non-diagnostic series (localizers, shim/calibration, field
+    # maps, scouts) from the OHIF series list by filtering the QIDO /series
+    # response. OHIF builds its thumbnails/viewports from whatever that query
+    # returns, so dropping a series here hides it everywhere; pixels/WADO are
+    # untouched. Matched on SeriesDescription by the regex below.
+    viewer_hide_nondiagnostic_series: bool = True
+    viewer_nondiagnostic_series_pattern: str = (
+        r"(?i)(\bshim|shimming|localiz|localis|\bscout\b|\bloc\b|3[\s-]?axis|"
+        r"3[\s-]?plane|\bsurvey\b|calibration|field\s*map|fieldmap|b0\s*map|"
+        r"b1\s*map|map\(|aascout|aahead|smartbrain|pre[\s_-]?scan)"
+    )
 
     # Auth
     api_key: str = ""

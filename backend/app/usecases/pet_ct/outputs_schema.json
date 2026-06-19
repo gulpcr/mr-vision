@@ -16,6 +16,9 @@
         "radiopharmaceutical": { "type": "string" },
         "percist_score":       { "type": ["string", "null"], "enum": ["CMR", "PMR", "SMD", "PMD", null] },
         "deauville_score":     { "type": ["integer", "null"], "minimum": 1, "maximum": 5 },
+        "quantitative":        { "type": "boolean" },
+        "confidence":          { "type": "string", "enum": ["standard", "low"] },
+        "confidence_reasons":  { "type": "array", "items": { "type": "string" } },
         "processing_notes":    { "type": "string" }
       }
     },

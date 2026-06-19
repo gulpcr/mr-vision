@@ -12,11 +12,14 @@ rules:
       - "(?i)neuro.*pet"
       - "(?i)dementia.*pet"
       - "(?i)alzheimer"
+    # NOTE: no generic PET/SUV/emission series patterns here. A bare "PET" series
+    # (e.g. "PET WB") is present on EVERY PET study, so using it as region evidence
+    # made whole-body PET/CT mis-route to the brain pipeline. Brain discrimination
+    # must come from body_part (BRAIN/HEAD) or a brain-specific study/series name.
     series_description_patterns:
-      - "(?i)pet"
-      - "(?i)suv"
-      - "(?i)emission"
-      - "(?i)ac.*pet"
+      - "(?i)brain"
+      - "(?i)amyloid"
+      - "(?i)tau"
     modality: PT
     priority: 20
     enabled: true

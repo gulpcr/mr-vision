@@ -80,10 +80,26 @@ async def _load_fused_volumes(service: "ResultService", study_uid: str, usecase:
             except Exception:
                 ct_arr = None
 
+            # Detected-lesion segmentation (same grid as the SUV volume), used to
+            # outline flagged foci over the fused image. Optional — absent for
+            # results that pre-date lesion-mask export or non-segmentation runs.
+            mask_arr = None
+            try:
+                mask_data = await service.get_artifact_data(study_uid, usecase, "lesion_mask")
+                mask_path = os.path.join(tmpdir, "lesion_mask.nii.gz")
+                with open(mask_path, "wb") as fh:
+                    fh.write(mask_data)
+                mask_arr = nib.load(mask_path).get_fdata().astype(np.uint8)
+                if mask_arr.shape != suv_arr.shape:
+                    mask_arr = None
+            except Exception:
+                mask_arr = None
+
         suv_vmin, suv_vmax = compute_suv_display_range(suv_arr)
         vols = {
             "suv": suv_arr,
             "ct": ct_arr,
+            "mask": mask_arr,
             "vmin": suv_vmin,
             "vmax": suv_vmax,
             "counts": {v: slice_count(suv_arr, v) for v in VIEWS},
@@ -444,6 +460,7 @@ async def get_fused_meta(
         "views": vols["counts"],
         "defaults": vols["defaults"],
         "has_ct": vols["ct"] is not None,
+        "has_lesions": vols.get("mask") is not None,
     }
 
 
@@ -454,8 +471,13 @@ async def get_fused_slice(
     view: str,
     slice_index: int,
     service: Annotated[ResultService, Depends(get_result_service)],
+    lesions: bool = True,
 ):
-    """Serve the fused PET/CT PNG for a specific slice of a view (interactive viewer)."""
+    """Serve the fused PET/CT PNG for a specific slice of a view (interactive viewer).
+
+    When ``lesions`` is true (default) and a lesion segmentation exists, detected
+    foci are outlined in cyan over the fused image.
+    """
     if view not in ("axial", "coronal", "sagittal"):
         raise HTTPException(400, "view must be axial, coronal, or sagittal")
 
@@ -464,7 +486,8 @@ async def get_fused_slice(
 
     try:
         png_bytes = generate_fused_slice_fast(
-            vols["suv"], vols["ct"], view, slice_index, vols["vmin"], vols["vmax"]
+            vols["suv"], vols["ct"], view, slice_index, vols["vmin"], vols["vmax"],
+            mask_arr=vols.get("mask"), show_lesions=lesions,
         )
     except Exception as exc:
         logger.error("fused_slice_failed", study_uid=study_uid, usecase=usecase, error=str(exc))

@@ -8,7 +8,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.application.study_service import StudyService
 from app.infrastructure.orthanc.client import OrthancPACSClient
 from app.application.job_orchestrator import JobOrchestrator
-from app.interface.api.dependencies import get_study_service, get_job_orchestrator, get_session
+from app.application.routing_service import RoutingService
+from app.interface.api.dependencies import (
+    get_study_service,
+    get_job_orchestrator,
+    get_routing_service,
+    get_session,
+)
 from app.interface.api.validators import validate_dicom_uid
 from app.interface.schemas.study import (
     OrthancStableStudyNotification,
@@ -57,6 +63,25 @@ async def get_study(
     if not study:
         raise HTTPException(status_code=404, detail=f"Study {study_uid} not found")
     return _to_response(study)
+
+
+@router.get("/{study_uid}/routing-preview")
+async def routing_preview(
+    study_uid: str,
+    service: Annotated[StudyService, Depends(get_study_service)],
+    routing: Annotated[RoutingService, Depends(get_routing_service)],
+):
+    """Dry-run auto-classification.
+
+    Returns the use cases that WOULD be matched for this study (priority-ordered),
+    plus every candidate with a per-use-case reason and the DICOM tags used — all
+    without creating any jobs. Useful for verifying routing rules before ingest.
+    """
+    validate_dicom_uid(study_uid)
+    study = await service.get_study(study_uid)
+    if not study:
+        raise HTTPException(status_code=404, detail=f"Study {study_uid} not found")
+    return routing.preview_routing(study, study.series or [])
 
 
 @router.post("", response_model=StudyResponse, status_code=201)

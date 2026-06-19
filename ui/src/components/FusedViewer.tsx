@@ -19,12 +19,14 @@ function FusedPane({
   view,
   count,
   defaultSlice,
+  showLesions,
 }: {
   studyUid: string;
   usecase: string;
   view: View;
   count: number;
   defaultSlice: number;
+  showLesions: boolean;
 }) {
   const [slice, setSlice] = useState(defaultSlice);
   const [imgLoading, setImgLoading] = useState(true);
@@ -51,16 +53,16 @@ function FusedPane({
       const i = slice + d;
       if (i >= 0 && i < count) {
         const im = new Image();
-        im.src = getFusedSliceUrl(studyUid, usecase, view, i);
+        im.src = getFusedSliceUrl(studyUid, usecase, view, i, showLesions);
       }
     }
-  }, [slice, count, studyUid, usecase, view]);
+  }, [slice, count, studyUid, usecase, view, showLesions]);
 
   useEffect(() => {
     setImgLoading(true);
-  }, [slice]);
+  }, [slice, showLesions]);
 
-  const src = getFusedSliceUrl(studyUid, usecase, view, slice);
+  const src = getFusedSliceUrl(studyUid, usecase, view, slice, showLesions);
 
   return (
     <div className="flex flex-col bg-black rounded-md overflow-hidden border border-gray-800">
@@ -133,6 +135,7 @@ export function FusedViewer({
 }) {
   const [meta, setMeta] = useState<FusedMeta | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [showLesions, setShowLesions] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
@@ -168,6 +171,22 @@ export function FusedViewer({
 
   return (
     <div className="bg-black p-3">
+      {meta.has_lesions && (
+        <div className="flex items-center justify-end mb-2 px-1">
+          <label className="inline-flex items-center gap-2 text-[12px] text-gray-300 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={showLesions}
+              onChange={(e) => setShowLesions(e.target.checked)}
+              className="accent-cyan-400 cursor-pointer"
+            />
+            <span className="inline-flex items-center gap-1">
+              Outline detected lesions
+              <span className="inline-block w-3 h-3 rounded-sm border-2 border-cyan-400" />
+            </span>
+          </label>
+        </div>
+      )}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
         {VIEWS.map((v) => (
           <FusedPane
@@ -177,12 +196,15 @@ export function FusedViewer({
             view={v}
             count={meta.views[v] ?? 1}
             defaultSlice={meta.defaults?.[v] ?? Math.floor((meta.views[v] ?? 1) / 2)}
+            showLesions={showLesions}
           />
         ))}
       </div>
       <p className="text-[11px] text-gray-500 mt-2 px-1">
-        CT anatomy with PET SUV hot-colormap overlay. Scroll (mouse wheel), drag the
-        slider, or use ◀ ▶ to move through slices in each plane independently.
+        CT anatomy with PET SUV hot-colormap overlay
+        {meta.has_lesions ? "; detected lesions outlined in cyan" : ""}. Scroll (mouse
+        wheel), drag the slider, or use ◀ ▶ to move through slices in each plane
+        independently.
       </p>
     </div>
   );

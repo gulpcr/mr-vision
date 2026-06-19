@@ -204,6 +204,7 @@ export default function WorklistPage() {
   const [runSuccess, setRunSuccess]     = useState<string | null>(null); // usecase name
   const [deletingStudy, setDeletingStudy] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [cancellingJob, setCancellingJob] = useState<string | null>(null);
 
   // Filters
   const [search, setSearch]                   = useState("");
@@ -301,6 +302,19 @@ export default function WorklistPage() {
       console.error("Job creation failed:", msg);
     } finally {
       setRunningAI(null);
+    }
+  };
+
+  const handleCancelJob = async (jobId: string) => {
+    setCancellingJob(jobId);
+    setJobError(null);
+    try {
+      await api.jobs.cancel(jobId);
+      await loadStudies();
+    } catch (e: any) {
+      setJobError(e.message || "Failed to stop job");
+    } finally {
+      setCancellingJob(null);
     }
   };
 
@@ -797,14 +811,23 @@ export default function WorklistPage() {
                                   {/* Stop — all active statuses */}
                                   {active && (
                                     <button
-                                      onClick={async (e) => {
+                                      onClick={(e) => {
                                         e.stopPropagation();
-                                        try { await api.jobs.cancel(job.id); await loadStudies(); } catch {}
+                                        handleCancelJob(job.id);
                                       }}
+                                      disabled={cancellingJob === job.id}
                                       title="Stop this job"
-                                      className="flex items-center gap-0.5 text-[10px] text-gray-500 hover:text-red-600 bg-gray-100 hover:bg-red-50 px-1.5 py-0.5 rounded-full transition-colors shrink-0"
+                                      className="flex items-center gap-0.5 text-[10px] text-gray-500 hover:text-red-600 bg-gray-100 hover:bg-red-50 px-1.5 py-0.5 rounded-full transition-colors shrink-0 disabled:opacity-60"
                                     >
-                                      <Square className="w-2.5 h-2.5" /> Stop
+                                      {cancellingJob === job.id ? (
+                                        <>
+                                          <RefreshCw className="w-2.5 h-2.5 animate-spin" /> Stopping…
+                                        </>
+                                      ) : (
+                                        <>
+                                          <Square className="w-2.5 h-2.5" /> Stop
+                                        </>
+                                      )}
                                     </button>
                                   )}
                                   {/* Retry — failed or cancelled */}

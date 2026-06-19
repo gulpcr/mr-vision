@@ -29,11 +29,15 @@ class RBACMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         path = request.url.path
 
-        # Always allow public paths, auth paths, internal paths, and CORS preflight
+        # Always allow public paths, auth paths, internal paths, and CORS preflight.
+        # /api/dicomweb/* is the OHIF series-list QIDO filter — it must be reachable
+        # by the viewer without our JWT, and exposes only data already served
+        # unauthenticated via the nginx /dicom-web route straight to Orthanc.
         if (
             path in PUBLIC_PATHS
             or path in INTERNAL_PATHS
             or path in AUTH_PATHS
+            or path.startswith("/api/dicomweb/")
             or request.method == "OPTIONS"
         ):
             request.state.user = "anonymous"

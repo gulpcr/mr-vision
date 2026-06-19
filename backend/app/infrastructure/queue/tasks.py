@@ -8,6 +8,7 @@ from typing import Any
 
 import structlog
 from celery import Task
+from celery.exceptions import SoftTimeLimitExceeded, Terminated
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -650,8 +651,35 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
         )
         raise  # Celery autoretry will catch and schedule
 
+    except (Terminated, SoftTimeLimitExceeded) as exc:
+        # The task was revoked (Stop button) or hit its time limit. This is a
+        # cancellation, not a failure — record it as CANCELLED and return so the
+        # generic handler below never marks the job FAILED.
+        logger.info("pipeline_terminated", job_id=job_id, reason=type(exc).__name__)
+        try:
+            session.rollback()
+            _update_job_status(
+                session, job_id, JobStatus.CANCELLED, progress=0.0,
+                message="Cancelled by user",
+            )
+        except Exception:
+            logger.warning("failed_to_mark_cancelled_on_terminate", job_id=job_id)
+        return {"job_id": job_id, "status": "cancelled"}
+
     except Exception as exc:
         error_detail = traceback.format_exc()
+
+        # If the job was cancelled while running, the kill can surface as a
+        # secondary error (closed PACS/DB connection mid-op). Do NOT overwrite
+        # the CANCELLED status with FAILED — honour the user's Stop request.
+        try:
+            session.rollback()
+            if _is_job_cancelled(session, job_id):
+                logger.info("pipeline_aborted_after_cancel", job_id=job_id, error=str(exc))
+                return {"job_id": job_id, "status": "cancelled"}
+        except Exception:
+            logger.warning("cancel_recheck_failed", job_id=job_id)
+
         logger.error(
             "pipeline_failed",
             job_id=job_id,

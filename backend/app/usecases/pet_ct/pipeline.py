@@ -957,7 +957,23 @@ class Pipeline(BasePipeline):
         suv_thresh_abs = cfg_inf.get("suv_threshold_absolute", 2.5)
         percist_factor = cfg_inf.get("percist_liver_factor", 1.5)
         percist_threshold = percist_factor * (liver_mean + 2.0 * liver_std)
-        threshold = suv_thresh_abs  # threshold value recorded regardless of method
+
+        # (A) Calibration guard. When patient weight / injected dose are absent the
+        # SUV NIfTI holds RELATIVE-normalised intensities (see _build_suv_nifti
+        # fallback), so the absolute SUV threshold is invalid and would flag a
+        # large fraction of the body. Fall back to the liver-relative PERCIST
+        # threshold (which adapts to the data's own scale) and mark the result
+        # non-quantitative downstream.
+        suv_params = preprocessed.get("suv_params", {})
+        suv_calibrated = _compute_suv_factor(suv_params) > 0
+        if not suv_calibrated and cfg_inf.get("uncalibrated_use_relative_threshold", True):
+            threshold = max(percist_threshold, 0.1)
+            logger.warning(
+                "suv_uncalibrated_relative_threshold",
+                relative_threshold=round(threshold, 3),
+            )
+        else:
+            threshold = suv_thresh_abs  # threshold value recorded regardless of method
 
         inference_method: str
         if self._model is not None:
@@ -1046,12 +1062,33 @@ class Pipeline(BasePipeline):
         min_vol_ml = cfg_inf.get("min_lesion_volume_ml", 1.2)
         sphere_r_mm = cfg_inf.get("suv_peak_sphere_radius_mm", 6.204)
 
+        # (B) Oversized-focus sanity bound. A single connected component bigger
+        # than this absolute volume — or this fraction of the whole imaged volume
+        # — is not a real lesion; it is diffuse uptake the suppression stages
+        # failed to break up. Drop it and count it for a QA flag.
+        max_lesion_ml = cfg_inf.get("max_lesion_volume_ml", 2000.0)
+        max_lesion_frac = cfg_inf.get("max_lesion_volume_fraction", 0.10)
+        total_volume_ml = float(suv_arr.size) * voxel_vol_ml
+        max_frac_ml = max_lesion_frac * total_volume_ml
+        n_rejected_oversize = 0
+
         lesions: list[dict[str, Any]] = []
         for comp_id in range(1, n_components + 1):
             comp_mask = (labeled == comp_id)
             vol_ml = float(np.sum(comp_mask)) * voxel_vol_ml
             if vol_ml < min_vol_ml:
                 labeled[comp_mask] = 0
+                continue
+
+            if vol_ml > max_lesion_ml or vol_ml > max_frac_ml:
+                labeled[comp_mask] = 0
+                n_rejected_oversize += 1
+                logger.warning(
+                    "oversized_focus_rejected",
+                    volume_ml=round(vol_ml, 1),
+                    max_lesion_ml=max_lesion_ml,
+                    max_fraction_ml=round(max_frac_ml, 1),
+                )
                 continue
 
             if conc_enabled:
@@ -1094,6 +1131,8 @@ class Pipeline(BasePipeline):
             suppression_method=suppression_method,
             excluded_organs=excluded_organs,
             rejected_non_concordant=n_rejected_concordance,
+            rejected_oversize=n_rejected_oversize,
+            suv_calibrated=suv_calibrated,
             threshold=round(threshold, 2),
             lesion_count=len(lesions),
             total_mtv=round(sum(x["volume_ml"] for x in lesions), 1),
@@ -1104,6 +1143,8 @@ class Pipeline(BasePipeline):
             "suppression_method": suppression_method,
             "excluded_organs": excluded_organs,
             "rejected_non_concordant": n_rejected_concordance,
+            "rejected_oversize": n_rejected_oversize,
+            "suv_calibrated": suv_calibrated,
             "lesion_mask_array": (labeled > 0).astype(np.uint8),
             "suv_array": suv_arr,
             "ct_array": ct_arr if preprocessed.get("ct_nifti_path") else None,
@@ -1143,6 +1184,9 @@ class Pipeline(BasePipeline):
         qa_flags: list[str] = list(inference_output.get("qa_flags", []))
         qa_details: dict[str, Any] = dict(inference_output.get("qa_details", {}))
         suv_params = inference_output.get("suv_params", {})
+        suv_calibrated = bool(inference_output.get("suv_calibrated", True))
+        n_rejected_oversize = int(inference_output.get("rejected_oversize", 0) or 0)
+        ct_available = ct_arr is not None
 
         total_mtv = round(sum(x["volume_ml"] for x in lesions), 2)
         total_tlg = round(sum(x["tlg"] for x in lesions), 2)
@@ -1150,6 +1194,33 @@ class Pipeline(BasePipeline):
         # Deauville: use the hottest lesion
         global_suv_max = max((x["suv_max"] for x in lesions), default=0.0)
         deauville = _deauville_score(global_suv_max, med_mean, liver_mean)
+
+        # (C) Result confidence. SUV-based reporting is only quantitative when the
+        # tracer dose / patient weight are present; without CT the physiologic
+        # suppression and concordance safeguards are degraded. Surface this so the
+        # UI/report can show it instead of a confident positive on weak data.
+        confidence_reasons: list[str] = []
+        if not suv_calibrated:
+            confidence_reasons.append(
+                "SUV not calibrated (missing patient weight / injected dose) — "
+                "displayed values are relative FDG intensities, not quantitative SUV"
+            )
+            if "suv_non_quantitative" not in qa_flags:
+                qa_flags.append("suv_non_quantitative")
+        if not ct_available:
+            confidence_reasons.append(
+                "CT unavailable — physiologic-uptake suppression and CT "
+                "concordance filtering were disabled"
+            )
+        if n_rejected_oversize > 0:
+            confidence_reasons.append(
+                f"{n_rejected_oversize} oversized focus/foci rejected as "
+                "non-physiologic diffuse uptake (not reported as lesions)"
+            )
+            if "oversized_lesion_rejected" not in qa_flags:
+                qa_flags.append("oversized_lesion_rejected")
+            qa_details["oversized_lesions_rejected"] = n_rejected_oversize
+        result_confidence = "low" if confidence_reasons else "standard"
 
         # PERCIST response categories require a prior scan.
         # At baseline, report descriptive status only.
@@ -1219,11 +1290,18 @@ class Pipeline(BasePipeline):
         excluded_organs = inference_output.get("excluded_organs", []) or []
         rejected_non_concordant = int(inference_output.get("rejected_non_concordant", 0) or 0)
         diagnosis = _derive_diagnosis(lesions, deauville, percist_threshold)
+        if not suv_calibrated:
+            diagnosis = (
+                "NON-QUANTITATIVE (uncalibrated SUV) — interpret uptake relatively, "
+                "not by absolute SUV. " + diagnosis
+            )
         processing_notes = self._build_notes(
             lesions, qa_flags, percist_threshold, deauville, inference_method,
             suppression_method=suppression_method,
             excluded_organs=excluded_organs,
             rejected_non_concordant=rejected_non_concordant,
+            suv_calibrated=suv_calibrated,
+            rejected_oversize=n_rejected_oversize,
         )
 
         result = {
@@ -1238,6 +1316,9 @@ class Pipeline(BasePipeline):
                 "deauville_score": deauville if lesions else None,
                 "diagnosis": diagnosis,
                 "inference_method": inference_method,
+                "quantitative": suv_calibrated,
+                "confidence": result_confidence,
+                "confidence_reasons": confidence_reasons,
                 "processing_notes": processing_notes,
             },
             "measurements": {
@@ -1304,8 +1385,17 @@ class Pipeline(BasePipeline):
         suppression_method: str = "geometric",
         excluded_organs: list[str] | None = None,
         rejected_non_concordant: int = 0,
+        suv_calibrated: bool = True,
+        rejected_oversize: int = 0,
     ) -> str:
         parts: list[str] = []
+
+        if not suv_calibrated:
+            parts.append(
+                "NON-QUANTITATIVE: SUV calibration unavailable — a relative "
+                "(liver-referenced) threshold was used and absolute SUV values "
+                "are not reliable."
+            )
 
         method_label = {
             "swin_unetr": "SwinUNETR deep-learning segmentation",
@@ -1313,6 +1403,12 @@ class Pipeline(BasePipeline):
             "threshold": "PERCIST SUV-threshold",
         }.get(inference_method, inference_method)
         parts.append(f"Detection method: {method_label}.")
+
+        if rejected_oversize > 0:
+            parts.append(
+                f"Rejected {rejected_oversize} oversized focus/foci exceeding the "
+                "single-lesion volume bound (diffuse uptake, not a discrete lesion)."
+            )
 
         # Physiologic-uptake suppression transparency (threshold detection only).
         if "threshold" in inference_method:

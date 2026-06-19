@@ -22,7 +22,20 @@ inference:
   # Fallback PERCIST threshold params (used when custom_pet_weights_path is null)
   percist_liver_factor: 1.5
   suv_threshold_absolute: 2.5
+  # When SUV calibration is absent (no patient weight / injected dose in the PET
+  # DICOM header), pixel values are RELATIVE-normalised intensities — not true
+  # SUV — so the absolute SUV threshold above is meaningless and lights up a
+  # large fraction of the body. In that case detection switches to the
+  # liver-relative PERCIST threshold and the result is flagged non-quantitative.
+  uncalibrated_use_relative_threshold: true
   min_lesion_volume_ml: 1.2
+  # Upper sanity bound: a single connected focus larger than max_lesion_volume_ml
+  # OR larger than max_lesion_volume_fraction of the whole imaged volume is not a
+  # plausible lesion — it means the suppression stages failed to break up diffuse
+  # uptake (typical of uncalibrated data with no CT). Such foci are dropped and a
+  # QA flag is raised rather than reported as a giant "tumour".
+  max_lesion_volume_ml: 2000.0
+  max_lesion_volume_fraction: 0.10
   suv_peak_sphere_radius_mm: 6.204
 
   # ── Physiologic FDG suppression (reduces false positives from normal uptake) ──

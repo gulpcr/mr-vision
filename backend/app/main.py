@@ -20,6 +20,7 @@ from app.interface.api.results import router as results_router
 from app.interface.api.studies import orthanc_router, router as studies_router
 from app.interface.api.usecases import router as usecases_router
 from app.interface.api.critical_alerts import router as critical_alerts_router
+from app.interface.api.dicomweb import router as dicomweb_router
 from app.interface.api.ws import router as ws_router
 from app.interface.middleware.auth import RBACMiddleware
 
@@ -92,6 +93,7 @@ def create_app() -> FastAPI:
     app.include_router(orthanc_router, prefix="/api")
     app.include_router(reports_router, prefix="/api")
     app.include_router(critical_alerts_router, prefix="/api")
+    app.include_router(dicomweb_router, prefix="/api")
     app.include_router(ws_router)
 
     # Prometheus metrics

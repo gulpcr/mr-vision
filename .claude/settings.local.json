@@ -110,7 +110,12 @@
       "Bash(npx --version)",
       "Bash(npm ls *)",
       "Bash(grep -oE 'isNotLocalDevelopment[^;]{0,120}')",
-      "Bash(grep -rnA 25 \"def download_series_as_nifti\" backend/app/infrastructure/orthanc/client.py)"
+      "Bash(grep -rnA 25 \"def download_series_as_nifti\" backend/app/infrastructure/orthanc/client.py)",
+      "Bash(python3 -c \"import json;m=json.load\\(open\\('meta.json'\\)\\);print\\('counts',m['views'],'defaults',m['defaults'],'has_ct',m['has_ct']\\)\")",
+      "Bash(python3 -c \"import json;m=json.load\\(open\\('meta.json'\\)\\);print\\(m['views']['coronal']//2\\)\")",
+      "Bash(grep -i \"volume\\\\|\\\\./\\\\|app:\")",
+      "Bash(cd /c/sistems/projects/MR_Computer-Visuion)",
+      "Bash(docker restart *)"
     ]
   }
 }

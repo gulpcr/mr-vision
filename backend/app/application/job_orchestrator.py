@@ -146,10 +146,17 @@ class JobOrchestrator:
         job.status_message = "Cancelled by user"
         await self._job_repo.update(job)
 
-        # Revoke Celery task
+        # Revoke the Celery task. terminate=True kills the worker child if the
+        # task is already running; if it is still queued, the task id is added to
+        # the workers' revoked set so it is discarded when picked up. The DB is
+        # already marked CANCELLED above, so the task's own cancellation checks
+        # (and the revoked set) ensure it never produces a result.
         try:
+            from app.config import get_settings
             from app.infrastructure.queue.celery_app import celery_app
-            celery_app.control.revoke(job_id, terminate=True, signal="SIGTERM")
+
+            signal = get_settings().job_cancel_signal
+            celery_app.control.revoke(job_id, terminate=True, signal=signal)
         except Exception as exc:
             logger.warning("celery_revoke_failed", job_id=job_id, error=str(exc))
 
