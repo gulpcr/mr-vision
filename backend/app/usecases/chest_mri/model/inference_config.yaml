@@ -19,6 +19,22 @@ preprocessing:
   intensity_normalization: z_score
   crop_to_nonzero: true
 
+  # ── MR intensity-inhomogeneity (bias field) correction ──────────────────────
+  # MR surface-coil shading biases TotalSegmentator's lung boundary and therefore
+  # the left/right lung VOLUMES. A denoising prefilter is applied FIRST (it
+  # stabilises the N4 b-spline fit against noise), then N4 bias-field correction,
+  # then the existing resample + z-score normalisation. Applied to the input
+  # image only — it does not alter the segmentation label logic, and any failure
+  # falls back to the uncorrected image so the lung workflow is never broken.
+  bias_field_correction:
+    enabled: true
+    prefilter: curvature_flow      # "curvature_flow" | "median" | "none"
+    prefilter_iterations: 5
+    prefilter_timestep: 0.0625
+    shrink_factor: 4               # downsample for the N4 fit (speed); 1 = full res
+    n4_iterations: [50, 50, 50, 50]
+    n4_fitting_levels: 4
+
 postprocessing:
   label_map:
     0: background
@@ -50,3 +66,40 @@ swin_unetr:
   overlap: 0.5
   mode: gaussian
   threshold: 0.5
+
+# ── (Problem B) Supplementary cardiac model ───────────────────────────────────
+# Optional dedicated cardiac segmentation that OVERRIDES only the heart label
+# (3) in the final map, leaving the TotalSegmentator lung/aorta segmentation
+# untouched (so the lung volume workflow is unaffected). Inert while
+# custom_weights_path is null — the whole-heart TotalSegmentator label is then
+# used as before. Provide a SwinUNETR .pt (e.g. an nnU-Net-derived cardiac model
+# exported to a state_dict) to activate.
+cardiac_model:
+  custom_weights_path: null
+  in_channels: 1
+  out_channels: 2             # background + heart
+  feature_size: 48
+  use_checkpoint: false
+  roi_size: [96, 96, 96]
+  sw_batch_size: 1
+  overlap: 0.5
+  mode: gaussian
+
+# ── (Problem C) Dedicated lesion detection ────────────────────────────────────
+# Optional, strictly modular lesion-detection model. Inert while
+# custom_weights_path is null: the pipeline then performs ONLY lung-volume
+# asymmetry screening (reported as lung_volume_asymmetry, NOT as a detected
+# lesion). When weights are supplied, a binary lesion mask is produced and
+# lesion_detected reflects the model output, with a lesion_mask.nii.gz artifact.
+lesion_detection:
+  custom_weights_path: null
+  in_channels: 1
+  out_channels: 2             # background + lesion
+  feature_size: 48
+  use_checkpoint: false
+  roi_size: [96, 96, 96]
+  sw_batch_size: 1
+  overlap: 0.5
+  mode: gaussian
+  threshold: 0.5
+  min_lesion_volume_ml: 0.5

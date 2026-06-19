@@ -13,6 +13,21 @@
           "items": { "type": "string" },
           "description": "List of vertebral levels covered by the scan, e.g. [\"C3\",\"C4\",\"L1\"]"
         },
+        "levels_source": {
+          "type": "string",
+          "enum": ["spinenet", "totalsegmentator_identified", "disc_count_heuristic"]
+        },
+        "disc_grading_available": { "type": "boolean" },
+        "disc_gradings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["level"],
+            "properties": { "level": { "type": "string" } },
+            "additionalProperties": { "type": "integer" },
+            "description": "SpineNet per-disc grades (pfirrmann, narrowing, herniation, etc.)"
+          }
+        },
         "stenosis_suspected": { "type": "boolean" },
         "cord_compression_suspected": { "type": "boolean" },
         "segmentation_labels": {
@@ -34,6 +49,14 @@
         "canal_area_mm2": { "type": "number", "minimum": 0 },
         "cord_area_mm2": { "type": "number", "minimum": 0 },
         "vertebra_count": { "type": "integer", "minimum": 0 },
+        "vertebra_levels_detected": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "disc_gradings": {
+          "type": "array",
+          "items": { "type": "object" }
+        },
         "voxel_spacing_mm": {
           "type": "array",
           "items": { "type": "number" }

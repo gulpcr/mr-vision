@@ -585,6 +585,206 @@ class Pipeline(BasePipeline):
                     error=str(exc),
                 )
 
+        # AutoPET3 (nnU-Net v2) tier — only when no SwinUNETR model is loaded.
+        self._nnunet_predictor = None
+        if self._model is None:
+            nnunet_dir = self._cfg.get("model", {}).get("custom_pet_nnunet_dir")
+            if nnunet_dir:
+                try:
+                    self._load_nnunet_model(nnunet_dir)
+                except Exception as exc:
+                    logger.warning(
+                        "autopet3_nnunet_load_failed_using_threshold",
+                        nnunet_dir=nnunet_dir,
+                        error=str(exc),
+                    )
+
+    def _load_nnunet_model(self, model_dir: str) -> None:
+        """Load an AutoPET3 / nnU-Netv2 trained-model folder via nnUNetPredictor."""
+        import torch
+        from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor
+
+        model_cfg = self._cfg.get("model", {})
+        folds = tuple(model_cfg.get("nnunet_folds", [0]))
+        checkpoint = model_cfg.get("nnunet_checkpoint", "checkpoint_final.pth")
+
+        device_str = self._cfg.get("inference", {}).get("device", "auto")
+        if device_str == "auto":
+            device_str = "cuda" if torch.cuda.is_available() else "cpu"
+
+        predictor = nnUNetPredictor(device=torch.device(device_str), allow_tqdm=False)
+        predictor.initialize_from_trained_model_folder(
+            model_dir, use_folds=folds, checkpoint_name=checkpoint
+        )
+        self._nnunet_predictor = predictor
+        self._model_version = f"pet_ct_autopet3_nnunet_{Path(model_dir).name}"
+        self._model_checksum = "nnunet_model_dir"
+        logger.info(
+            "autopet3_nnunet_loaded", nnunet_dir=model_dir, folds=folds, device=device_str
+        )
+
+    def _run_nnunet_inference(
+        self,
+        suv_arr: np.ndarray,
+        ct_arr: np.ndarray | None,
+        voxel_spacing: tuple[float, float, float],
+    ) -> np.ndarray:
+        """AutoPET3 nnU-Net sliding-window inference → binary lesion mask (int32).
+
+        Channels are stacked in the configured order (AutoPET default CT, PET).
+        Wrapped by the caller in try/except → PERCIST fallback, so a spacing/
+        channel mismatch degrades safely rather than crashing the pipeline.
+        """
+        model_cfg = self._cfg.get("model", {})
+        order = list(model_cfg.get("nnunet_channel_order", ["ct", "pet"]))
+
+        channels: list[np.ndarray] = []
+        for ch in order:
+            if ch == "pet":
+                channels.append(suv_arr.astype(np.float32))
+            elif ch == "ct":
+                if ct_arr is None:
+                    raise ValueError("AutoPET3 nnU-Net needs a CT channel but no CT is available")
+                channels.append(ct_arr.astype(np.float32))
+            else:
+                raise ValueError(f"unknown nnunet channel '{ch}'")
+
+        vol = np.stack(channels, axis=0)  # (C, X, Y, Z)
+        props = {"spacing": [float(s) for s in voxel_spacing]}
+        seg = self._nnunet_predictor.predict_single_npy_array(vol, props, None, None, False)
+        return (np.asarray(seg) > 0).astype(np.int32)
+
+    @staticmethod
+    def _resolve_autopet3_model_folder(model_dir: str | None) -> str | None:
+        """Resolve the nnU-Net MODEL_FOLDER (the dir containing fold_X subdirs).
+
+        Accepts either the model folder itself or a parent (e.g. the download
+        target /model_cache/autopet3, under which the zip extracted a nested
+        folder). Searches a couple of levels down. Returns the path or None.
+        """
+        if not model_dir:
+            return None
+        root = Path(model_dir)
+        if not root.exists():
+            return None
+
+        def has_folds(p: Path) -> bool:
+            return any((p / f"fold_{x}").is_dir() for x in (0, 1, 2, 3, 4, "all"))
+
+        if has_folds(root):
+            return str(root)
+        # Breadth-limited search (download targets are small dirs).
+        for depth1 in (d for d in root.iterdir() if d.is_dir()):
+            if has_folds(depth1):
+                return str(depth1)
+            for depth2 in (d for d in depth1.iterdir() if d.is_dir()):
+                if has_folds(depth2):
+                    return str(depth2)
+        return None
+
+    def _run_autopet3(
+        self,
+        suv_arr: np.ndarray,
+        ct_arr: np.ndarray | None,
+        affine: np.ndarray,
+        working_dir: str,
+    ) -> np.ndarray | None:
+        """AutoPET3 (Team LesionTracer) lesion segmentation via isolated subprocess.
+
+        Writes CT (_0000) + SUV (_0001) NIfTIs, invokes
+        scripts/run_autopet3_predict.py (which loads the autopet3 nnU-Net fork in
+        its own process), and reads back the lesion mask. Returns an int32 mask or
+        None on any failure / missing prerequisite so the caller falls back.
+
+        Requires CT — the AutoPET3 model is a 2-channel [CT, PET] model.
+        """
+        import subprocess
+        import sys
+
+        cfg = self._cfg.get("model", {}).get("autopet3", {})
+        if not cfg.get("enabled", False):
+            return None
+        model_dir = self._resolve_autopet3_model_folder(cfg.get("model_dir"))
+        if model_dir is None:
+            logger.warning("autopet3_model_dir_unresolved", configured=cfg.get("model_dir"))
+            return None
+        if ct_arr is None:
+            logger.warning("autopet3_requires_ct_skipping")
+            return None
+
+        backend_root = Path(__file__).resolve().parents[3]
+        fork_path = cfg.get("fork_path") or str(backend_root / "external" / "autopet3")
+        if not Path(fork_path).exists():
+            logger.warning("autopet3_fork_missing", fork_path=fork_path)
+            return None
+        runner = backend_root / "scripts" / "run_autopet3_predict.py"
+        if not runner.exists():
+            logger.warning("autopet3_runner_missing", runner=str(runner))
+            return None
+
+        in_dir = os.path.join(working_dir, "autopet3_in")
+        out_dir = os.path.join(working_dir, "autopet3_out")
+        os.makedirs(in_dir, exist_ok=True)
+        os.makedirs(out_dir, exist_ok=True)
+
+        # nnU-Net channel convention: CT = _0000, PET (SUV) = _0001.
+        nib.save(nib.Nifti1Image(ct_arr.astype(np.float32), affine),
+                 os.path.join(in_dir, "case_0000.nii.gz"))
+        nib.save(nib.Nifti1Image(suv_arr.astype(np.float32), affine),
+                 os.path.join(in_dir, "case_0001.nii.gz"))
+
+        try:
+            import torch
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        except Exception:
+            device = "cpu"
+
+        python_exe = cfg.get("python_executable") or sys.executable
+        folds = ",".join(str(f) for f in cfg.get("folds", [0, 1, 2, 3, 4]))
+        cmd = [
+            python_exe, str(runner),
+            "--input", in_dir,
+            "--output", out_dir,
+            "--model", str(model_dir),
+            "--fork", fork_path,
+            "--folds", folds,
+            "--checkpoint", cfg.get("checkpoint_name", "checkpoint_final.pth"),
+            "--device", device,
+        ]
+        logger.info("autopet3_subprocess_start", device=device, folds=folds, model_dir=model_dir)
+        try:
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True,
+                timeout=int(cfg.get("timeout_sec", 3600)),
+            )
+        except Exception as exc:
+            logger.warning("autopet3_subprocess_error", error=str(exc))
+            return None
+        if proc.returncode != 0:
+            logger.warning(
+                "autopet3_subprocess_failed",
+                returncode=proc.returncode,
+                stderr=(proc.stderr or "")[-1500:],
+            )
+            return None
+
+        # nnU-Net names the output after the input case → case.nii.gz
+        out_path = os.path.join(out_dir, "case.nii.gz")
+        if not os.path.exists(out_path):
+            candidates = [f for f in os.listdir(out_dir) if f.endswith(".nii.gz")]
+            if not candidates:
+                logger.warning("autopet3_no_output_produced", out_dir=out_dir)
+                return None
+            out_path = os.path.join(out_dir, candidates[0])
+
+        seg = nib.load(out_path).get_fdata()
+        lesion_label = cfg.get("lesion_label", 1)
+        mask = (np.rint(seg) == int(lesion_label)) if lesion_label is not None else (seg > 0)
+        self._model_version = f"pet_ct_autopet3_lesiontracer_{Path(str(model_dir)).name}"
+        self._model_checksum = "autopet3_modelfolder"
+        logger.info("autopet3_complete", lesion_voxels=int(mask.sum()))
+        return mask.astype(np.int32)
+
     # ── DL model management ──────────────────────────────────────────────────
 
     def _load_model(self, weights_path: str) -> None:
@@ -975,8 +1175,29 @@ class Pipeline(BasePipeline):
         else:
             threshold = suv_thresh_abs  # threshold value recorded regardless of method
 
-        inference_method: str
-        if self._model is not None:
+        # DL tier precedence: AutoPET3 (isolated subprocess) → SwinUNETR
+        # (in-process) → generic nnU-Net (in-process) → PERCIST threshold.
+        inference_method: str | None = None
+        raw_mask = None
+
+        autopet3_cfg = self._cfg.get("model", {}).get("autopet3", {})
+        if autopet3_cfg.get("enabled", False) and autopet3_cfg.get("model_dir"):
+            try:
+                logger.info("autopet3_inference_start")
+                m = self._run_autopet3(suv_arr, ct_arr, affine, working_dir)
+                if m is not None and m.shape == suv_arr.shape:
+                    raw_mask = m
+                    inference_method = "autopet3"
+                    logger.info("autopet3_inference_complete", raw_lesion_voxels=int(raw_mask.sum()))
+                elif m is not None:
+                    logger.warning(
+                        "autopet3_shape_mismatch",
+                        got=tuple(m.shape), expected=tuple(suv_arr.shape),
+                    )
+            except Exception as exc:
+                logger.warning("autopet3_failed_falling_back", error=str(exc))
+
+        if raw_mask is None and self._model is not None:
             try:
                 logger.info(
                     "dl_lesion_inference_start",
@@ -996,7 +1217,20 @@ class Pipeline(BasePipeline):
                 )
                 raw_mask = (suv_arr >= threshold).astype(np.int32)
                 inference_method = "threshold_fallback"
-        else:
+        elif raw_mask is None and self._nnunet_predictor is not None:
+            try:
+                logger.info("nnunet_inference_start", model_version=self._model_version)
+                raw_mask = self._run_nnunet_inference(suv_arr, ct_arr, voxel_spacing)
+                inference_method = "nnunet"
+                # generic in-process nnU-Net glue (channel order / spacing
+                # orientation) requires on-site validation; surface that.
+                preprocessed.setdefault("qa_flags", []).append("dl_nnunet_unvalidated")
+                logger.info("nnunet_inference_complete", raw_lesion_voxels=int(raw_mask.sum()))
+            except Exception as exc:
+                logger.warning("nnunet_failed_falling_back_to_threshold", error=str(exc))
+                raw_mask = (suv_arr >= threshold).astype(np.int32)
+                inference_method = "threshold_fallback"
+        elif raw_mask is None:
             logger.info(
                 "suv_threshold",
                 liver_mean=round(liver_mean, 3),
@@ -1398,11 +1632,18 @@ class Pipeline(BasePipeline):
             )
 
         method_label = {
+            "autopet3": "AutoPET3 (Team LesionTracer) nnU-Net deep-learning segmentation",
             "swin_unetr": "SwinUNETR deep-learning segmentation",
+            "nnunet": "nnU-Net deep-learning segmentation",
             "threshold_fallback": "PERCIST SUV-threshold (DL fallback)",
             "threshold": "PERCIST SUV-threshold",
         }.get(inference_method, inference_method)
         parts.append(f"Detection method: {method_label}.")
+        if inference_method == "nnunet":
+            parts.append(
+                "nnU-Net output is pending on-site validation "
+                "(channel order / spacing orientation) — verify before clinical use."
+            )
 
         if rejected_oversize > 0:
             parts.append(

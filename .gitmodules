@@ -1,0 +1,6 @@
+[submodule "external/spinenet"]
+	path = backend/external/spinenet
+	url = https://github.com/rwindsor1/SpineNet
+[submodule "external/autopet3"]
+	path = backend/external/autopet3
+	url = https://github.com/MIC-DKFZ/autopet-3-submission

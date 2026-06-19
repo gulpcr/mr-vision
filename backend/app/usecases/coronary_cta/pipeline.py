@@ -138,6 +138,7 @@ def _compute_agatston(
     hu_arr: np.ndarray,
     voxel_spacing_mm: tuple[float, float, float],
     cfg: dict,
+    roi: np.ndarray | None = None,
 ) -> dict[str, Any]:
     """Compute the Agatston coronary-calcium score over axial slices.
 
@@ -145,6 +146,11 @@ def _compute_agatston(
     within the cardiac ROI, weights each by peak HU, and scales the total by
     actual/reference slice thickness. Returns the score, calcium volume, lesion
     count, and a binary calcium mask.
+
+    ``roi`` is an optional boolean array (True = inside the cardiac ROI) aligned
+    with ``hu_arr``; when omitted the heuristic bounding box is used. The
+    detection threshold, weighting, and thickness correction are identical
+    regardless of which ROI is supplied — only the spatial restriction changes.
     """
     hu_threshold = cfg.get("hu_threshold", 130)
     min_area_mm2 = cfg.get("min_lesion_area_mm2", 1.0)
@@ -154,7 +160,8 @@ def _compute_agatston(
     pixel_area_mm2 = sx * sy
     voxel_vol_mm3 = sx * sy * sz
 
-    roi = _build_cardiac_roi(hu_arr.shape, cfg)
+    if roi is None:
+        roi = _build_cardiac_roi(hu_arr.shape, cfg)
     candidate = (hu_arr >= hu_threshold) & roi
 
     calcium_mask = np.zeros(hu_arr.shape, dtype=np.uint8)
@@ -334,6 +341,80 @@ class Pipeline(BasePipeline):
         """
         raise NotImplementedError("coronary lumen segmentation / stenosis grading not yet implemented")
 
+    # ── Cardiac ROI (TotalSegmentator heart mask) ─────────────────────────────
+
+    def _run_heart_roi_totalseg(
+        self,
+        calcium_nifti_path: str,
+        hu_shape: tuple[int, int, int],
+        voxel_spacing_mm: tuple[float, float, float],
+        working_dir: str,
+        cfg: dict,
+    ) -> np.ndarray | None:
+        """Build the Agatston cardiac ROI from a TotalSegmentator `heart` mask.
+
+        Runs TotalSegmentator on the non-contrast calcium CT (same grid as the
+        Agatston HU array), loads the `heart` label, and dilates it outward by
+        ``heart_roi_dilate_mm`` so the epicardial coronary arteries — which sit
+        just outside the cardiac silhouette — fall inside the ROI.
+
+        Returns a boolean array aligned with ``hu_shape`` (True = inside ROI),
+        or None on any failure so the caller falls back to the heuristic box.
+        Mirrors the TotalSegmentator usage already proven in the pet_ct pipeline.
+        """
+        from totalsegmentator.python_api import totalsegmentator as ts_run
+
+        import torch
+
+        task = cfg.get("totalseg_task", "total")
+        device = "gpu" if torch.cuda.is_available() else "cpu"
+        ts_out = os.path.join(working_dir, "ccta_heart_seg")
+        os.makedirs(ts_out, exist_ok=True)
+
+        logger.info("heart_roi_totalseg_start", task=task, device=device)
+        ts_run(
+            input=Path(calcium_nifti_path),
+            output=Path(ts_out),
+            task=task,
+            device=device,
+            quiet=True,
+            roi_subset=["heart"],
+        )
+
+        heart_path = os.path.join(ts_out, "heart.nii.gz")
+        if not os.path.exists(heart_path):
+            logger.warning("heart_roi_mask_missing", path=heart_path)
+            return None
+
+        heart_mask = nib.load(heart_path).get_fdata() > 0.5
+        if heart_mask.shape != tuple(hu_shape):
+            logger.warning(
+                "heart_roi_shape_mismatch",
+                heart_shape=tuple(heart_mask.shape),
+                hu_shape=tuple(hu_shape),
+            )
+            return None
+        if not heart_mask.any():
+            logger.warning("heart_roi_empty")
+            return None
+
+        # Dilate outward to include epicardial coronaries. Convert the mm margin
+        # to in-plane voxels (axial calcium scoring is dominated by in-plane
+        # geometry); guard against degenerate spacing.
+        dilate_mm = float(cfg.get("heart_roi_dilate_mm", 8.0))
+        in_plane_spacing = max(float(voxel_spacing_mm[0]), 0.1)
+        iterations = int(round(dilate_mm / in_plane_spacing))
+        if iterations > 0:
+            heart_mask = ndimage.binary_dilation(heart_mask, iterations=iterations)
+
+        logger.info(
+            "heart_roi_totalseg_complete",
+            roi_voxels=int(heart_mask.sum()),
+            dilate_mm=dilate_mm,
+            dilate_iterations=iterations,
+        )
+        return heart_mask
+
     # ── Series classification ─────────────────────────────────────────────────
 
     def _classify_series(self, series: list[Series]) -> dict[str, Series | None]:
@@ -498,14 +579,36 @@ class Pipeline(BasePipeline):
                 qa_flags.append("insufficient_coverage")
                 qa_details["calcium_dimensions"] = list(hu_arr.shape)
 
-            agatston = _compute_agatston(hu_arr, voxel_spacing, calcium_cfg)
-            # Heuristic ROI always flags as approximate (no learned heart mask).
-            qa_flags.append("calcium_roi_approximate")
-            qa_details["calcium_roi_method"] = "heuristic_bbox"
+            # Prefer an anatomy-aware TotalSegmentator heart-mask ROI; fall back
+            # to the heuristic bounding box on any failure (preserving prior
+            # behaviour). The Agatston math is identical for both ROIs.
+            heart_roi = None
+            if calcium_cfg.get("use_totalseg_heart_roi", True):
+                try:
+                    heart_roi = self._run_heart_roi_totalseg(
+                        preprocessed["calcium_nifti_path"],
+                        hu_arr.shape,
+                        voxel_spacing,
+                        working_dir,
+                        calcium_cfg,
+                    )
+                except Exception as exc:
+                    logger.warning("heart_roi_totalseg_failed_using_bbox", error=str(exc))
+                    heart_roi = None
+
+            agatston = _compute_agatston(hu_arr, voxel_spacing, calcium_cfg, roi=heart_roi)
+            if heart_roi is not None:
+                qa_details["calcium_roi_method"] = "totalseg_heart_mask"
+                qa_details["calcium_roi_dilate_mm"] = calcium_cfg.get("heart_roi_dilate_mm", 8.0)
+            else:
+                # Heuristic ROI — flag as approximate (no learned heart mask).
+                qa_flags.append("calcium_roi_approximate")
+                qa_details["calcium_roi_method"] = "heuristic_bbox"
             logger.info(
                 "agatston_complete",
                 score=agatston["agatston_score"],
                 lesions=agatston["lesion_count"],
+                roi_method=qa_details["calcium_roi_method"],
             )
 
         # ── DL stenosis (stub → fallback) ─────────────────────────────────────
@@ -576,7 +679,8 @@ class Pipeline(BasePipeline):
 
         diagnosis = self._derive_diagnosis(score, category, stenosis_available, cad_rads)
         processing_notes = self._build_notes(
-            score, category, inference_method, qa_flags, max_stenosis_pct
+            score, category, inference_method, qa_flags, max_stenosis_pct,
+            roi_method=qa_details.get("calcium_roi_method"),
         )
 
         artifacts: list[dict] = []
@@ -686,6 +790,7 @@ class Pipeline(BasePipeline):
         inference_method: str,
         qa_flags: list[str],
         max_stenosis_pct: float | None,
+        roi_method: str | None = None,
     ) -> str:
         parts: list[str] = []
         method_label = {
@@ -702,7 +807,14 @@ class Pipeline(BasePipeline):
         else:
             parts.append(f"Agatston {score:.0f} ({category}).")
 
-        if "calcium_roi_approximate" in qa_flags:
+        if roi_method == "totalseg_heart_mask":
+            parts.append(
+                "Calcium detection was restricted to a TotalSegmentator heart mask "
+                "(dilated to include epicardial coronaries), excluding most non-coronary "
+                "calcium. Per-vessel attribution still requires a learned coronary "
+                "territory map and is not reported."
+            )
+        elif "calcium_roi_approximate" in qa_flags:
             parts.append(
                 "Calcium detection used a heuristic cardiac bounding box rather than a "
                 "learned heart mask; per-vessel attribution is not available and the score "

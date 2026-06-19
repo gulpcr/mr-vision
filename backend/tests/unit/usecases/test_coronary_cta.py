@@ -146,3 +146,46 @@ class TestComputeAgatston:
         assert res["agatston_score"] == 0.0
         assert res["calcium_volume_mm3"] == 0.0
         assert res["calcium_mask"].sum() == 0
+
+
+# ── _compute_agatston with an injected (heart-mask) ROI ─────────────────────────
+
+class TestComputeAgatstonWithExplicitRoi:
+    """The TotalSegmentator heart-mask path supplies a precomputed boolean ROI.
+
+    The scoring math must be identical to the heuristic-box path — only the
+    spatial restriction changes.
+    """
+
+    def test_explicit_roi_includes_lesion(self):
+        vol = _empty_volume()
+        # Lesion in a corner that the heuristic central box would EXCLUDE...
+        _place_lesion(vol, x0=2, y0=2, z=20, size=3, hu=250.0)
+        # ...but an explicit ROI covering that corner includes it.
+        roi = np.zeros(SHAPE, dtype=bool)
+        roi[0:10, 0:10, :] = True
+
+        res = _compute_agatston(vol, SPACING, CFG, roi=roi)
+        assert res["lesion_count"] == 1
+        assert res["agatston_score"] == pytest.approx(18.0)  # 9 mm² × weight 2
+
+    def test_explicit_roi_excludes_outside(self):
+        vol = _empty_volume()
+        # Lesion at the centre (inside the heuristic box) but OUTSIDE our ROI.
+        _place_lesion(vol, x0=49, y0=49, z=20, size=3, hu=400.0)
+        roi = np.zeros(SHAPE, dtype=bool)
+        roi[0:10, 0:10, :] = True  # ROI nowhere near the lesion
+
+        res = _compute_agatston(vol, SPACING, CFG, roi=roi)
+        assert res["lesion_count"] == 0
+        assert res["agatston_score"] == 0.0
+
+    def test_explicit_roi_matches_box_when_equivalent(self):
+        """Same score whether the central region is selected by box or by ROI."""
+        vol = _empty_volume()
+        _place_lesion(vol, x0=49, y0=49, z=20, size=3, hu=300.0)
+
+        box_res = _compute_agatston(vol, SPACING, CFG)
+        full_roi = np.ones(SHAPE, dtype=bool)
+        roi_res = _compute_agatston(vol, SPACING, CFG, roi=full_roi)
+        assert roi_res["agatston_score"] == pytest.approx(box_res["agatston_score"])

@@ -27,10 +27,30 @@ calcium_scoring:
   hu_threshold: 130            # standard Agatston detection threshold (HU)
   min_lesion_area_mm2: 1.0     # minimum contiguous in-plane area to count a lesion
   reference_slice_thickness_mm: 3.0   # Agatston reference; score scaled by actual/ref
-  # Crude central-cardiac ROI as fractions of the volume extent. This is a
-  # heuristic stand-in for a heart-segmentation mask and over/under-counts at
-  # the margins (sets the calcium_roi_approximate QA flag). Replace with a
-  # learned heart mask for clinically accurate per-vessel attribution.
+
+  # ── Cardiac ROI source ────────────────────────────────────────────────────
+  # When true, restrict Agatston HU>=130 detection to a TotalSegmentator `heart`
+  # mask (run on the non-contrast calcium CT), dilated by heart_roi_dilate_mm to
+  # include the epicardial coronary arteries that sit just outside the cardiac
+  # silhouette. This replaces the heuristic bounding box below with an anatomy-
+  # aware ROI and removes most non-coronary calcium (sternum/spine/descending
+  # aorta) from the score. Falls back to the heuristic box on ANY failure
+  # (TotalSegmentator unavailable, weights missing, shape mismatch), preserving
+  # the previous behaviour. The Agatston scoring math is unchanged either way.
+  use_totalseg_heart_roi: true
+  totalseg_task: total          # CT task; provides the `heart` label
+  # Epicardial inclusion margin. The TotalSegmentator `heart` label is the
+  # cardiac silhouette (chambers + myocardium); the coronary arteries lie on the
+  # epicardial surface just outside it, so the mask is dilated outward by this
+  # many mm before calcium detection. CLINICALLY TUNABLE — too small drops
+  # proximal-vessel calcium, too large re-admits aortic/valvular calcium. The
+  # 8 mm default is a conservative starting point and should be validated on
+  # local data.
+  heart_roi_dilate_mm: 8.0
+
+  # Heuristic central-cardiac ROI (fractions of volume extent). Used only when
+  # use_totalseg_heart_roi is false OR the heart-mask step fails. Over/under-
+  # counts at the margins (sets the calcium_roi_approximate QA flag).
   roi_x_lo: 0.30
   roi_x_hi: 0.80
   roi_y_lo: 0.25

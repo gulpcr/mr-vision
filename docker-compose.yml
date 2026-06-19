@@ -92,6 +92,10 @@ services:
       - NVIDIA_VISIBLE_DEVICES=all
     volumes:
       - ./backend:/app
+      # SpineNet code now lives in the build context (backend/external/spinenet).
+      # Persist its auto-downloaded weights in a named volume so they survive
+      # restarts and are not written into the host source tree.
+      - spinenet_weights:/app/external/spinenet/spinenet/weights
       - model_bundles:/app/app/usecases/brain_mri/model/bundles
       - model_cache:/model_cache
     command: >
@@ -176,3 +180,4 @@ volumes:
   orthanc_data:
   model_bundles:
   model_cache:
+  spinenet_weights:

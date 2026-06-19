@@ -9,6 +9,49 @@ model:
   feature_size: 48         # SwinUNETR hidden feature size (24/36/48/96)
   use_checkpoint: false    # gradient checkpointing (saves VRAM, slower training)
 
+  # ── AutoPET3 (nnU-Net v2) lesion segmentation ────────────────────────────────
+  # The AutoPET3 challenge-winning models are nnU-Net (NOT SwinUNETR), so they
+  # load through the nnU-Net predictor — NOT via custom_pet_weights_path above
+  # (a SwinUNETR loader). Point custom_pet_nnunet_dir at an nnU-Netv2 trained-
+  # model folder (the directory containing dataset.json, plans.json, and
+  # fold_*/checkpoint_final.pth). When set AND nnunetv2 is installed it takes
+  # precedence over the PERCIST threshold; on ANY failure the pipeline falls back
+  # to PERCIST so existing quantification never regresses.
+  # IMPORTANT: requires on-site validation — nnunet_channel_order and the spacing
+  # orientation must match the specific AutoPET3 export before clinical use.
+  custom_pet_nnunet_dir: null
+  nnunet_folds: [0]
+  nnunet_checkpoint: checkpoint_final.pth
+  # AutoPET input convention: channel 0000 = CT, 0001 = PET (SUV).
+  nnunet_channel_order: [ct, pet]
+
+  # ── AutoPET3 winning model (Team LesionTracer) — isolated subprocess ─────────
+  # The AutoPET3 model is a customised nnU-Net FORK (backend/external/autopet3)
+  # with a bespoke `autoPET3_Trainer` + ResEncL plans. Its checkpoint can only be
+  # loaded by THAT fork, which conflicts with the pip `nnunetv2` TotalSegmentator
+  # uses — so it is run OUT-OF-PROCESS via scripts/run_autopet3_predict.py, which
+  # prepends the fork to sys.path. This tier takes precedence over the in-process
+  # custom_pet_nnunet_dir tier above; on any failure both fall back to PERCIST.
+  #
+  # Setup: (1) download the 5-fold checkpoint (Zenodo 14007247) — see
+  # scripts/download_autopet3_weights.py — into a MODEL_FOLDER with fold_X subdirs;
+  # (2) set model_dir below and enabled: true; (3) for dependency isolation,
+  # point python_executable at a venv that has `pip install -e external/autopet3`
+  # (leave null to reuse the worker interpreter with the fork on sys.path).
+  autopet3:
+    enabled: true
+    # Download target (Zenodo 14007247 → autoPET-3-LesionTracer.zip, ~3.8 GB).
+    # May point at the parent dir; the pipeline auto-descends to the folder that
+    # actually contains fold_0 ... fold_4. When the weights are absent the tier
+    # is skipped and detection falls back to PERCIST — so enabling is safe.
+    model_dir: /model_cache/autopet3
+    fork_path: null              # defaults to <backend>/external/autopet3
+    python_executable: null      # null → current interpreter; else isolated venv python
+    folds: [0, 1, 2, 3, 4]
+    checkpoint_name: checkpoint_final.pth
+    lesion_label: 1              # output label treated as lesion (autoPET lesion task = 1)
+    timeout_sec: 3600
+
 inference:
   device: auto             # "cuda" | "cpu" | "auto" (prefer CUDA if available)
   # Sliding-window inference params (match training roi_size)

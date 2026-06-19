@@ -8,7 +8,11 @@
       "type": "object",
       "required": ["lesion_detected", "bilateral_analysis", "lung_volume_ratio"],
       "properties": {
-        "lesion_detected": { "type": "boolean" },
+        "lesion_detected": { "type": "boolean", "description": "True only when a dedicated lesion model is active and detects lesions" },
+        "lesion_detection_method": { "type": "string", "enum": ["swin_unetr", "not_active"] },
+        "lesion_count": { "type": "integer", "minimum": 0 },
+        "lung_volume_asymmetry": { "type": "boolean", "description": "Volume-asymmetry screening flag (distinct from lesion detection)" },
+        "cardiac_segmentation_method": { "type": "string", "enum": ["totalsegmentator", "swin_unetr_override"] },
         "bilateral_analysis": { "type": "boolean" },
         "lung_volume_ratio": {
           "type": "number",
@@ -40,6 +44,8 @@
         "total_lung_volume_ml": { "type": "number", "minimum": 0 },
         "heart_volume_ml": { "type": "number", "minimum": 0 },
         "aorta_volume_ml": { "type": "number", "minimum": 0 },
+        "lesion_count": { "type": "integer", "minimum": 0 },
+        "lesion_volume_ml": { "type": "number", "minimum": 0 },
         "voxel_spacing_mm": {
           "type": "array",
           "items": { "type": "number" }

@@ -95,6 +95,81 @@ class Pipeline(BasePipeline):
             except Exception as exc:
                 logger.warning("swin_unetr_load_failed", weights=sw_path, error=str(exc))
 
+        # Optional auxiliary models (Problems B & C). Both inert when their
+        # custom_weights_path is null — see inference_config.yaml.
+        self._cardiac_model, self._cardiac_device = self._load_aux_model(
+            self._config.get("cardiac_model", {})
+        )
+        self._lesion_model, self._lesion_device = self._load_aux_model(
+            self._config.get("lesion_detection", {})
+        )
+
+    def _load_aux_model(self, cfg: dict):
+        """Load an auxiliary single-channel SwinUNETR model from cfg.
+
+        Returns ``(model, device)`` or ``(None, None)`` when no weights are
+        configured or loading fails. Used for the optional supplementary cardiac
+        model (Problem B) and the optional lesion-detection model (Problem C);
+        both are non-intrusive and leave the primary segmentation intact when
+        absent.
+        """
+        path = cfg.get("custom_weights_path")
+        if not path:
+            return None, None
+        try:
+            import torch
+            from monai.networks.nets import SwinUNETR
+
+            device_str = self._config["inference"].get("device", "cuda")
+            if device_str == "auto":
+                device_str = "cuda" if torch.cuda.is_available() else "cpu"
+            device = torch.device(device_str)
+            model = SwinUNETR(
+                img_size=tuple(cfg.get("roi_size", [96, 96, 96])),
+                in_channels=cfg.get("in_channels", 1),
+                out_channels=cfg.get("out_channels", 2),
+                feature_size=cfg.get("feature_size", 48),
+                use_checkpoint=cfg.get("use_checkpoint", False),
+            )
+            state = torch.load(path, map_location="cpu", weights_only=True)
+            if isinstance(state, dict) and "state_dict" in state:
+                state = state["state_dict"]
+            elif isinstance(state, dict) and "model" in state:
+                state = state["model"]
+            model.load_state_dict(state, strict=False)
+            model.to(device)
+            model.eval()
+            logger.info("aux_model_loaded", path=path, out_channels=cfg.get("out_channels", 2))
+            return model, device
+        except Exception as exc:
+            logger.warning("aux_model_load_failed", path=path, error=str(exc))
+            return None, None
+
+    def _run_aux_model(self, model, device, img_data: np.ndarray, cfg: dict) -> np.ndarray:
+        """Run a loaded auxiliary SwinUNETR → argmax label array (uint8)."""
+        import torch
+        from monai.inferers import sliding_window_inference
+
+        arr = img_data.copy()
+        nz = arr != 0
+        if np.any(nz):
+            m = float(np.mean(arr[nz]))
+            s = float(np.std(arr[nz]))
+            if s > 0:
+                arr = (arr - m) / s
+                arr[~nz] = 0.0
+        t = torch.from_numpy(arr).unsqueeze(0).unsqueeze(0).to(device)
+        with torch.no_grad():
+            out = sliding_window_inference(
+                t,
+                tuple(cfg.get("roi_size", [96, 96, 96])),
+                cfg.get("sw_batch_size", 1),
+                model,
+                overlap=cfg.get("overlap", 0.5),
+                mode=cfg.get("mode", "gaussian"),
+            )
+        return torch.argmax(out, dim=1)[0].cpu().numpy().astype(np.uint8)
+
     def _load_swin_unetr(self, weights_path: str, sw_cfg: dict) -> None:
         import torch
         from monai.networks.nets import SwinUNETR
@@ -420,6 +495,44 @@ class Pipeline(BasePipeline):
                     qa_flags.append("no_model_weights")
                     inference_method = "synthetic" if inference_method is None else "synthetic_fallback"
 
+        # ── (Problem B) Supplementary cardiac model: override ONLY the heart ──
+        # label, leaving lung (1,2) and aorta (4) labels untouched so the lung
+        # volume workflow is unaffected.
+        cardiac_method = "totalsegmentator"
+        if self._cardiac_model is not None:
+            try:
+                heart_pred = self._run_aux_model(
+                    self._cardiac_model, self._cardiac_device,
+                    img_nib.get_fdata().astype(np.float32),
+                    self._config.get("cardiac_model", {}),
+                )
+                heart_mask = heart_pred > 0
+                # Write heart only into background / existing-heart voxels.
+                placeable = heart_mask & ((seg_array == 0) | (seg_array == 3))
+                seg_array[(seg_array == 3) & ~heart_mask] = 0  # drop stale heart
+                seg_array[placeable] = 3
+                cardiac_method = "swin_unetr_override"
+                logger.info("cardiac_model_applied", heart_voxels=int(placeable.sum()))
+            except Exception as exc:
+                logger.warning("cardiac_model_failed_using_totalseg_heart", error=str(exc))
+
+        # ── (Problem C) Dedicated lesion detection (strictly modular) ─────────
+        lesion_active = self._lesion_model is not None
+        lesion_mask_array = None
+        if lesion_active:
+            try:
+                lesion_pred = self._run_aux_model(
+                    self._lesion_model, self._lesion_device,
+                    img_nib.get_fdata().astype(np.float32),
+                    self._config.get("lesion_detection", {}),
+                )
+                lesion_mask_array = (lesion_pred > 0).astype(np.uint8)
+                logger.info("lesion_model_applied", raw_lesion_voxels=int(lesion_mask_array.sum()))
+            except Exception as exc:
+                logger.warning("lesion_model_failed", error=str(exc))
+                lesion_active = False
+                lesion_mask_array = None
+
         seg_path = os.path.join(working_dir, "segmentation_raw.nii.gz")
         seg_img = nib.Nifti1Image(seg_array, affine=affine)
         nib.save(seg_img, seg_path)
@@ -429,6 +542,8 @@ class Pipeline(BasePipeline):
             seg_shape=list(seg_array.shape),
             unique_labels=np.unique(seg_array).tolist(),
             inference_method=inference_method,
+            cardiac_method=cardiac_method,
+            lesion_detection_active=lesion_active,
         )
 
         return {
@@ -437,6 +552,9 @@ class Pipeline(BasePipeline):
             "affine": affine,
             "image_shape": list(seg_array.shape),
             "inference_method": inference_method,
+            "cardiac_method": cardiac_method,
+            "lesion_active": lesion_active,
+            "lesion_mask_array": lesion_mask_array,
             **{**preprocessed, "qa_flags": qa_flags},
         }
 
@@ -492,13 +610,44 @@ class Pipeline(BasePipeline):
             round(right_lung_vol / left_lung_vol, 3) if left_lung_vol > 0 else 0.0
         )
 
-        # A lesion is suspected when a significant asymmetry is present
-        # (ratio outside the normal 0.8–1.3 range) or total volume is very low.
-        lesion_detected = (
+        # Lung-volume asymmetry SCREENING (not lesion detection): significant
+        # left/right asymmetry or a very low total volume warrants review. This
+        # is intentionally separate from true lesion detection below.
+        lung_volume_asymmetry = (
             bilateral_analysis and (lung_volume_ratio < 0.6 or lung_volume_ratio > 1.6)
         ) or (
             bilateral_analysis and total_lung_vol < 500.0
         )
+
+        # ── (Problem C) Dedicated lesion detection result ─────────────────────
+        # lesion_detected reflects the dedicated lesion model when active; with
+        # no lesion model we do NOT infer lesions from volume asymmetry — we only
+        # report the asymmetry screen above.
+        lesion_active = bool(inference_output.get("lesion_active", False))
+        lesion_mask_array = inference_output.get("lesion_mask_array")
+        lesion_count = 0
+        lesion_total_ml = 0.0
+        lesion_seg_clean = None
+        if lesion_active and lesion_mask_array is not None:
+            lcfg = self._config.get("lesion_detection", {})
+            min_les = lcfg.get("min_lesion_volume_ml", 0.5)
+            labeled, n_les = ndimage.label(lesion_mask_array)
+            kept = np.zeros_like(lesion_mask_array)
+            for cid in range(1, n_les + 1):
+                comp = labeled == cid
+                v = float(np.sum(comp)) * voxel_volume_ml
+                if v >= min_les:
+                    kept[comp] = 1
+                    lesion_count += 1
+                    lesion_total_ml += v
+            lesion_seg_clean = kept
+
+        if lesion_active:
+            lesion_detected = lesion_count > 0
+            lesion_detection_method = "swin_unetr"
+        else:
+            lesion_detected = False
+            lesion_detection_method = "not_active"
 
         # Save artifacts
         artifacts_dir = os.path.join(working_dir, "artifacts")
@@ -508,9 +657,15 @@ class Pipeline(BasePipeline):
         seg_img = nib.Nifti1Image(seg_clean.astype(np.uint8), affine=affine)
         nib.save(seg_img, seg_nifti_path)
 
+        cardiac_method = inference_output.get("cardiac_method", "totalsegmentator")
+
         report = {
             "summary": {
                 "lesion_detected": lesion_detected,
+                "lesion_detection_method": lesion_detection_method,
+                "lesion_count": lesion_count,
+                "lung_volume_asymmetry": lung_volume_asymmetry,
+                "cardiac_segmentation_method": cardiac_method,
                 "bilateral_analysis": bilateral_analysis,
                 "lung_volume_ratio": lung_volume_ratio,
                 "segmentation_labels": {
@@ -523,8 +678,11 @@ class Pipeline(BasePipeline):
                     right_lung_vol,
                     left_lung_vol,
                     heart_vol,
-                    lesion_detected,
+                    lung_volume_asymmetry,
                     bilateral_analysis,
+                    lesion_active=lesion_active,
+                    lesion_count=lesion_count,
+                    cardiac_method=cardiac_method,
                 ),
             },
             "measurements": {
@@ -533,6 +691,8 @@ class Pipeline(BasePipeline):
                 "total_lung_volume_ml": total_lung_vol,
                 "heart_volume_ml": heart_vol,
                 "aorta_volume_ml": aorta_vol,
+                "lesion_count": lesion_count,
+                "lesion_volume_ml": round(lesion_total_ml, 1),
                 "voxel_spacing_mm": [round(float(s), 3) for s in voxel_spacing],
                 "image_dimensions": inference_output.get("image_shape", []),
             },
@@ -587,6 +747,18 @@ class Pipeline(BasePipeline):
         except Exception as exc:
             logger.warning("preview_generation_failed", error=str(exc))
 
+        # Lesion mask artifact (only when the dedicated lesion model detected any).
+        lesion_artifacts = []
+        if lesion_seg_clean is not None and int(lesion_seg_clean.sum()) > 0:
+            lesion_path = os.path.join(artifacts_dir, "lesion_mask.nii.gz")
+            nib.save(nib.Nifti1Image(lesion_seg_clean.astype(np.uint8), affine), lesion_path)
+            lesion_artifacts = [{
+                "name": "lesion_mask.nii.gz",
+                "artifact_type": "segmentation_nifti",
+                "local_path": lesion_path,
+                "content_type": "application/gzip",
+            }]
+
         result = {
             "summary": report["summary"],
             "measurements": report["measurements"],
@@ -608,6 +780,7 @@ class Pipeline(BasePipeline):
                     "content_type": "application/json",
                 },
                 *preview_artifacts,
+                *lesion_artifacts,
             ],
         }
 
@@ -742,10 +915,58 @@ class Pipeline(BasePipeline):
     # Preprocessing helpers
     # =====================================================================
 
+    def _apply_bias_field_correction(self, img: "sitk.Image") -> "sitk.Image":
+        """Denoise-prefilter + N4 bias-field correction for MR input.
+
+        Returns the corrected image, or the original image unchanged when the
+        step is disabled or fails — the lung segmentation workflow must never be
+        broken by this augmentation.
+        """
+        cfg = self._config.get("preprocessing", {}).get("bias_field_correction", {})
+        if not cfg.get("enabled", False):
+            return img
+        try:
+            work = sitk.Cast(img, sitk.sitkFloat32)
+
+            # (1) Denoising prefilter applied BEFORE N4 to stabilise the fit.
+            prefilter = cfg.get("prefilter", "curvature_flow")
+            if prefilter == "curvature_flow":
+                work = sitk.CurvatureFlow(
+                    work,
+                    timeStep=float(cfg.get("prefilter_timestep", 0.0625)),
+                    numberOfIterations=int(cfg.get("prefilter_iterations", 5)),
+                )
+            elif prefilter == "median":
+                work = sitk.Median(work)
+
+            # (2) N4 bias-field correction (Otsu mask; optional shrink for speed).
+            mask = sitk.OtsuThreshold(work, 0, 1, 200)
+            shrink = int(cfg.get("shrink_factor", 4))
+            corrector = sitk.N4BiasFieldCorrectionImageFilter()
+            n4_iters = list(cfg.get("n4_iterations", [50, 50, 50, 50]))
+            corrector.SetMaximumNumberOfIterations(n4_iters)
+
+            if shrink > 1:
+                small = sitk.Shrink(work, [shrink] * work.GetDimension())
+                small_mask = sitk.Shrink(mask, [shrink] * mask.GetDimension())
+                corrector.Execute(small, small_mask)
+                # Apply the fitted log bias field at full resolution.
+                log_bias = corrector.GetLogBiasFieldAsImage(work)
+                corrected = work / sitk.Exp(log_bias)
+            else:
+                corrected = corrector.Execute(work, mask)
+
+            logger.info("bias_field_correction_applied", prefilter=prefilter, shrink=shrink)
+            return corrected
+        except Exception as exc:
+            logger.warning("bias_field_correction_failed_using_original", error=str(exc))
+            return img
+
     def _build_single_channel_input(self, nifti_path: str, output_path: str):
-        """Resample to target spacing, z-score normalise, save as single-channel NIfTI."""
+        """Bias-correct (MR), resample to target spacing, z-score normalise, save NIfTI."""
         target_spacing = self._config["preprocessing"]["target_spacing"]
         img = sitk.ReadImage(nifti_path)
+        img = self._apply_bias_field_correction(img)
         original_spacing = img.GetSpacing()
         original_size = img.GetSize()
         new_size = [
@@ -903,8 +1124,11 @@ class Pipeline(BasePipeline):
         right_lung_vol: float,
         left_lung_vol: float,
         heart_vol: float,
-        lesion_detected: bool,
+        lung_volume_asymmetry: bool,
         bilateral_analysis: bool,
+        lesion_active: bool = False,
+        lesion_count: int = 0,
+        cardiac_method: str = "totalsegmentator",
     ) -> str:
         notes = []
         if bilateral_analysis:
@@ -917,11 +1141,30 @@ class Pipeline(BasePipeline):
         else:
             notes.append("No lung parenchyma detected in this study.")
         if heart_vol > 0:
-            notes.append(f"Heart volume: {heart_vol:.1f} mL.")
-        if lesion_detected:
+            heart_src = (
+                "dedicated cardiac model"
+                if cardiac_method == "swin_unetr_override"
+                else "TotalSegmentator whole-heart label"
+            )
+            notes.append(f"Heart volume: {heart_vol:.1f} mL ({heart_src}).")
+        # Lesion reporting: dedicated model vs. asymmetry-only screening.
+        if lesion_active:
+            if lesion_count > 0:
+                notes.append(
+                    f"Dedicated lesion model detected {lesion_count} lesion(s); "
+                    "clinical correlation recommended."
+                )
+            else:
+                notes.append("Dedicated lesion model found no lesions.")
+        else:
             notes.append(
-                "Significant lung volume asymmetry detected; "
-                "possible lesion or collapse. Clinical correlation recommended."
+                "No dedicated lesion-detection model active — only lung-volume "
+                "asymmetry screening was performed (not lesion detection)."
+            )
+        if lung_volume_asymmetry:
+            notes.append(
+                "Significant lung volume asymmetry detected; possible lesion, "
+                "effusion, or collapse. Clinical correlation recommended."
             )
         if "missing_sequence" in qa_flags:
             notes.append(

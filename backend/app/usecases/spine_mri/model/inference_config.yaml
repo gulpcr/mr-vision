@@ -40,6 +40,24 @@ quality_checks:
   max_spacing_anisotropy: 8.0
   motion_artifact_threshold: 0.15
 
+# ── SpineNet (VGG Oxford) — vertebral level labelling + disc grading ──────────
+# HYBRID with TotalSegmentator: TotalSegmentator still produces the voxel
+# segmentation and volumes (label map / artifacts unchanged); SpineNet adds the
+# exact vertebral LEVEL identities (T12, L1–L5, S1) and per-disc radiological
+# grading (Pfirrmann, disc narrowing, central-canal / foraminal stenosis,
+# spondylolisthesis, endplate defects, Modic marrow changes, herniation).
+# SpineNet is run on the SAG_T2 sagittal DICOMs (its native, orientation-checked
+# loader). It is fully gated: when disabled, weights are unavailable, no SAG_T2
+# is present, or anything fails, the pipeline falls back to the TotalSegmentator-
+# derived levels — nothing breaks.
+# Submodule: external/spinenet (pip install -e external/spinenet on the worker).
+spinenet:
+  enabled: true
+  scan_type: lumbar          # "lumbar" | "whole" (whole-spine sagittal)
+  device: auto               # "auto" | "cuda:0" | "cpu"
+  auto_download_weights: true # fetch VGG weights to external/spinenet/.../weights on first run
+  require_dcm_extension: false # PACS-exported slices often lack a .dcm suffix
+
 swin_unetr:
   # Set to a .pt file to activate SwinUNETR over TotalSegmentator.
   # Leave null to use TotalSegmentator (default).

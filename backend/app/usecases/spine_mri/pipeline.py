@@ -88,6 +88,7 @@ class Pipeline(BasePipeline):
         self._model_checksum_cache: str | None = None
         self._sw_model = None
         self._sw_device = None
+        self._spinenet = None  # lazily loaded (heavy: 4 sub-models)
         sw_cfg = self._config.get("swin_unetr", {})
         sw_path = sw_cfg.get("custom_weights_path")
         if sw_path:
@@ -95,6 +96,129 @@ class Pipeline(BasePipeline):
                 self._load_swin_unetr(sw_path, sw_cfg)
             except Exception as exc:
                 logger.warning("swin_unetr_load_failed", weights=sw_path, error=str(exc))
+
+    # =====================================================================
+    # SpineNet (vertebral level labelling + disc grading) — hybrid add-on
+    # =====================================================================
+
+    @staticmethod
+    def _ensure_spinenet_importable() -> None:
+        """Make the `spinenet` package importable even if not pip-installed.
+
+        The submodule lives at backend/external/spinenet (inside the Docker build
+        context, so it is baked into the image and also present via the
+        ./backend:/app dev mount). Resolution order:
+          1. already importable (pip install -e backend/external/spinenet) → done
+          2. SPINENET_PATH env var (optional explicit override)
+          3. backend-relative external/spinenet (image + host / non-Docker runs)
+        """
+        import os
+        import sys
+
+        try:
+            import spinenet  # noqa: F401
+            return
+        except Exception:
+            pass
+
+        candidates: list[Path] = []
+        env_path = os.environ.get("SPINENET_PATH")
+        if env_path:
+            candidates.append(Path(env_path))
+        # backend/app/usecases/spine_mri/pipeline.py → backend root is parents[3]
+        candidates.append(Path(__file__).resolve().parents[3] / "external" / "spinenet")
+
+        for candidate in candidates:
+            if candidate.exists() and str(candidate) not in sys.path:
+                sys.path.insert(0, str(candidate))
+
+    def _get_spinenet(self):
+        """Lazily construct the SpineNet model (cached). Returns None when
+        disabled or unavailable so callers fall back to TotalSegmentator levels.
+        """
+        if self._spinenet is not None:
+            return self._spinenet
+        cfg = self._config.get("spinenet", {})
+        if not cfg.get("enabled", False):
+            return None
+        try:
+            import torch
+
+            self._ensure_spinenet_importable()
+            from spinenet import SpineNet, download_weights
+
+            if cfg.get("auto_download_weights", True):
+                try:
+                    download_weights(verbose=False)
+                except Exception as exc:
+                    logger.warning("spinenet_weight_download_failed", error=str(exc))
+
+            device = cfg.get("device", "auto")
+            if device == "auto":
+                device = "cuda:0" if torch.cuda.is_available() else "cpu"
+            self._spinenet = SpineNet(
+                device=device,
+                verbose=False,
+                scan_type=cfg.get("scan_type", "lumbar"),
+            )
+            logger.info("spinenet_loaded", device=device, scan_type=cfg.get("scan_type", "lumbar"))
+            return self._spinenet
+        except Exception as exc:
+            logger.warning("spinenet_load_failed", error=str(exc))
+            return None
+
+    @staticmethod
+    def _order_spinenet_levels(levels: list[str]) -> list[str]:
+        """Order SpineNet vertebra labels superior→inferior (handles S2)."""
+        rank = {lv: i for i, lv in enumerate(_ALL_LEVELS + ["S2"])}
+        seen = list(dict.fromkeys(levels))  # de-dup, preserve first occurrence
+        return sorted(seen, key=lambda lv: rank.get(lv, 999))
+
+    def _run_spinenet(self, dicom_dir: str) -> dict[str, Any] | None:
+        """Run SpineNet on a folder of sagittal T2 DICOMs.
+
+        Returns ``{"levels", "disc_gradings", "vertebra_count"}`` or None on any
+        failure (caller then falls back to TotalSegmentator-derived levels).
+        """
+        sn = self._get_spinenet()
+        if sn is None:
+            return None
+        cfg = self._config.get("spinenet", {})
+        try:
+            from spinenet.io import load_dicoms_from_folder
+
+            scan = load_dicoms_from_folder(
+                dicom_dir, require_extensions=cfg.get("require_dcm_extension", False)
+            )
+            vert_dicts = sn.detect_vb(scan.volume, scan.pixel_spacing)
+            levels = [vd.get("predicted_label") for vd in vert_dicts if vd.get("predicted_label")]
+            ordered = self._order_spinenet_levels(levels)
+
+            disc_gradings: list[dict[str, Any]] = []
+            try:
+                ivd_dicts = sn.get_ivds_from_vert_dicts(vert_dicts, scan.volume)
+                df = sn.grade_ivds(ivd_dicts)
+                for level_name, row in df.iterrows():
+                    entry: dict[str, Any] = {"level": str(level_name)}
+                    for col, val in row.items():
+                        entry[str(col).lower()] = int(val)
+                    disc_gradings.append(entry)
+            except Exception as exc:
+                logger.warning("spinenet_grading_failed", error=str(exc))
+
+            logger.info(
+                "spinenet_inference_complete",
+                levels=ordered,
+                disc_count=len(disc_gradings),
+            )
+            return {
+                "levels": ordered,
+                "disc_gradings": disc_gradings,
+                "vertebra_count": len(ordered),
+            }
+        except Exception as exc:
+            logger.warning("spinenet_inference_failed", error=str(exc))
+            return None
 
     def _load_swin_unetr(self, weights_path: str, sw_cfg: dict) -> None:
         import torch
@@ -335,10 +459,31 @@ class Pipeline(BasePipeline):
 
         sequences_used = list(downloaded_niftis.keys())
 
+        # SpineNet needs the sagittal T2 DICOMs (its native, orientation-checked
+        # loader). Download them only when SpineNet is enabled and a SAG_T2 series
+        # was classified; otherwise SpineNet is skipped and TotalSegmentator levels
+        # are used.
+        spinenet_dicom_dir: str | None = None
+        if self._config.get("spinenet", {}).get("enabled", False) and "SAG_T2" in classified:
+            try:
+                spinenet_dicom_dir = os.path.join(working_dir, "spinenet_dicoms")
+                os.makedirs(spinenet_dicom_dir, exist_ok=True)
+                loop.run_until_complete(
+                    pacs.download_series_dicoms(
+                        study.study_instance_uid,
+                        classified["SAG_T2"].series_instance_uid,
+                        spinenet_dicom_dir,
+                    )
+                )
+            except Exception as exc:
+                logger.warning("spinenet_dicom_download_failed", error=str(exc))
+                spinenet_dicom_dir = None
+
         logger.info(
             "spine_mri_preprocess_complete",
             primary_sequence=primary_seq,
             sequences_used=sequences_used,
+            spinenet_dicoms=spinenet_dicom_dir is not None,
             qa_flags=qa_flags,
         )
 
@@ -348,13 +493,29 @@ class Pipeline(BasePipeline):
             "primary_sequence": primary_seq,
             "sequences_used": sequences_used,
             "classified_sequences": {k: v.series_instance_uid for k, v in classified.items()},
+            "spinenet_dicom_dir": spinenet_dicom_dir,
             "qa_flags": qa_flags,
             "qa_details": qa_details,
             "study_uid": study.study_instance_uid,
         }
 
-    def _run_totalsegmentator(self, input_path: str, working_dir: str) -> np.ndarray:
-        """Run TotalSegmentator MRI inference with vertebra merging for spine label map."""
+    def _run_totalsegmentator(
+        self, input_path: str, working_dir: str
+    ) -> tuple[np.ndarray, list[str]]:
+        """Run TotalSegmentator MRI inference for the spine label map.
+
+        Returns ``(seg_array, detected_levels)`` where ``seg_array`` is the merged
+        label map (all vertebrae → label 1, as before, so every downstream
+        volumetric/measurement/artifact path is unchanged) and ``detected_levels``
+        is the list of actual vertebral levels TotalSegmentator identified
+        (e.g. ``["L3", "L4", "L5"]``), ordered superior→inferior.
+
+        Previously the per-vertebra level identity that TotalSegmentator produces
+        was discarded at merge time and ``levels_analyzed`` was reconstructed from
+        a disc-*count* heuristic. We now preserve the true identities so the
+        report names the exact levels imaged without losing general anatomical
+        context (the merged mask is retained verbatim).
+        """
         from totalsegmentator.python_api import totalsegmentator as ts_run
 
         cfg_model = self._config["model"]
@@ -385,16 +546,28 @@ class Pipeline(BasePipeline):
         ref = nib.load(input_path)
         seg_array = np.zeros(ref.shape[:3], dtype=np.uint8)
 
-        # Merge all vertebra files into label 1
+        # Merge all vertebra files into label 1, while RECORDING the level
+        # identity of each non-empty vertebra (parsed from the filename, e.g.
+        # "vertebrae_L4.nii.gz" → "L4"). The merged mask keeps the existing
+        # single-label contract; the identities are returned separately.
         vertebra_files = []
         for prefix in vertebra_prefixes:
             vertebra_files.extend(
                 glob_mod.glob(os.path.join(ts_out, f"{prefix}*.nii.gz"))
             )
+        detected_levels: set[str] = set()
         for vf in vertebra_files:
             mask = nib.load(vf).get_fdata() > 0.5
+            if not mask.any():
+                continue
             seg_array[mask] = 1
-            logger.info("vertebra_merged", file=os.path.basename(vf))
+            level = self._parse_vertebra_level(os.path.basename(vf))
+            if level:
+                detected_levels.add(level)
+            logger.info("vertebra_merged", file=os.path.basename(vf), level=level)
+
+        # Order superior→inferior using the canonical level list.
+        ordered_levels = self._order_levels(detected_levels)
 
         # Map remaining organs (spinal_cord → label 4, etc.)
         for organ_name, label_id in organ_map.items():
@@ -424,8 +597,12 @@ class Pipeline(BasePipeline):
             canal_estimate = canal_estimate & (seg_array == 0)
             seg_array[canal_estimate] = 3
 
-        logger.info("totalsegmentator_complete", labels=np.unique(seg_array).tolist())
-        return seg_array
+        logger.info(
+            "totalsegmentator_complete",
+            labels=np.unique(seg_array).tolist(),
+            detected_levels=ordered_levels,
+        )
+        return seg_array, ordered_levels
 
     def infer(self, preprocessed: dict[str, Any], working_dir: str) -> dict[str, Any]:
         logger.info("spine_mri_inference_start")
@@ -439,6 +616,7 @@ class Pipeline(BasePipeline):
 
         seg_array = None
         inference_method = None
+        detected_levels: list[str] = []
 
         if self._sw_model is not None:
             try:
@@ -450,7 +628,9 @@ class Pipeline(BasePipeline):
 
         if seg_array is None:
             if architecture == "totalsegmentator_mr":
-                seg_array = self._run_totalsegmentator(preprocessed["input_path"], working_dir)
+                seg_array, detected_levels = self._run_totalsegmentator(
+                    preprocessed["input_path"], working_dir
+                )
                 if not np.any(seg_array == 1):
                     logger.warning("spine_vertebrae_empty", detail="No vertebra files matched glob — check totalseg output naming")
                     qa_flags.append("no_vertebrae_segmented")
@@ -471,11 +651,20 @@ class Pipeline(BasePipeline):
         seg_img = nib.Nifti1Image(seg_array, affine=affine)
         nib.save(seg_img, seg_path)
 
+        # Hybrid: SpineNet for level identities + disc grading (TotalSegmentator
+        # voxel segmentation above is untouched). Skipped when disabled / no
+        # SAG_T2 DICOMs / any failure.
+        spinenet_result = None
+        spinenet_dicom_dir = preprocessed.get("spinenet_dicom_dir")
+        if spinenet_dicom_dir:
+            spinenet_result = self._run_spinenet(spinenet_dicom_dir)
+
         logger.info(
             "spine_mri_inference_complete",
             seg_shape=list(seg_array.shape),
             unique_labels=np.unique(seg_array).tolist(),
             inference_method=inference_method,
+            spinenet_used=spinenet_result is not None,
         )
 
         return {
@@ -484,6 +673,8 @@ class Pipeline(BasePipeline):
             "affine": affine,
             "image_shape": list(seg_array.shape),
             "inference_method": inference_method,
+            "detected_vertebra_levels": detected_levels,
+            "spinenet_result": spinenet_result,
             **{**preprocessed, "qa_flags": qa_flags},
         }
 
@@ -529,9 +720,14 @@ class Pipeline(BasePipeline):
         disc_mask = (seg_clean == 2).astype(np.int32)
         _, disc_count = ndimage.label(disc_mask)
 
-        # vertebra_count: number of distinct vertebra components (label 1)
-        vert_mask = (seg_clean == 1).astype(np.int32)
-        _, vertebra_count = ndimage.label(vert_mask)
+        # Vertebral levels — priority: SpineNet (specialist) > TotalSegmentator
+        # per-vertebra identities > disc-count heuristic. SpineNet also supplies
+        # per-disc radiological grading. TotalSegmentator voxel segmentation and
+        # all volumes below are unaffected by this choice.
+        spinenet_result = inference_output.get("spinenet_result") or {}
+        spinenet_levels: list[str] = list(spinenet_result.get("levels", []) or [])
+        disc_gradings: list[dict] = list(spinenet_result.get("disc_gradings", []) or [])
+        ts_levels: list[str] = list(inference_output.get("detected_vertebra_levels", []) or [])
 
         # canal_area_mm2: mean axial cross-sectional area of spinal canal (label 3)
         canal_area_mm2 = self._mean_axial_area_mm2(seg_clean, label_id=3, voxel_spacing=voxel_spacing)
@@ -539,8 +735,19 @@ class Pipeline(BasePipeline):
         # cord_area_mm2: mean axial cross-sectional area of spinal cord (label 4)
         cord_area_mm2 = self._mean_axial_area_mm2(seg_clean, label_id=4, voxel_spacing=voxel_spacing)
 
-        # Infer analyzed vertebral levels from disc count heuristic
-        levels_analyzed = self._infer_levels(disc_count)
+        if spinenet_levels:
+            levels_analyzed = spinenet_levels
+            levels_source = "spinenet"
+            vertebra_count = int(spinenet_result.get("vertebra_count", len(spinenet_levels)))
+        elif ts_levels:
+            levels_analyzed = ts_levels
+            levels_source = "totalsegmentator_identified"
+            vertebra_count = len(ts_levels)
+        else:
+            levels_analyzed = self._infer_levels(disc_count)
+            levels_source = "disc_count_heuristic"
+            vert_mask = (seg_clean == 1).astype(np.int32)
+            _, vertebra_count = ndimage.label(vert_mask)
 
         stenosis_suspected = (
             canal_area_mm2 > 0 and cord_area_mm2 > 0
@@ -562,6 +769,9 @@ class Pipeline(BasePipeline):
         report = {
             "summary": {
                 "levels_analyzed": levels_analyzed,
+                "levels_source": levels_source,
+                "disc_gradings": disc_gradings,
+                "disc_grading_available": bool(disc_gradings),
                 "stenosis_suspected": stenosis_suspected,
                 "cord_compression_suspected": cord_compression_suspected,
                 "segmentation_labels": {str(k): v for k, v in label_map.items() if int(k) != 0},
@@ -572,6 +782,9 @@ class Pipeline(BasePipeline):
                     disc_count,
                     stenosis_suspected,
                     cord_compression_suspected,
+                    levels_analyzed,
+                    levels_source=levels_source,
+                    disc_gradings=disc_gradings,
                 ),
             },
             "measurements": {
@@ -579,6 +792,8 @@ class Pipeline(BasePipeline):
                 "canal_area_mm2": round(canal_area_mm2, 2),
                 "cord_area_mm2": round(cord_area_mm2, 2),
                 "vertebra_count": vertebra_count,
+                "vertebra_levels_detected": levels_analyzed,
+                "disc_gradings": disc_gradings,
                 "voxel_spacing_mm": [round(float(s), 3) for s in voxel_spacing],
                 "image_dimensions": inference_output.get("image_shape", []),
             },
@@ -979,6 +1194,22 @@ class Pipeline(BasePipeline):
         return round(float(np.mean(non_empty)) * in_plane_area_mm2, 2)
 
     @staticmethod
+    def _parse_vertebra_level(filename: str) -> str | None:
+        """Parse a TotalSegmentator vertebra filename into a level label.
+
+        ``"vertebrae_L4.nii.gz"`` → ``"L4"``. Returns None if the parsed token is
+        not a recognised vertebral level.
+        """
+        stem = filename.split(".")[0]
+        level = stem.replace("vertebrae_", "").upper()
+        return level if level in _ALL_LEVELS else None
+
+    @staticmethod
+    def _order_levels(levels: set[str]) -> list[str]:
+        """Order a set of level labels superior→inferior (C1…S1)."""
+        return [lv for lv in _ALL_LEVELS if lv in levels]
+
+    @staticmethod
     def _infer_levels(disc_count: int) -> list[str]:
         """Map disc count to a plausible list of spinal levels.
 
@@ -1009,8 +1240,32 @@ class Pipeline(BasePipeline):
         disc_count: int,
         stenosis_suspected: bool,
         cord_compression_suspected: bool,
+        levels_analyzed: list[str] | None = None,
+        levels_source: str = "disc_count_heuristic",
+        disc_gradings: list[dict] | None = None,
     ) -> str:
         notes = []
+        if levels_analyzed:
+            source_label = {
+                "spinenet": "SpineNet",
+                "totalsegmentator_identified": "TotalSegmentator per-vertebra labels",
+                "disc_count_heuristic": "disc-count estimate",
+            }.get(levels_source, levels_source)
+            notes.append(
+                "Identified vertebral level(s): "
+                + ", ".join(levels_analyzed)
+                + f" ({source_label})."
+            )
+        # SpineNet disc grading summary (Pfirrmann + flagged pathologies).
+        if disc_gradings:
+            worst_pf = max((g.get("pfirrmann", 0) for g in disc_gradings), default=0)
+            herniated = [g["level"] for g in disc_gradings if g.get("herniation", 0) > 0]
+            notes.append(
+                f"SpineNet graded {len(disc_gradings)} disc(s); worst Pfirrmann "
+                f"grade {worst_pf}."
+            )
+            if herniated:
+                notes.append("Disc herniation flagged at: " + ", ".join(herniated) + ".")
         if disc_count > 0:
             notes.append(f"Segmented {disc_count} intervertebral disc(s).")
         else:
