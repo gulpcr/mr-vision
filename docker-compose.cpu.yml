@@ -6,11 +6,22 @@ services:
     build:
       context: ./backend
       target: api   # Use the CPU base image instead of GPU
+    # Force the standard OCI runtime. This host has the nvidia runtime as Docker's
+    # default, so every container otherwise runs the nvidia prestart hook — which
+    # fails globally here because GPU 0 is in a "lost" state. runc bypasses it.
+    runtime: runc
     deploy:
       resources:
-        reservations: {}
+        reservations:
+          # Force-replace (not merge) the base nvidia device reservation so NO
+          # GPU is requested. A plain [] gets merged away; !override clears it.
+          devices: !override []
     environment:
       - PYTHONPATH=/app
       - DATABASE_URL=postgresql://${POSTGRES_USER:-mri_admin}:${POSTGRES_PASSWORD}@postgres:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-mri_platform}
       - CUDA_VISIBLE_DEVICES=-1
       - ENABLE_GPU=false
+      # Disable NVIDIA GPU injection (base worker sets =all). On hosts where the
+      # nvidia runtime is the default, =all triggers a GPU prestart hook that
+      # fails if the GPU is unavailable; "void" opts the container out of GPU.
+      - NVIDIA_VISIBLE_DEVICES=void

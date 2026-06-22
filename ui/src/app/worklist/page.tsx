@@ -210,6 +210,7 @@ export default function WorklistPage() {
   const [search, setSearch]                   = useState("");
   const [bodyPartFilter, setBodyPartFilter]   = useState("");
   const [modalityFilter, setModalityFilter]   = useState("");
+  const [referrerFilter, setReferrerFilter]   = useState("");
   const [priorityFilter, setPriorityFilter]   = useState("");
   const [dateFilter, setDateFilter]           = useState<DateFilter>("all");
   const [aiStatusFilter, setAIStatusFilter]   = useState<AIStatusFilter>("any");
@@ -338,6 +339,7 @@ export default function WorklistPage() {
 
   const clearFilters = () => {
     setSearch(""); setBodyPartFilter(""); setModalityFilter("");
+    setReferrerFilter("");
     setPriorityFilter(""); setDateFilter("all"); setAIStatusFilter("any");
   };
 
@@ -345,6 +347,7 @@ export default function WorklistPage() {
 
   const bodyParts = Array.from(new Set(studies.map((s) => s.body_part_examined).filter(Boolean)));
   const modalities = Array.from(new Set(studies.map((s) => s.modality).filter(Boolean)));
+  const referrers = Array.from(new Set(studies.map((s) => s.referring_physician).filter(Boolean)));
 
   const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
   const weekStart  = new Date(todayStart); weekStart.setDate(weekStart.getDate() - 7);
@@ -362,6 +365,7 @@ export default function WorklistPage() {
       }
       if (bodyPartFilter && s.body_part_examined !== bodyPartFilter) return false;
       if (modalityFilter && s.modality !== modalityFilter) return false;
+      if (referrerFilter && s.referring_physician !== referrerFilter) return false;
       if (priorityFilter && urgencyMap[s.study_instance_uid]?.priority !== priorityFilter) return false;
       if (dateFilter !== "all" && s.study_date) {
         const d = new Date(s.study_date);
@@ -399,7 +403,7 @@ export default function WorklistPage() {
   ).length;
 
   const activeFilters = [
-    search, bodyPartFilter, modalityFilter, priorityFilter,
+    search, bodyPartFilter, modalityFilter, referrerFilter, priorityFilter,
     dateFilter !== "all" ? "1" : "", aiStatusFilter !== "any" ? "1" : "",
   ].filter(Boolean).length;
 
@@ -546,6 +550,18 @@ export default function WorklistPage() {
             >
               <option value="">All Body Parts</option>
               {bodyParts.map((bp) => <option key={bp} value={bp!}>{bp}</option>)}
+            </select>
+          )}
+
+          {/* Referrer */}
+          {referrers.length > 0 && (
+            <select
+              value={referrerFilter}
+              onChange={(e) => setReferrerFilter(e.target.value)}
+              className="text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 max-w-[180px]"
+            >
+              <option value="">All Referrers</option>
+              {referrers.map((r) => <option key={r} value={r!}>{r}</option>)}
             </select>
           )}
 

@@ -209,16 +209,21 @@ export default function StudyPage() {
   if (loading) return <p className="text-gray-500 p-4">Loading study...</p>;
   if (!study) return <p className="text-red-500 p-4">Study not found</p>;
 
-  // Use OHIF only when the DICOM data actually contains PT (PET) series.
-  // Never infer from the usecase_name — a pet_ct pipeline can be run on
-  // non-PET data (mis-routing) and OHIF would show nothing in that case.
-  // For PET/CT, open OHIF's TMTV mode ("/ohif/tmtv") rather than the basic
-  // viewer: TMTV's hanging protocol auto-lays out CT, PET, and a fused
-  // PET-on-CT viewport (+ rotating PET MIP), so the study opens already fused.
+  // All studies open in the OHIF v3 / Cornerstone3D viewer; the mode is chosen
+  // by content:
+  //  • PET/CT (study actually contains a PT series) → OHIF TMTV mode
+  //    ("/ohif/tmtv"): its hanging protocol auto-lays out CT, PET, and a fused
+  //    PET-on-CT viewport (+ rotating PET MIP), so the study opens already fused.
+  //  • Everything else → OHIF longitudinal viewer ("/ohif/viewer"), which
+  //    surfaces MPR, annotations, prior-study comparison, hanging protocols and
+  //    the full manipulation toolset (vs. the lighter Orthanc Stone viewer used
+  //    previously).
+  // PET is detected from actual PT series, never the usecase_name — a pet_ct
+  // pipeline can be mis-routed onto non-PET data, where TMTV would show nothing.
   const hasPetSeries = study.series.some((s) => s.modality === "PT");
   const viewerUrl = hasPetSeries
     ? `/ohif/tmtv?StudyInstanceUIDs=${uid}`
-    : `/orthanc/stone-webviewer/index.html?study=${uid}`;
+    : `/ohif/viewer?StudyInstanceUIDs=${uid}`;
 
   // The lean native fused PET/CT viewer renders from the stored SUV + CT
   // artifacts, so it's only available once a pet_ct result exists. Until then
