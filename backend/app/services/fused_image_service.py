@@ -76,22 +76,32 @@ def generate_fused_slice_fast(
     out_size: int = 512,
     mask_arr: np.ndarray | None = None,
     show_lesions: bool = True,
+    mode: str = "fused",
 ) -> bytes:
     """Fast fused-slice PNG using numpy + PIL (no matplotlib figure).
 
     ~10x faster than :func:`generate_fused_png_bytes`, intended for the
-    interactive viewer's per-slice requests. Same look: CT grayscale background +
-    PET `colormap` overlay shown only above 20 % of the display SUV-max.
-    Orientation matches the matplotlib renderer (transpose + vertical flip, i.e.
-    origin='lower'). Display window (vmin/vmax) is passed in pre-computed.
+    interactive viewer's per-slice requests. Display window (vmin/vmax) is passed
+    in pre-computed. Orientation matches the matplotlib renderer (transpose +
+    vertical flip, i.e. origin='lower').
+
+    ``mode`` selects what is rendered:
+
+    * ``"fused"`` (default): CT grayscale background + PET ``colormap`` overlay,
+      shown only above 20 % of the display SUV-max (so CT anatomy stays visible).
+    * ``"ct"``: CT grayscale only (no PET overlay).
+    * ``"pet"``: PET ``colormap`` only, on a black background (no CT) — a plain
+      PET render across the full display window.
 
     When ``mask_arr`` (the detected-lesion segmentation, same grid as ``suv_arr``)
     is supplied and ``show_lesions`` is True, the boundary of each detected lesion
-    is outlined in cyan so the user can distinguish *flagged* foci from raw
-    physiologic uptake in the hot colormap.
+    is outlined in cyan in every mode so the user can distinguish *flagged* foci
+    from raw physiologic uptake.
     """
     if view not in _VIEW_AXES:
         raise ValueError(f"view must be one of {VIEWS}, got {view!r}")
+    if mode not in ("fused", "ct", "pet"):
+        raise ValueError(f"mode must be one of fused, ct, pet; got {mode!r}")
 
     from PIL import Image
 
@@ -113,9 +123,18 @@ def generate_fused_slice_fast(
     pet_norm = np.clip((pet_sl - suv_vmin) / denom, 0.0, 1.0)
     cmap_fn = _get_cmap(colormap)
     pet_rgb = np.asarray(cmap_fn(pet_norm), dtype=np.float64)[..., :3] * 255.0
-    threshold = suv_vmax * 0.20
-    a = np.where(pet_sl >= threshold, alpha, 0.0).astype(np.float64)[..., None]
-    out = rgb * (1.0 - a) + pet_rgb * a
+
+    if mode == "ct":
+        # CT grayscale only.
+        out = rgb
+    elif mode == "pet":
+        # PET colormap only, on black (low SUV is already near-black in 'hot').
+        out = pet_rgb
+    else:
+        # Fused: CT background with PET overlay above the display threshold.
+        threshold = suv_vmax * 0.20
+        a = np.where(pet_sl >= threshold, alpha, 0.0).astype(np.float64)[..., None]
+        out = rgb * (1.0 - a) + pet_rgb * a
 
     # Outline detected lesions (same orientation transform as the SUV slice).
     if show_lesions and mask_arr is not None and mask_arr.shape == suv_arr.shape:

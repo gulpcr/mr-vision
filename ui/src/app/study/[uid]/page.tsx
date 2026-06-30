@@ -83,6 +83,22 @@ export default function StudyPage() {
 
   const [pdfLoading, setPdfLoading] = useState(false);
 
+  const [readingBusy, setReadingBusy] = useState(false);
+  const [readingError, setReadingError] = useState<string | null>(null);
+  const runReading = async (fn: () => Promise<unknown>) => {
+    setReadingBusy(true);
+    setReadingError(null);
+    try {
+      await fn();
+      const s = await api.studies.get(uid);
+      setStudy(s);
+    } catch (e: any) {
+      setReadingError(e.message || "Action failed");
+    } finally {
+      setReadingBusy(false);
+    }
+  };
+
   useEffect(() => {
     async function load() {
       try {
@@ -261,6 +277,69 @@ export default function StudyPage() {
         </a>
       </div>
 
+      {/* Reading workflow */}
+      {(() => {
+        const rs = study.reading_status || "unread";
+        const cls = ({
+          unread: "bg-gray-100 text-gray-600",
+          in_progress: "bg-blue-100 text-blue-700",
+          reported: "bg-amber-100 text-amber-700",
+          signed: "bg-green-100 text-green-700",
+        } as Record<string, string>)[rs] || "bg-gray-100 text-gray-600";
+        const label = ({
+          unread: "Unread", in_progress: "In Progress", reported: "Reported", signed: "Signed",
+        } as Record<string, string>)[rs] || rs;
+        const btn = "px-3 py-1.5 text-xs font-medium rounded-lg transition-colors disabled:opacity-50";
+        return (
+          <div className="bg-white rounded-lg shadow-sm border border-gray-200 px-4 py-3">
+            <div className="flex items-center justify-between flex-wrap gap-3">
+              <div className="flex items-center gap-3 flex-wrap">
+                <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Reading</span>
+                <span className={`px-2.5 py-1 rounded text-xs font-semibold ${cls}`}>{label}</span>
+                {study.assigned_to_username && (
+                  <span className="text-sm text-gray-600">
+                    Assigned to <span className="font-medium">{study.assigned_to_username}</span>
+                  </span>
+                )}
+                {study.tat_signoff_minutes != null ? (
+                  <span className="text-xs text-gray-400">Turnaround: {study.tat_signoff_minutes} min</span>
+                ) : study.tat_report_minutes != null ? (
+                  <span className="text-xs text-gray-400">Report TAT: {study.tat_report_minutes} min</span>
+                ) : null}
+              </div>
+              <div className="flex items-center gap-2">
+                {rs === "unread" && (
+                  <>
+                    <button disabled={readingBusy} onClick={() => runReading(() => api.reading.claim(uid))}
+                      className={`${btn} text-white bg-primary-600 hover:bg-primary-700`}>Claim</button>
+                    <button disabled={readingBusy} onClick={() => runReading(() => api.reading.autoAssign(uid))}
+                      className={`${btn} text-primary-700 border border-primary-200 hover:bg-primary-50`}>Auto-assign</button>
+                  </>
+                )}
+                {rs === "in_progress" && (
+                  <>
+                    <button disabled={readingBusy} onClick={() => runReading(() => api.reading.report(uid))}
+                      className={`${btn} text-white bg-amber-600 hover:bg-amber-700`}>Mark Reported</button>
+                    <button disabled={readingBusy} onClick={() => runReading(() => api.reading.unclaim(uid))}
+                      className={`${btn} text-gray-600 border border-gray-200 hover:bg-gray-50`}>Release</button>
+                  </>
+                )}
+                {rs === "reported" && (
+                  <button disabled={readingBusy} onClick={() => runReading(() => api.reading.sign(uid))}
+                    className={`${btn} text-white bg-green-600 hover:bg-green-700`}>Sign Off</button>
+                )}
+                {rs === "signed" && (
+                  <span className="text-xs text-green-600 flex items-center gap-1">
+                    <CheckCircle className="w-4 h-4" /> Signed
+                  </span>
+                )}
+              </div>
+            </div>
+            {readingError && <p className="text-xs text-red-600 mt-2">{readingError}</p>}
+          </div>
+        );
+      })()}
+
       {/* Info Cards */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
@@ -385,7 +464,7 @@ export default function StudyPage() {
             <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">DICOM Viewer</h2>
             {showNativeFused ? (
               <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full font-medium">
-                Fused PET/CT
+                CT + PET
               </span>
             ) : hasPetSeries ? (
               <span className="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full font-medium">
@@ -476,6 +555,22 @@ export default function StudyPage() {
                       className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-indigo-700 border border-indigo-200 rounded-lg hover:bg-indigo-50 transition-colors"
                     >
                       <FileText className="w-4 h-4" /> PET-CT Report
+                    </Link>
+                  )}
+                  {selectedResult.usecase_name === "mammography" && (
+                    <Link
+                      href={`/study/${uid}/mammography`}
+                      className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-rose-700 border border-rose-200 rounded-lg hover:bg-rose-50 transition-colors"
+                    >
+                      <FileText className="w-4 h-4" /> Mammography Report
+                    </Link>
+                  )}
+                  {["brain_mri", "spine_mri", "chest_mri", "abdomen_mri"].includes(selectedResult.usecase_name) && (
+                    <Link
+                      href={`/study/${uid}/mri?usecase=${selectedResult.usecase_name}`}
+                      className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-teal-700 border border-teal-200 rounded-lg hover:bg-teal-50 transition-colors"
+                    >
+                      <FileText className="w-4 h-4" /> MRI Report
                     </Link>
                   )}
                   <button

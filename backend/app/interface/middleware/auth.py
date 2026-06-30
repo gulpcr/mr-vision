@@ -159,3 +159,44 @@ def require_role(*allowed_roles: str):
         return request.state.user
 
     return Depends(check_role)
+
+
+def require_permission(permission: str):
+    """Dependency enforcing a single RBAC permission key (see domain.permissions).
+
+    Resolves the caller's role(s) (set on request.state by RBACMiddleware) to the
+    per-tenant permission set in the `roles` table. `admin`/`system` always pass —
+    so dev modes (auth_mode none/api_key, which set role=admin) and the seeded
+    admin user are never blocked, keeping existing flows working.
+    """
+    from fastapi import Depends, HTTPException
+
+    async def check_permission(request: Request):
+        user_roles = getattr(request.state, "roles", []) or []
+        # Admin / system bypass (also covers auth_mode none/api_key).
+        if "admin" in user_roles or "system" in user_roles:
+            return getattr(request.state, "user", "system")
+
+        tenant_id = getattr(request.state, "tenant_id", "default") or "default"
+
+        from sqlalchemy import select
+
+        from app.infrastructure.database.models import RoleRecord
+        from app.infrastructure.database.session import async_session_factory
+
+        granted: set[str] = set()
+        async with async_session_factory() as session:
+            res = await session.execute(
+                select(RoleRecord).where(
+                    RoleRecord.tenant_id == tenant_id,
+                    RoleRecord.name.in_(user_roles),
+                )
+            )
+            for role in res.scalars():
+                granted.update(role.permissions or [])
+
+        if permission not in granted:
+            raise HTTPException(status_code=403, detail=f"Permission required: {permission}")
+        return getattr(request.state, "user", "unknown")
+
+    return Depends(check_permission)

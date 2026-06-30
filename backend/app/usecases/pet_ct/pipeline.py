@@ -43,6 +43,15 @@ _CT_PATTERNS = [
     r"(?i)\bct\b", r"(?i)attenuation", r"(?i)transmission",
     r"(?i)low.*dose", r"(?i)ct.*corr",
 ]
+# Non-diagnostic CT acquisitions (single-plane scouts) that must never be
+# selected as the fusion/reference CT: a topogram is a 1-slice projection whose
+# geometry does not overlap the PET volume, so resampling it onto the PET grid
+# yields an all-air (-1000 HU) volume — a black CT background in the viewer and
+# broken reference-region stats. See _classify_series.
+_CT_SCOUT_PATTERNS = [
+    r"(?i)topogram", r"(?i)scout", r"(?i)localizer", r"(?i)localiser",
+    r"(?i)surview", r"(?i)scanogram", r"(?i)\bscano\b",
+]
 
 
 # ── DICOM / SUV helpers ────────────────────────────────────────────────────────
@@ -154,11 +163,19 @@ def _compute_suv_factor(params: dict[str, Any]) -> float:
     return weight_g / max(dose_at_scan, 1.0)
 
 
-def _build_suv_nifti(dicom_dir: str, suv_params: dict, output_path: str) -> str:
+def _build_suv_nifti(
+    dicom_dir: str, suv_params: dict, output_path: str, raw_output_path: str | None = None
+) -> str:
     """Convert a PET DICOM series directory to a calibrated SUV NIfTI.
 
     Uses SimpleITK to read the DICOM series (preserves geometry), applies
     rescale slope/intercept to get Bq/mL, then multiplies by the SUV factor.
+
+    When ``raw_output_path`` is given, the raw PET activity volume (Bq/mL, i.e.
+    pixel × slope + intercept, *before* SUV normalisation) is also written there
+    with identical geometry. The raw volume is used for display rendering so the
+    viewer shows acquired PET intensities rather than the SUV-normalised values;
+    SUV remains the basis for all quantitative measurements.
     """
     reader = sitk.ImageSeriesReader()
     series_ids = reader.GetGDCMSeriesIDs(dicom_dir)
@@ -194,9 +211,13 @@ def _build_suv_nifti(dicom_dir: str, suv_params: dict, output_path: str) -> str:
     elif arr.ndim != 3:
         raise ValueError(f"Unsupported PET array shape: {arr.shape}")
 
-    slope = suv_params.get("rescale_slope", 1.0)
-    intercept = suv_params.get("rescale_intercept", 0.0)
-    bqml = np.clip(arr * slope + intercept, 0.0, None)
+    # SimpleITK's ImageSeriesReader already applies each slice's Rescale
+    # Slope/Intercept (the modality LUT) when reading the series, so `arr` is
+    # ALREADY activity concentration in Bq/mL. Do NOT reapply slope/intercept here
+    # — doing so double-scales the PET and makes every SUV value too low by the
+    # slope factor (e.g. liver ~0.8 instead of ~2.7). Verified: SITK array ==
+    # raw_pixel * RescaleSlope + RescaleIntercept.
+    bqml = np.clip(arr, 0.0, None)
 
     suv_factor = _compute_suv_factor(suv_params)
     if suv_factor > 0:
@@ -220,6 +241,14 @@ def _build_suv_nifti(dicom_dir: str, suv_params: dict, output_path: str) -> str:
     suv_img.SetOrigin(img.GetOrigin())
     suv_img.SetDirection(img.GetDirection())
     sitk.WriteImage(suv_img, output_path)
+
+    # Raw PET activity (Bq/mL), same geometry — used for display rendering only.
+    if raw_output_path is not None:
+        raw_img = sitk.GetImageFromArray(bqml)
+        raw_img.SetSpacing(img.GetSpacing())
+        raw_img.SetOrigin(img.GetOrigin())
+        raw_img.SetDirection(img.GetDirection())
+        sitk.WriteImage(raw_img, raw_output_path)
 
     logger.info(
         "suv_nifti_built",
@@ -314,6 +343,67 @@ def _extract_reference_region_stats(
     return stats
 
 
+def _suv_stats_from_mask(
+    suv_arr: np.ndarray, mask: np.ndarray | None, erode_iter: int = 1, min_voxels: int = 50
+) -> dict[str, float] | None:
+    """Mean/SD SUV inside an organ segmentation mask (e.g. TotalSegmentator liver).
+
+    The mask is eroded a little first to drop boundary voxels (partial-volume with
+    adjacent lung/heart/vessel), which would otherwise pull the reference mean down.
+    Returns None when the mask is empty/missing or too small after erosion, so the
+    caller can fall back to the heuristic ROI.
+    """
+    if mask is None or not mask.any():
+        return None
+    use = mask
+    if erode_iter > 0:
+        eroded = ndimage.binary_erosion(mask, iterations=erode_iter)
+        if int(eroded.sum()) >= min_voxels:
+            use = eroded
+    vals = suv_arr[use]
+    vals = vals[vals > 0]
+    if len(vals) < min_voxels:
+        return None
+    return {
+        "mean": float(np.mean(vals)),
+        "std": float(np.std(vals)),
+        "n_voxels": int(len(vals)),
+    }
+
+
+def _ct_hu_on_original(
+    orig_ct_img, mask: np.ndarray, suv_affine: np.ndarray, erode_iter: int = 1
+) -> float | None:
+    """Median CT HU on the ORIGINAL-resolution CT over a PET-space lesion mask.
+
+    The lesion mask lives on the coarse PET/SUV grid; its voxels are mapped
+    PET-grid -> world(mm) -> original-CT-grid through the two affines, then HU is
+    read on the diagnostic CT. The mask is eroded to its core first to avoid
+    air/edge partial-volume (which on the coarse CT drags soft-tissue HU toward
+    air). Returns None when no voxel maps inside the CT volume.
+    """
+    core = mask
+    if erode_iter > 0:
+        eroded = ndimage.binary_erosion(mask, iterations=erode_iter)
+        if int(eroded.sum()) >= 5:
+            core = eroded
+    ijk = np.argwhere(core)
+    if ijk.size == 0:
+        return None
+    world = nib.affines.apply_affine(suv_affine, ijk)
+    ct_ijk = np.rint(
+        nib.affines.apply_affine(np.linalg.inv(orig_ct_img.affine), world)
+    ).astype(int)
+    ct_data = orig_ct_img.get_fdata()
+    shp = np.array(ct_data.shape)
+    inside = np.all((ct_ijk >= 0) & (ct_ijk < shp), axis=1)
+    ct_ijk = ct_ijk[inside]
+    if len(ct_ijk) == 0:
+        return None
+    vals = ct_data[ct_ijk[:, 0], ct_ijk[:, 1], ct_ijk[:, 2]]
+    return round(float(np.median(vals)), 1)
+
+
 def _compute_suv_peak(
     suv_arr: np.ndarray, lesion_mask: np.ndarray, voxel_vol_ml: float,
     sphere_radius_mm: float, voxel_spacing_mm: tuple[float, float, float],
@@ -371,25 +461,38 @@ def _deauville_score(suv_max: float, med_mean: float, liver_mean: float) -> int:
         return 5
 
 
-def _derive_diagnosis(lesions: list[dict], deauville: int, percist_threshold: float) -> str:
-    SUV_CUTOFF = 2.5
+def _derive_diagnosis(
+    lesions: list[dict],
+    deauville: int,
+    suv_cutoff: float,
+    cutoff_label: str = "liver SUVmean",
+) -> str:
+    """Tumor-positive/negative call keyed off ``suv_cutoff``.
+
+    ``suv_cutoff`` is the metabolic-significance threshold — by default the
+    case's own liver SUVmean reference (physiologic background), so a focus is
+    called positive when its SUVmax exceeds the patient's normal liver uptake
+    rather than a fixed absolute SUV. ``cutoff_label`` names the cutoff in the
+    diagnosis text (e.g. "liver SUVmean").
+    """
     if not lesions:
         return (
-            f"Tumor Negative — No FDG-avid lesions detected above SUV {SUV_CUTOFF}. "
-            "No evidence of metabolically active disease."
+            f"Tumor Negative — No FDG-avid lesions detected above {cutoff_label} "
+            f"(SUV {suv_cutoff:.1f}). No evidence of metabolically active disease."
         )
     n = len(lesions)
     suv_max = max(x["suv_max"] for x in lesions)
-    if suv_max > SUV_CUTOFF:
+    if suv_max > suv_cutoff:
         return (
             f"Tumor Positive — {n} FDG-avid lesion(s) detected with SUVmax {suv_max:.1f} "
-            f"(threshold > {SUV_CUTOFF}). Deauville {deauville}. "
+            f"(above {cutoff_label} {suv_cutoff:.1f}). Deauville {deauville}. "
             "Findings consistent with metabolically active disease; clinical correlation recommended."
         )
     else:
         return (
-            f"Tumor Negative — {n} focus/foci with SUVmax {suv_max:.1f} ≤ {SUV_CUTOFF}. "
-            f"Deauville {deauville}. Uptake below tumor-positive threshold; likely physiological."
+            f"Tumor Negative — {n} focus/foci with SUVmax {suv_max:.1f} ≤ {cutoff_label} "
+            f"{suv_cutoff:.1f}. Deauville {deauville}. "
+            "Uptake below tumor-positive threshold; likely physiological."
         )
 
 
@@ -972,20 +1075,127 @@ class Pipeline(BasePipeline):
         )
         return excl, found
 
+    def _segment_reference_organs(
+        self, ct_nifti_path: str, suv_shape: tuple, working_dir: str
+    ) -> dict[str, np.ndarray]:
+        """Segment SUV reference organs (liver + aortic blood pool) via
+        TotalSegmentator on the PET-grid CT.
+
+        Returns a dict of ``{organ: bool mask}`` (at the SUV grid shape) for those
+        successfully segmented. Returns ``{}`` on any failure, so the caller falls
+        back to the HU-box heuristic. These masks are used only for reference SUV
+        statistics — they are NOT added to the lesion-exclusion mask.
+        """
+        import subprocess
+
+        try:
+            import torch
+
+            device = "gpu" if torch.cuda.is_available() else "cpu"
+        except Exception:
+            device = "cpu"
+
+        organs = ["liver", "aorta"]
+        ts_out = os.path.join(working_dir, "petct_reference_seg")
+        os.makedirs(ts_out, exist_ok=True)
+
+        # Run via the CLI in a separate subprocess. TotalSegmentator's nnU-Net
+        # backend uses Python multiprocessing for preprocessing/export, which a
+        # daemonic Celery worker process is forbidden from spawning ("daemonic
+        # processes are not allowed to have children"). A subprocess (fork+exec of
+        # a separate program) is exempt from that restriction — same isolation the
+        # AutoPET3 tier uses.
+        cmd = [
+            "TotalSegmentator",
+            "-i", str(ct_nifti_path),
+            "-o", ts_out,
+            "-ta", "total",
+            "-rs", *organs,
+            "-d", device,
+        ]
+        try:
+            logger.info("reference_totalseg_start", device=device, organs=organs)
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+            if proc.returncode != 0:
+                logger.warning(
+                    "reference_organ_seg_failed",
+                    returncode=proc.returncode,
+                    stderr=(proc.stderr or "")[-600:],
+                )
+                return {}
+            masks: dict[str, np.ndarray] = {}
+            for organ in organs:
+                organ_path = os.path.join(ts_out, f"{organ}.nii.gz")
+                if not os.path.exists(organ_path):
+                    continue
+                mask = nib.load(organ_path).get_fdata() > 0.5
+                if mask.shape == tuple(suv_shape):
+                    masks[organ] = mask
+            logger.info(
+                "reference_totalseg_complete",
+                segmented=list(masks.keys()),
+                liver_voxels=int(masks["liver"].sum()) if "liver" in masks else 0,
+            )
+            return masks
+        except Exception as exc:
+            logger.warning("reference_organ_seg_failed", error=str(exc))
+            return {}
+
     # ── Series classification ─────────────────────────────────────────────────
 
     def _classify_series(self, series: list[Series]) -> dict[str, Series]:
-        classified: dict[str, Series] = {}
+        """Pick the PET and CT series to fuse.
+
+        A PET/CT study commonly carries several CT series — a single-slice scout
+        (topogram/localizer) plus the volumetric whole-body CT. The scout's
+        geometry does not overlap the PET volume, so choosing it makes the CT
+        resample onto the PET grid come out entirely air (-1000 HU): a black CT
+        background and broken reference-region stats. We therefore gather every
+        candidate per modality, drop single-plane scouts, and keep the most
+        voxel-rich (highest instance count) acquisition.
+        """
+        pet_candidates: list[Series] = []
+        ct_candidates: list[Series] = []
         for s in series:
             desc = (s.series_description or "").strip()
             modality = (getattr(s, "modality", "") or "").upper()
 
             if modality == "PT" or any(re.search(p, desc) for p in _PET_PATTERNS):
-                if "PET" not in classified:
-                    classified["PET"] = s
+                pet_candidates.append(s)
             elif modality == "CT" or any(re.search(p, desc) for p in _CT_PATTERNS):
-                if "CT" not in classified:
-                    classified["CT"] = s
+                ct_candidates.append(s)
+
+        def _instances(s: Series) -> int:
+            return getattr(s, "num_instances", 0) or 0
+
+        def _is_scout(s: Series) -> bool:
+            desc = (s.series_description or "").strip()
+            n = _instances(s)
+            # A scout is either named like one, or is a *known* degenerate volume
+            # (1–2 slices) that cannot form a 3-D CT overlapping the PET FOV.
+            # n == 0 means the instance count is unknown (not populated) — do NOT
+            # treat that as a scout, or every CT gets excluded when counts are
+            # missing and the fallback would re-select the topogram.
+            return any(re.search(p, desc) for p in _CT_SCOUT_PATTERNS) or (0 < n <= 2)
+
+        classified: dict[str, Series] = {}
+
+        if pet_candidates:
+            # Prefer the most voxel-rich PET acquisition (skip any tiny derived series).
+            classified["PET"] = max(pet_candidates, key=_instances)
+
+        if ct_candidates:
+            diagnostic = [s for s in ct_candidates if not _is_scout(s)]
+            # Prefer a true volumetric CT; fall back to the largest of whatever
+            # exists so we still attempt fusion rather than silently dropping CT.
+            pool = diagnostic or ct_candidates
+            classified["CT"] = max(pool, key=_instances)
+            if not diagnostic:
+                logger.warning(
+                    "ct_series_only_scouts",
+                    chosen=classified["CT"].series_description,
+                    instances=_instances(classified["CT"]),
+                )
 
         if "PET" not in classified and series:
             # Last resort: take the first series as PET
@@ -1051,7 +1261,8 @@ class Pipeline(BasePipeline):
         nifti_dir = os.path.join(working_dir, "nifti")
         os.makedirs(nifti_dir, exist_ok=True)
         suv_nifti_path = os.path.join(nifti_dir, "pet_suv.nii.gz")
-        _build_suv_nifti(pet_dicom_dir, suv_params, suv_nifti_path)
+        raw_nifti_path = os.path.join(nifti_dir, "pet_raw.nii.gz")
+        _build_suv_nifti(pet_dicom_dir, suv_params, suv_nifti_path, raw_output_path=raw_nifti_path)
 
         # QA: check image dimensions
         pet_img = nib.load(suv_nifti_path)
@@ -1063,6 +1274,7 @@ class Pipeline(BasePipeline):
 
         # Download CT and resample to PET grid (if available)
         ct_nifti_path = None
+        ct_original_path = None  # full-resolution CT (pre-resample) for accurate HU
         if "CT" in classified:
             ct_nifti_path = os.path.join(nifti_dir, "ct.nii.gz")
             try:
@@ -1073,13 +1285,18 @@ class Pipeline(BasePipeline):
                         ct_nifti_path,
                     )
                 )
-                # Resample CT to PET space
+                # Keep the original diagnostic-resolution CT for per-lesion HU
+                # sampling (the PET-grid resample is too coarse — ~4 mm voxels —
+                # and partial-volumes HU toward air near sinuses/airways).
+                ct_original_path = ct_nifti_path
+                # Resample CT to PET space (for fusion / reference ROIs / concordance)
                 ct_pet_path = os.path.join(nifti_dir, "ct_in_pet_space.nii.gz")
                 _resample_ct_to_pet(suv_nifti_path, ct_nifti_path, ct_pet_path)
                 ct_nifti_path = ct_pet_path
             except Exception as exc:
                 logger.warning("ct_download_or_resample_failed", error=str(exc))
                 ct_nifti_path = None
+                ct_original_path = None
                 qa_flags.append("ct_registration_failed")
 
         logger.info(
@@ -1093,7 +1310,9 @@ class Pipeline(BasePipeline):
 
         return {
             "suv_nifti_path": suv_nifti_path,
+            "raw_nifti_path": raw_nifti_path if os.path.exists(raw_nifti_path) else None,
             "ct_nifti_path": ct_nifti_path,
+            "ct_original_nifti_path": ct_original_path,
             "suv_params": suv_params,
             "pet_dims": list(pet_dims),
             "qa_flags": qa_flags,
@@ -1115,6 +1334,17 @@ class Pipeline(BasePipeline):
         voxel_spacing = tuple(abs(float(affine[i, i])) for i in range(3))
         voxel_vol_ml = float(np.prod(voxel_spacing)) / 1000.0
 
+        # Original full-resolution CT (for accurate per-lesion HU sampling). The
+        # PET-grid CT is too coarse (~4 mm) for trustworthy density values.
+        orig_ct_img = None
+        orig_ct_path = preprocessed.get("ct_original_nifti_path")
+        if orig_ct_path and os.path.exists(orig_ct_path):
+            try:
+                orig_ct_img = nib.load(orig_ct_path)
+            except Exception as exc:
+                logger.warning("original_ct_load_failed", error=str(exc))
+                orig_ct_img = None
+
         # Reference region extraction
         ct_arr = None
         ref_stats: dict[str, dict[str, float]] = {}
@@ -1122,7 +1352,28 @@ class Pipeline(BasePipeline):
             ct_img = nib.load(preprocessed["ct_nifti_path"])
             ct_arr = ct_img.get_fdata().astype(np.float32)
             if ct_arr.shape == suv_arr.shape:
-                ref_stats = _extract_reference_region_stats(suv_arr, ct_arr, cfg_post)
+                # Prefer true organ segmentation (TotalSegmentator liver / aorta);
+                # the HU-box heuristic averages generic 40–80 HU soft tissue over a
+                # large region and badly under-reads the liver. Fall back to it only
+                # for organs the segmentation misses.
+                use_seg = cfg_inf.get("reference_organ_segmentation", True)
+                if use_seg:
+                    ref_masks = self._segment_reference_organs(
+                        preprocessed["ct_nifti_path"], suv_arr.shape, working_dir
+                    )
+                    liver_stats = _suv_stats_from_mask(suv_arr, ref_masks.get("liver"))
+                    aorta_stats = _suv_stats_from_mask(suv_arr, ref_masks.get("aorta"))
+                    if liver_stats:
+                        liver_stats["source"] = "totalseg_liver"
+                        ref_stats["liver"] = liver_stats
+                    if aorta_stats:
+                        aorta_stats["source"] = "totalseg_aorta"
+                        ref_stats["mediastinum"] = aorta_stats
+                # Fill any organ the segmentation missed from the HU-box heuristic.
+                if "liver" not in ref_stats or "mediastinum" not in ref_stats:
+                    heur = _extract_reference_region_stats(suv_arr, ct_arr, cfg_post)
+                    ref_stats.setdefault("liver", heur["liver"])
+                    ref_stats.setdefault("mediastinum", heur["mediastinum"])
             else:
                 logger.warning(
                     "ct_pet_shape_mismatch",
@@ -1173,7 +1424,22 @@ class Pipeline(BasePipeline):
                 relative_threshold=round(threshold, 3),
             )
         else:
-            threshold = suv_thresh_abs  # threshold value recorded regardless of method
+            # Calibrated SUV: detection threshold is either the case's own liver
+            # SUVmean (case-adaptive, scales with each patient's physiologic
+            # background) or a fixed absolute SUV cutoff. Liver-mean is preferred
+            # but falls back to the absolute cutoff when no liver reference exists.
+            thr_source = cfg_inf.get("calibrated_threshold_source", "liver_mean")
+            if thr_source == "liver_mean" and liver_mean > 0:
+                liver_factor = float(cfg_inf.get("calibrated_liver_factor", 1.0))
+                threshold = max(liver_factor * liver_mean, 0.1)
+                logger.info(
+                    "calibrated_liver_mean_threshold",
+                    liver_mean=round(liver_mean, 3),
+                    liver_factor=liver_factor,
+                    effective_threshold=round(threshold, 3),
+                )
+            else:
+                threshold = suv_thresh_abs  # fixed absolute SUV cutoff
 
         # DL tier precedence: AutoPET3 (isolated subprocess) → SwinUNETR
         # (in-process) → generic nnU-Net (in-process) → PERCIST threshold.
@@ -1344,12 +1610,29 @@ class Pipeline(BasePipeline):
             tlg = suv_mean * vol_ml  # g (since SUV is dimensionless and vol in mL ≈ g)
             centroid = ndimage.center_of_mass(comp_mask)
 
+            # CT density (HU) over the focus core — the anatomical (CT) correlate
+            # of the metabolic focus. Soft tissue ~30–60 HU; fat negative;
+            # bone/calcium high. Sampled on the ORIGINAL diagnostic CT (median over
+            # the eroded core) so it tracks what a reader measures in the viewer;
+            # falls back to the coarse PET-grid CT mean only if the original is
+            # unavailable. None when no co-registered CT exists.
+            ct_mean_hu = None
+            if orig_ct_img is not None:
+                ct_mean_hu = _ct_hu_on_original(orig_ct_img, comp_mask, affine)
+            if ct_mean_hu is None and ct_arr is not None and ct_arr.shape == suv_arr.shape:
+                comp_ct = ct_arr[comp_mask]
+                if comp_ct.size > 0:
+                    ct_mean_hu = round(float(np.mean(comp_ct)), 1)
+
             lesions.append({
                 "id": len(lesions) + 1,
                 "suv_max": round(suv_max, 2),
                 "suv_mean": round(suv_mean, 2),
                 "suv_peak": round(suv_peak, 2),
+                # Tumor-to-Liver Ratio: lesion SUVmax / liver SUVmean reference.
+                "tlr": round(suv_max / liver_mean, 2) if liver_mean > 0 else None,
                 "volume_ml": round(vol_ml, 2),
+                "ct_mean_hu": ct_mean_hu,
                 "tlg": round(tlg, 2),
                 "anatomical_region": _estimate_anatomical_region(
                     [round(c, 1) for c in centroid], suv_arr.shape
@@ -1428,6 +1711,10 @@ class Pipeline(BasePipeline):
         # Deauville: use the hottest lesion
         global_suv_max = max((x["suv_max"] for x in lesions), default=0.0)
         deauville = _deauville_score(global_suv_max, med_mean, liver_mean)
+        # Tumor-to-Liver Ratio for the hottest lesion (SUVmax / liver SUVmean).
+        tumor_to_liver_ratio = (
+            round(global_suv_max / liver_mean, 2) if liver_mean > 0 and lesions else None
+        )
 
         # (C) Result confidence. SUV-based reporting is only quantitative when the
         # tracer dose / patient weight are present; without CT the physiologic
@@ -1519,11 +1806,40 @@ class Pipeline(BasePipeline):
                 "content_type": "application/gzip",
             }]
 
+        # Copy raw PET (Bq/mL) NIfTI as an artifact if available. Used for display
+        # rendering (PET pane + fused view) so the viewer shows acquired PET
+        # intensities rather than SUV-normalised values.
+        raw_nifti_path = inference_output.get("raw_nifti_path")
+        raw_pet_artifacts = []
+        if raw_nifti_path and os.path.exists(raw_nifti_path):
+            import shutil
+            raw_artifact_path = os.path.join(artifacts_dir, "pet_raw.nii.gz")
+            shutil.copy2(raw_nifti_path, raw_artifact_path)
+            raw_pet_artifacts = [{
+                "name": "pet_raw",
+                "artifact_type": "pet_nifti",
+                "local_path": raw_artifact_path,
+                "content_type": "application/gzip",
+            }]
+
         inference_method = inference_output.get("inference_method", "threshold")
         suppression_method = inference_output.get("suppression_method", "geometric")
         excluded_organs = inference_output.get("excluded_organs", []) or []
         rejected_non_concordant = int(inference_output.get("rejected_non_concordant", 0) or 0)
-        diagnosis = _derive_diagnosis(lesions, deauville, percist_threshold)
+
+        # Tumor-positive call: key off the case's liver SUVmean (physiologic
+        # background) rather than a fixed absolute SUV cutoff, so the call adapts
+        # to each patient's normal liver uptake. Falls back to the absolute SUV
+        # cutoff when liver-mean mode is off or no liver reference is available.
+        cfg_inf = self._cfg.get("inference", {})
+        if cfg_inf.get("calibrated_threshold_source", "liver_mean") == "liver_mean" and liver_mean > 0:
+            diag_factor = float(cfg_inf.get("diagnosis_liver_factor", 1.0))
+            diag_cutoff = diag_factor * liver_mean
+            diag_label = "liver SUVmean" if diag_factor == 1.0 else f"liver SUVmean × {diag_factor:g}"
+        else:
+            diag_cutoff = float(cfg_inf.get("suv_threshold_absolute", 2.5))
+            diag_label = "SUV"
+        diagnosis = _derive_diagnosis(lesions, deauville, diag_cutoff, diag_label)
         if not suv_calibrated:
             diagnosis = (
                 "NON-QUANTITATIVE (uncalibrated SUV) — interpret uptake relatively, "
@@ -1548,6 +1864,7 @@ class Pipeline(BasePipeline):
                 "radiopharmaceutical": radiopharmaceutical,
                 "percist_score": percist_score,
                 "deauville_score": deauville if lesions else None,
+                "tumor_to_liver_ratio": tumor_to_liver_ratio,
                 "diagnosis": diagnosis,
                 "inference_method": inference_method,
                 "quantitative": suv_calibrated,
@@ -1597,6 +1914,7 @@ class Pipeline(BasePipeline):
                 *mip_artifacts,
                 *fused_artifacts,
                 *ct_artifacts,
+                *raw_pet_artifacts,
             ],
         }
 

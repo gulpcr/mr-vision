@@ -588,6 +588,27 @@ class Pipeline(BasePipeline):
 
         tumor_detected = total_lesion_volume_ml > 0
 
+        # Tier 1/2 enrichment — derive lesion geometry (size/location/count) and
+        # relative signal characterisation from the actual segmentation mask +
+        # registered sequences. Best-effort: never let it crash the pipeline.
+        lesion_geometry: dict[str, Any] = {}
+        signal_profile: dict[str, str] = {}
+        if tumor_detected:
+            try:
+                lesion_geometry = self._compute_lesion_geometry(
+                    seg_clean, affine, voxel_spacing, voxel_volume_ml, min_lesion_vol
+                )
+            except Exception as exc:
+                logger.warning("lesion_geometry_failed", error=str(exc))
+            try:
+                signal_profile = self._compute_signal_profile(
+                    inference_output.get("input_path"),
+                    seg_clean,
+                    inference_output.get("sequences_used", []),
+                )
+            except Exception as exc:
+                logger.warning("signal_profile_failed", error=str(exc))
+
         report = {
             "summary": {
                 "tumor_detected": tumor_detected,
@@ -597,6 +618,8 @@ class Pipeline(BasePipeline):
                 },
                 "sequences_used": inference_output.get("sequences_used", []),
                 "inference_method": inference_output.get("inference_method", "unknown"),
+                "signal_profile": signal_profile,
+                **lesion_geometry,
                 "processing_notes": self._generate_processing_notes(
                     inference_output.get("qa_flags", []),
                     volumes_ml,
@@ -647,6 +670,7 @@ class Pipeline(BasePipeline):
                     background_nifti_path=bg_path,
                     segmentation_nifti_path=seg_nifti_path,
                     output_dir=artifacts_dir,
+                    target_size=1024,
                 )
                 logger.info(
                     "preview_images_generated", count=len(preview_artifacts)
@@ -692,12 +716,60 @@ class Pipeline(BasePipeline):
     # Helpers
     # =====================================================================
 
+    @staticmethod
+    def _extract_brain_mask(arr: np.ndarray) -> np.ndarray:
+        """Heuristic brain extraction (skull-strip) for a single 3-D volume.
+
+        Otsu-thresholds the head from background air, then severs the thin
+        skull/scalp connection with an erosion, keeps the largest connected
+        component (the brain), and dilates back with hole-filling. The dilation
+        matches the erosion so surface / extra-axial tissue (e.g. meningioma
+        against the skull) is preserved rather than shaved off.
+
+        This is a dependency-free approximation; a dedicated brain-extraction
+        model (HD-BET / SynthStrip) is the robust upgrade. Returns a float32
+        mask (1.0 inside brain, 0.0 outside) the same shape as ``arr``.
+        """
+        from scipy import ndimage
+
+        if not np.any(arr > 0):
+            return np.ones_like(arr, dtype=np.float32)
+
+        # Otsu split: head (foreground) vs surrounding air.
+        sitk_img = sitk.GetImageFromArray(arr.astype(np.float32))
+        otsu = sitk.OtsuThreshold(sitk_img, 0, 1)  # inside (head) -> 1
+        head = sitk.GetArrayFromImage(otsu).astype(bool)
+        if not head.any():
+            return np.ones_like(arr, dtype=np.float32)
+
+        struct = ndimage.generate_binary_structure(3, 1)
+        iters = 5  # ~5 mm at 1 mm spacing — enough to sever skull/scalp
+
+        eroded = ndimage.binary_erosion(head, structure=struct, iterations=iters)
+        labeled, n = ndimage.label(eroded)
+        if n == 0:
+            return head.astype(np.float32)  # erosion removed everything — keep head
+
+        sizes = ndimage.sum(np.ones_like(labeled, dtype=np.float32), labeled, range(1, n + 1))
+        largest = int(np.argmax(np.atleast_1d(sizes))) + 1
+        brain = labeled == largest
+
+        brain = ndimage.binary_dilation(brain, structure=struct, iterations=iters)
+        brain = ndimage.binary_fill_holes(brain)
+        brain &= head  # never extend beyond the head boundary
+        return brain.astype(np.float32)
+
     def _build_multichannel_input(self, channel_paths: list[str], output_path: str):
         """Stack 4 NIfTI volumes into a single 4-channel NIfTI for BraTS input.
 
-        Each channel is resampled to the same grid and z-score normalized.
+        Each channel is resampled to the same grid, skull-stripped (optional),
+        and z-score normalized.
         """
         target_spacing = self._config["preprocessing"]["target_spacing"]
+        # BraTS is trained on skull-stripped brains; stripping the skull/scalp brings
+        # our input in-distribution and stops the model labelling bright bone/scalp as
+        # tumour. Disable via inference_config preprocessing.skull_strip: false.
+        skull_strip = self._config["preprocessing"].get("skull_strip", True)
         ref_img = sitk.ReadImage(channel_paths[0])
 
         channels = []
@@ -719,6 +791,11 @@ class Pipeline(BasePipeline):
             resampled = resampler.Execute(img)
 
             arr = sitk.GetArrayFromImage(resampled).astype(np.float32)
+            if skull_strip:
+                try:
+                    arr = arr * self._extract_brain_mask(arr)
+                except Exception as exc:
+                    logger.warning("skull_strip_failed", error=str(exc))
             nonzero_mask = arr > 0
             if np.sum(nonzero_mask) > 0:
                 mean_val = float(np.mean(arr[nonzero_mask]))
@@ -875,3 +952,131 @@ class Pipeline(BasePipeline):
         if not qa_flags and tumor_detected:
             notes.append("Processing completed normally with no quality concerns.")
         return " ".join(notes)
+
+    @staticmethod
+    def _compute_lesion_geometry(
+        seg_clean: np.ndarray,
+        affine: Any,
+        voxel_spacing: np.ndarray,
+        voxel_volume_ml: float,
+        min_lesion_vol: float,
+    ) -> dict[str, Any]:
+        """Derive lesion size (AP×TS×CC cm), hemisphere, and lesion count from the
+        segmentation mask. All quantities come from the model's actual output —
+        nothing is inferred beyond the geometry of the mask.
+        """
+        lesion_mask = seg_clean > 0
+        if not lesion_mask.any():
+            return {}
+
+        labeled, num = ndimage.label(lesion_mask)
+        if num == 0:
+            return {}
+
+        comp_voxels = ndimage.sum(
+            np.ones_like(labeled, dtype=np.float32), labeled, range(1, num + 1)
+        )
+        comp_voxels = np.atleast_1d(comp_voxels)
+        significant = int(sum(1 for c in comp_voxels if c * voxel_volume_ml >= min_lesion_vol))
+        lesion_count = significant if significant > 0 else int(num)
+
+        # Largest component drives dimensions / location.
+        largest = int(np.argmax(comp_voxels)) + 1
+        coords = np.array(np.where(labeled == largest))  # (3, N)
+        mins = coords.min(axis=1)
+        maxs = coords.max(axis=1)
+        extent_vox = (maxs - mins + 1).astype(np.float64)
+        dims_mm = extent_vox * np.asarray(voxel_spacing, dtype=np.float64)[: extent_vox.shape[0]]
+
+        result: dict[str, Any] = {"lesion_count": lesion_count}
+
+        # Map array axes → anatomical axes via the affine orientation codes.
+        try:
+            axcodes = nib.aff2axcodes(affine) if isinstance(affine, np.ndarray) else None
+        except Exception:
+            axcodes = None
+
+        dims_cm: dict[str, float] = {}
+        location: str | None = None
+        if axcodes and len(axcodes) >= 3:
+            centroid = coords.mean(axis=1)
+            for ax, code in enumerate(axcodes[:3]):
+                if ax >= dims_mm.shape[0]:
+                    continue
+                cm = round(float(dims_mm[ax]) / 10.0, 1)
+                if code in ("L", "R"):
+                    dims_cm["transverse"] = cm
+                    mid = seg_clean.shape[ax] / 2.0
+                    c = centroid[ax]
+                    if abs(c - mid) < 0.05 * seg_clean.shape[ax]:
+                        location = "midline"
+                    elif (code == "R") == (c > mid):
+                        location = "right"
+                    else:
+                        location = "left"
+                elif code in ("A", "P"):
+                    dims_cm["ap"] = cm
+                elif code in ("S", "I"):
+                    dims_cm["craniocaudal"] = cm
+        else:
+            # No orientation info — report raw extents without anatomical labels.
+            dims_cm = {
+                k: round(float(dims_mm[i]) / 10.0, 1)
+                for i, k in enumerate(("dim1", "dim2", "dim3"))
+                if i < dims_mm.shape[0]
+            }
+
+        if dims_cm:
+            result["lesion_dimensions_cm"] = dims_cm
+        if location:
+            result["lesion_location"] = location
+        return result
+
+    @staticmethod
+    def _compute_signal_profile(
+        input_path: str | None,
+        seg_clean: np.ndarray,
+        sequences_used: list[str],
+    ) -> dict[str, str]:
+        """Characterise lesion signal (hyper/hypo/iso-intense) per genuine sequence.
+
+        The 4-channel input is z-score normalised (brain mean ≈ 0, std ≈ 1), so the
+        mean intensity inside the lesion mask, measured in std units, gives signal
+        relative to surrounding brain parenchyma. Channels that were replicated as a
+        fallback (e.g. "T1(as_T2)") are skipped — that signal is not the real modality.
+        """
+        if not input_path or not os.path.exists(input_path):
+            return {}
+        img = nib.load(input_path).get_fdata().astype(np.float32)
+        if img.ndim != 4:
+            return {}
+
+        mask = seg_clean > 0
+        if not mask.any():
+            return {}
+
+        sh = tuple(min(a, b) for a, b in zip(mask.shape, img.shape[:3]))
+        m = mask[: sh[0], : sh[1], : sh[2]]
+
+        intended = ["T1", "T1ce", "T2", "FLAIR"]
+        profile: dict[str, str] = {}
+        n = min(img.shape[3], len(sequences_used), len(intended))
+        for idx in range(n):
+            used = sequences_used[idx]
+            if "(as_" in used:  # replicated fallback — not the genuine modality
+                continue
+            modality = intended[idx]
+            if modality == "T1ce":  # duplicate of T1 channel for non-contrast input
+                continue
+            chan = img[: sh[0], : sh[1], : sh[2], idx]
+            vals = chan[m]
+            if vals.size < 10:
+                continue
+            mean_in = float(np.mean(vals))
+            if mean_in > 0.4:
+                profile[modality] = "hyperintense"
+            elif mean_in < -0.4:
+                profile[modality] = "hypointense"
+            else:
+                profile[modality] = "isointense"
+        return profile

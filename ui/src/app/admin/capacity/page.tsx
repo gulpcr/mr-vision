@@ -40,22 +40,33 @@ function BarGraph({ values, labels, color = "bg-blue-500", maxOverride }: {
   maxOverride?: number;
 }) {
   const max = maxOverride ?? Math.max(...values, 1);
+  // Show at most ~10 x-axis labels so 30-day charts don't crowd.
+  const labelEvery = Math.max(1, Math.ceil(values.length / 10));
   return (
-    <div className="flex items-end gap-1 h-32">
-      {values.map((v, i) => (
-        <div key={i} className="flex-1 flex flex-col items-center gap-1 group relative">
-          <div
-            className={`w-full ${color} rounded-sm transition-all opacity-80 hover:opacity-100`}
-            style={{ height: `${(v / max) * 100}%`, minHeight: v > 0 ? "2px" : "0" }}
-          />
-          <span className="text-xs text-gray-400 truncate" style={{ writingMode: "vertical-rl", transform: "rotate(180deg)", maxHeight: "32px", fontSize: "9px" }}>
-            {labels[i]}
-          </span>
-          <div className="absolute -top-7 left-1/2 -translate-x-1/2 bg-gray-800 text-white text-xs px-1.5 py-0.5 rounded opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap">
-            {labels[i]}: {v}
+    <div>
+      {/* Bars — each column is h-full so the percentage height resolves against
+          a definite-height parent (the h-32 row). */}
+      <div className="flex items-end gap-1 h-32">
+        {values.map((v, i) => (
+          <div key={i} className="flex-1 h-full flex items-end group relative">
+            <div
+              className={`w-full ${color} rounded-sm transition-all opacity-80 hover:opacity-100`}
+              style={{ height: `${(v / max) * 100}%`, minHeight: v > 0 ? "3px" : "0" }}
+            />
+            <div className="absolute -top-7 left-1/2 -translate-x-1/2 bg-gray-800 text-white text-xs px-1.5 py-0.5 rounded opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap z-10">
+              {labels[i]}: {v}
+            </div>
           </div>
-        </div>
-      ))}
+        ))}
+      </div>
+      {/* X-axis labels */}
+      <div className="flex gap-1 mt-1.5">
+        {labels.map((l, i) => (
+          <span key={i} className="flex-1 text-center text-gray-400 truncate" style={{ fontSize: "9px" }}>
+            {i % labelEvery === 0 ? l : ""}
+          </span>
+        ))}
+      </div>
     </div>
   );
 }

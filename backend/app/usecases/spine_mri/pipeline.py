@@ -156,11 +156,26 @@ class Pipeline(BasePipeline):
             device = cfg.get("device", "auto")
             if device == "auto":
                 device = "cuda:0" if torch.cuda.is_available() else "cpu"
-            self._spinenet = SpineNet(
-                device=device,
-                verbose=False,
-                scan_type=cfg.get("scan_type", "lumbar"),
-            )
+
+            # SpineNet's load_weights() calls torch.load() without weights_only,
+            # but torch >= 2.6 defaults weights_only=True and rejects the numpy
+            # globals in SpineNet's (trusted, official VGG) checkpoints. Force
+            # weights_only=False for the duration of construction only.
+            _orig_load = torch.load
+
+            def _trusting_load(*args, **kwargs):
+                kwargs.setdefault("weights_only", False)
+                return _orig_load(*args, **kwargs)
+
+            torch.load = _trusting_load
+            try:
+                self._spinenet = SpineNet(
+                    device=device,
+                    verbose=False,
+                    scan_type=cfg.get("scan_type", "lumbar"),
+                )
+            finally:
+                torch.load = _orig_load
             logger.info("spinenet_loaded", device=device, scan_type=cfg.get("scan_type", "lumbar"))
             return self._spinenet
         except Exception as exc:

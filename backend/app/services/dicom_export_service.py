@@ -31,6 +31,7 @@ _USECASE_LABELS: dict[str, dict[int, str]] = {
     "abdomen_mri": {1: "Liver", 2: "Spleen", 3: "Left Kidney", 4: "Right Kidney", 5: "Pancreas"},
     "pet_ct": {1: "Lesion"},
     "pet_ct_brain": {1: "Brain Lesion"},
+    "coronary_cta": {1: "Coronary Calcium"},
 }
 
 _SEG_ARTIFACT_NAMES = (

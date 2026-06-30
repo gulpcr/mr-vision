@@ -32,6 +32,15 @@ class StudyResponse(BaseModel):
     body_part_examined: str | None = None
     modality: str | None = None
     institution_name: str | None = None
+    # Reading workflow + turnaround
+    reading_status: str = "unread"
+    assigned_to: str | None = None
+    assigned_to_username: str | None = None
+    assigned_at: datetime | None = None
+    reported_at: datetime | None = None
+    signed_at: datetime | None = None
+    tat_report_minutes: float | None = None
+    tat_signoff_minutes: float | None = None
     series: list[SeriesResponse] = []
     created_at: datetime
     updated_at: datetime

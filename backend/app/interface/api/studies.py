@@ -181,9 +181,26 @@ async def list_orthanc_studies():
         await client.close()
 
 
+def _tat_minutes(start, end) -> float | None:
+    if not start or not end:
+        return None
+    return round((end - start).total_seconds() / 60.0, 1)
+
+
 def _to_response(study) -> StudyResponse:
+    reading_status = getattr(study, "reading_status", "unread") or "unread"
+    reported_at = getattr(study, "reported_at", None)
+    signed_at = getattr(study, "signed_at", None)
     return StudyResponse(
         study_instance_uid=study.study_instance_uid,
+        reading_status=reading_status,
+        assigned_to=getattr(study, "assigned_to", None),
+        assigned_to_username=getattr(study, "assigned_to_username", None),
+        assigned_at=getattr(study, "assigned_at", None),
+        reported_at=reported_at,
+        signed_at=signed_at,
+        tat_report_minutes=_tat_minutes(study.created_at, reported_at),
+        tat_signoff_minutes=_tat_minutes(study.created_at, signed_at),
         patient_id=study.patient_id,
         patient_name=study.patient_name,
         patient_sex=study.patient_sex,

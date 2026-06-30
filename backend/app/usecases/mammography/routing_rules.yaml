@@ -1,0 +1,20 @@
+rules:
+  - body_parts:
+      - BREAST
+    study_description_patterns:
+      - "(?i)mammogr"
+      - "(?i)breast"
+      - "(?i)\\bMG\\b"
+      - "(?i)tomosynth"
+    series_description_patterns:
+      - "(?i)mammogr"
+      - "(?i)breast"
+      - "(?i)\\bcc\\b"
+      - "(?i)\\bmlo\\b"
+      - "(?i)craniocaudal"
+      - "(?i)mediolateral"
+      - "(?i)\\b[lr]\\s*cc\\b"
+      - "(?i)\\b[lr]\\s*mlo\\b"
+    modality: MG
+    priority: 10
+    enabled: true

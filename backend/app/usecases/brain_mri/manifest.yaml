@@ -1,14 +1,16 @@
 name: brain_mri
 version: "1.0.0"
 description: >
-  Brain MRI segmentation using nnU-Net v2. Segments brain structures
-  including white matter, gray matter, CSF, and detects lesions.
-  Computes volumetric measurements and QA checks.
+  Brain tumour segmentation using the MONAI Model Zoo BraTS SegResNet bundle
+  (auto-downloaded on first run). Segments tumour core, whole tumour, and
+  enhancing tumour; computes lesion volumetrics and QA checks. An optional
+  custom SwinUNETR model can override the BraTS bundle; a synthetic fallback
+  runs when no weights are available.
 supported_body_parts:
   - BRAIN
   - HEAD
 required_sequences:
   - T1
   - FLAIR
-model_type: segresnet
+model_type: SegResNet (BraTS bundle)
 enabled: true

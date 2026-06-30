@@ -154,6 +154,12 @@ class PgStudyRepository(StudyRepository):
             modality=record.modality,
             institution_name=record.institution_name,
             orthanc_id=record.orthanc_id,
+            reading_status=getattr(record, "reading_status", "unread") or "unread",
+            assigned_to=getattr(record, "assigned_to", None),
+            assigned_to_username=getattr(record, "assigned_to_username", None),
+            assigned_at=getattr(record, "assigned_at", None),
+            reported_at=getattr(record, "reported_at", None),
+            signed_at=getattr(record, "signed_at", None),
             created_at=record.created_at,
             updated_at=record.updated_at,
         )

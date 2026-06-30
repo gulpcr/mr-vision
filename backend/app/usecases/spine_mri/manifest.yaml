@@ -1,9 +1,12 @@
 name: spine_mri
 version: "1.0.0"
 description: >
-  Spine MRI segmentation and quantitative analysis. Segments vertebrae,
-  intervertebral discs, spinal canal, and spinal cord. Computes disc counts,
-  canal and cord cross-sectional areas, and flags stenosis and cord compression.
+  Spine MRI segmentation and quantitative analysis using TotalSegmentator
+  (total_mr): vertebrae, intervertebral discs, spinal canal, and cord, with
+  disc counts, canal/cord cross-sectional areas, and stenosis / cord-compression
+  flags. When enabled, SpineNet adds exact vertebral-level identification
+  (e.g. L4-L5) and per-disc radiological grading (Pfirrmann, herniation). A
+  synthetic fallback runs when no weights are available.
 supported_body_parts:
   - SPINE
   - CSPINE
@@ -12,5 +15,5 @@ supported_body_parts:
 required_sequences:
   - SAG_T2
   - AX_T2
-model_type: segresnet
+model_type: TotalSegmentator (total_mr) + SpineNet
 enabled: true

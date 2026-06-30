@@ -39,12 +39,18 @@ def _lesion_finding_sentence(lesion: dict[str, Any]) -> str:
     region = lesion.get("anatomical_region", "the region")
     suv_max = lesion.get("suv_max")
     volume = lesion.get("volume_ml")
-    parts = [f"FDG-avid lesion in {region}"]
+    ct_hu = lesion.get("ct_mean_hu")
+    sentence = f"FDG-avid lesion in {region}"
     if isinstance(suv_max, (int, float)):
-        parts.append(f"with SUV<sub>max</sub> {suv_max:.1f}")
+        sentence += f" with SUV<sub>max</sub> {suv_max:.1f}"
+    paren = []
     if isinstance(volume, (int, float)):
-        parts.append(f"(metabolic volume {volume:.1f} mL)")
-    return " ".join(parts) + "."
+        paren.append(f"metabolic volume {volume:.1f} mL")
+    if isinstance(ct_hu, (int, float)):
+        paren.append(f"CT density {ct_hu:.0f} HU")
+    if paren:
+        sentence += f" ({', '.join(paren)})"
+    return sentence + "."
 
 
 def _group_lesions_by_report_section(lesions: list[dict]) -> dict[str, list[dict]]:
@@ -75,6 +81,9 @@ def _build_conclusions(summary: dict[str, Any], lesions: list[dict]) -> list[str
         deauville = summary.get("deauville_score")
         if deauville:
             bullets.append(f"Deauville score: {deauville}.")
+        tlr = summary.get("tumor_to_liver_ratio")
+        if isinstance(tlr, (int, float)):
+            bullets.append(f"Tumor-to-liver ratio (SUVmax/liver SUVmean): {tlr:.2f}.")
         percist = summary.get("percist_score")
         if percist:
             bullets.append(f"PERCIST status: {percist}.")
@@ -86,6 +95,135 @@ def _build_conclusions(summary: dict[str, Any], lesions: list[dict]) -> list[str
         bullets.append("No FDG-avid lesion suggestive of metabolically active disease was detected.")
 
     return bullets
+
+
+# ── MRI narrative report (brain/spine/chest/abdomen) — auto-derived findings ──
+_MRI_EXAMINATION_BY_USECASE = {
+    "spine_mri": "MRI OF THE SPINE",
+    "chest_mri": "MRI OF THE CHEST",
+    "abdomen_mri": "MRI OF THE ABDOMEN",
+}
+
+
+_LOCATION_PHRASE = {
+    "left": "in the left cerebral hemisphere",
+    "right": "in the right cerebral hemisphere",
+    "midline": "near the midline",
+}
+
+
+def _mri_size_phrase(summary: dict[str, Any]) -> str:
+    """e.g. '2.1 × 1.9 × 1.5 cm (AP × TS × CC)' from derived lesion_dimensions_cm."""
+    dims = summary.get("lesion_dimensions_cm") or {}
+    ap, ts, cc = dims.get("ap"), dims.get("transverse"), dims.get("craniocaudal")
+    if all(isinstance(v, (int, float)) for v in (ap, ts, cc)):
+        return f"{ap:.1f} × {ts:.1f} × {cc:.1f} cm (AP × TS × CC)"
+    ordered = [v for v in dims.values() if isinstance(v, (int, float))]
+    if len(ordered) == 3:
+        return " × ".join(f"{v:.1f}" for v in ordered) + " cm"
+    return ""
+
+
+def _mri_signal_phrase(summary: dict[str, Any]) -> str:
+    """e.g. 'T2 and FLAIR hyperintense, T1 hypointense relative to brain parenchyma.'"""
+    signal = summary.get("signal_profile") or {}
+    if not signal:
+        return ""
+    by_desc: dict[str, list[str]] = {}
+    for modality, desc in signal.items():
+        by_desc.setdefault(desc, []).append(modality)
+    clauses = [
+        f"{' and '.join(mods)} {desc}"
+        for desc in ("hyperintense", "hypointense", "isointense")
+        if (mods := by_desc.get(desc))
+    ]
+    if not clauses:
+        return ""
+    return "The lesion appears " + ", ".join(clauses) + " relative to surrounding brain parenchyma."
+
+
+def _build_mri_findings(summary: dict[str, Any], measurements: dict[str, Any]) -> list[str]:
+    """Auto-derive FINDINGS paragraphs from the MRI AI segmentation result.
+
+    Mirrors the PET-CT report's lesion-sentence derivation, enriched with lesion
+    geometry (size/location/count) and relative signal characterisation computed
+    from the segmentation mask. Every quantity comes from the model's output; the
+    radiologist reviews these against the images.
+    """
+    lines: list[str] = []
+    volumes = (measurements or {}).get("volumes_ml", {}) or {}
+    detected = summary.get("tumor_detected") is True or summary.get("lesion_detected") is True
+
+    if detected:
+        total = summary.get("total_lesion_volume_ml")
+        count = summary.get("lesion_count")
+        location = summary.get("lesion_location")
+        size_phrase = _mri_size_phrase(summary)
+
+        if isinstance(count, int) and count > 1:
+            lead = f"AI segmentation identifies {count} segmented lesions; the largest"
+        else:
+            lead = "AI segmentation identifies a lesion"
+        if location in _LOCATION_PHRASE:
+            lead += f" {_LOCATION_PHRASE[location]}"
+        if size_phrase:
+            lead += f", measuring approximately {size_phrase}"
+        if isinstance(total, (int, float)):
+            lead += f", with a total segmented volume of {total:.1f} mL"
+        lines.append(lead.rstrip(",") + ".")
+
+        signal_phrase = _mri_signal_phrase(summary)
+        if signal_phrase:
+            lines.append(signal_phrase)
+
+        comps = [(k, v) for k, v in volumes.items() if isinstance(v, (int, float)) and v > 0]
+        if comps:
+            parts = [f"{str(k).replace('_', ' ').title()} {v:.1f} mL" for k, v in comps]
+            lines.append("Segmented component volumes — " + "; ".join(parts) + ".")
+    else:
+        lines.append(
+            "No abnormal segmented lesion was detected on the analysed sequences by the AI model."
+        )
+
+    findings = summary.get("abnormal_findings")
+    if isinstance(findings, list):
+        for f in findings:
+            if not isinstance(f, dict):
+                continue
+            title = str(
+                f.get("organ") or f.get("finding") or f.get("side") or "Finding"
+            ).replace("_", " ").title()
+            sev = f.get("severity") or f.get("status") or ""
+            note = f.get("note") or ""
+            line = title
+            if sev:
+                line += f" — {str(sev).replace('_', ' ').title()}"
+            if note:
+                line += f": {note}"
+            lines.append(line)
+
+    notes = summary.get("processing_notes")
+    if notes:
+        lines.append(str(notes))
+    return lines
+
+
+def _build_mri_impression(summary: dict[str, Any]) -> str:
+    """Auto-derive the IMPRESSION line from the MRI AI result."""
+    detected = summary.get("tumor_detected") is True or summary.get("lesion_detected") is True
+    if detected:
+        total = summary.get("total_lesion_volume_ml")
+        location = summary.get("lesion_location")
+        size_phrase = _mri_size_phrase(summary)
+        size = f" measuring ~{size_phrase}" if size_phrase else (
+            f" (~{total:.1f} mL)" if isinstance(total, (int, float)) else ""
+        )
+        loc = f" {_LOCATION_PHRASE[location]}" if location in _LOCATION_PHRASE else ""
+        return (
+            f"Segmented brain lesion{size}{loc} identified on AI analysis — "
+            "recommend clinical and radiological correlation."
+        )
+    return "No segmentable focal lesion identified on AI analysis."
 
 
 def build_petct_patient_info(study_rec: Any) -> dict[str, Any]:
@@ -132,6 +270,24 @@ def build_petct_patient_info(study_rec: Any) -> dict[str, Any]:
     }
 
 
+def _reading_status_line(patient_info: dict[str, Any]) -> tuple[str, bool]:
+    """Human-readable reading-workflow status for the report. Returns (text, is_signed)."""
+    rs = patient_info.get("reading_status") or "unread"
+    by = patient_info.get("assigned_to_username")
+    signed_at = patient_info.get("signed_at")
+    if rs == "signed":
+        return (
+            f"SIGNED OFF{(' — ' + by) if by else ''}{(' · ' + signed_at) if signed_at else ''}",
+            True,
+        )
+    label = {
+        "unread": "Unclaimed",
+        "in_progress": f"Reading{(' — ' + by) if by else ''}",
+        "reported": f"Reported{(' — ' + by) if by else ''}",
+    }.get(rs, rs)
+    return (f"PRELIMINARY · {label}", False)
+
+
 class PDFReportGenerator:
     """Generate PDF reports from AI results using reportlab."""
 
@@ -154,6 +310,14 @@ class PDFReportGenerator:
                 return self._generate_petct_molecular_report(
                     study_uid, usecase_name, result, patient_info or {}, narrative
                 )
+            if usecase_name == "mammography":
+                return self._generate_mammography_report(
+                    study_uid, result, patient_info or {}
+                )
+            if usecase_name in ("brain_mri", "spine_mri", "chest_mri", "abdomen_mri"):
+                return self._generate_mri_narrative_report(
+                    study_uid, usecase_name, result, patient_info or {}, narrative
+                )
             return self._generate_with_reportlab(
                 study_uid, usecase_name, result, patient_info, narrative
             )
@@ -162,6 +326,329 @@ class PDFReportGenerator:
             return self._generate_text_fallback(
                 study_uid, usecase_name, result, patient_info, narrative
             )
+
+    def _generate_mammography_report(
+        self,
+        study_uid: str,
+        result: dict[str, Any],
+        patient_info: dict[str, Any],
+    ) -> bytes:
+        """Render the formal bilateral mammography report (AECH-KIRAN layout).
+
+        Body fields (procedure, clinical features, per-breast findings, opinion,
+        BI-RADS, signatories) come from the saved radiologist report in
+        ``result["summary"]``; demographics from ``patient_info``; hospital header,
+        footer roster and address from settings.
+        """
+        from reportlab.lib import colors
+        from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+        from reportlab.lib.units import cm
+        from reportlab.pdfgen import canvas
+        from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+        from app.config import get_settings
+
+        settings = get_settings()
+        r = result.get("summary", {}) or {}
+
+        def g(key: str, default: str = "_____") -> str:
+            val = patient_info.get(key)
+            return str(val) if val not in (None, "") else default
+
+        def rv(key: str, default: str = "_____") -> str:
+            val = r.get(key)
+            return str(val) if val not in (None, "") else default
+
+        prn = g("patient_id")
+        roster = settings.report_footer_roster or []
+        address = settings.report_footer_address
+
+        class NumberedCanvas(canvas.Canvas):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                self._saved = []
+
+            def showPage(self):
+                self._saved.append(dict(self.__dict__))
+                self._startPage()
+
+            def save(self):
+                total = len(self._saved)
+                for state in self._saved:
+                    self.__dict__.update(state)
+                    self.setFont("Helvetica", 7)
+                    # Footer doctor roster (two columns) + address.
+                    if roster:
+                        half = (len(roster) + 1) // 2
+                        y = 2.4 * cm
+                        for i, entry in enumerate(roster[:half]):
+                            self.drawString(2 * cm, y - i * 0.32 * cm, entry.replace("|", "—"))
+                        for i, entry in enumerate(roster[half:]):
+                            self.drawString(11 * cm, y - i * 0.32 * cm, entry.replace("|", "—"))
+                    self.setFont("Helvetica-Oblique", 7)
+                    self.drawCentredString(A4[0] / 2, 1.0 * cm, address)
+                    self.setFont("Helvetica", 8)
+                    self.drawRightString(
+                        A4[0] - 2 * cm, 0.6 * cm, f"Page {self._pageNumber} of {total}"
+                    )
+                    super().showPage()
+                super().save()
+
+        buf = io.BytesIO()
+        doc = SimpleDocTemplate(
+            buf, pagesize=A4,
+            leftMargin=2 * cm, rightMargin=2 * cm,
+            topMargin=1.6 * cm, bottomMargin=4.2 * cm,
+            title=f"Bilateral Mammography — {prn}",
+        )
+
+        styles = getSampleStyleSheet()
+        h_name = ParagraphStyle("hname", parent=styles["Normal"], fontSize=16,
+                                fontName="Helvetica-Bold", alignment=TA_CENTER)
+        h_sub = ParagraphStyle("hsub", parent=styles["Normal"], fontSize=8.5,
+                               alignment=TA_CENTER, textColor=colors.HexColor("#444444"))
+        title_style = ParagraphStyle("title", parent=styles["Normal"], fontSize=12,
+                                     fontName="Helvetica-Bold", alignment=TA_CENTER, spaceBefore=8, spaceAfter=6)
+        head = ParagraphStyle("head", parent=styles["Normal"], fontSize=10,
+                              fontName="Helvetica-Bold", spaceBefore=8, spaceAfter=2)
+        body = ParagraphStyle("body", parent=styles["Normal"], fontSize=9.5,
+                              alignment=TA_JUSTIFY, leading=13)
+        cell = ParagraphStyle("cell", parent=styles["Normal"], fontSize=9)
+
+        story: list[Any] = [
+            Paragraph(settings.report_hospital_name, h_name),
+            Paragraph(settings.report_hospital_subtitle, h_sub),
+            Spacer(1, 6),
+        ]
+
+        # Patient table (PRN / File No / Status / Name / Age-Gender / Contact / Entry Date)
+        age_gender = f"{g('patient_age', '—')} / {g('patient_sex', '—')}"
+        info = [
+            [Paragraph(f"<b>PRN:</b> {prn}", cell),
+             Paragraph(f"<b>File No.:</b> {rv('file_no', 'NIL')}", cell),
+             Paragraph(f"<b>Status:</b> {rv('status', '—')}", cell)],
+            [Paragraph(f"<b>Name:</b> {g('patient_name', '—')}", cell),
+             Paragraph(f"<b>Age/Gender:</b> {age_gender}", cell),
+             Paragraph(f"<b>Contact:</b> {rv('contact', '—')}", cell)],
+            [Paragraph(f"<b>Entry Date:</b> {g('study_date', '—')}", cell), "", ""],
+        ]
+        tbl = Table(info, colWidths=[6 * cm, 5.5 * cm, 5.5 * cm])
+        tbl.setStyle(TableStyle([
+            ("BOX", (0, 0), (-1, -1), 0.75, colors.HexColor("#333333")),
+            ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#cccccc")),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("SPAN", (0, 2), (2, 2)),
+        ]))
+        story.append(tbl)
+
+        laterality = (r.get("laterality") or "bilateral").lower()
+        show_right = laterality in ("bilateral", "right")
+        show_left = laterality in ("bilateral", "left")
+
+        title_map = {"right": "RIGHT MAMMOGRAPHY", "left": "LEFT MAMMOGRAPHY"}
+        story.append(Paragraph(title_map.get(laterality, "BILATERAL MAMMOGRAPHY"), title_style))
+
+        scope = {"right": "of the right breast ", "left": "of the left breast "}.get(
+            laterality, "of both breasts "
+        )
+        procedure_default = f"Digital mammography {scope}performed in routine CC and MLO views."
+        story.append(Paragraph("Procedure:", head))
+        story.append(Paragraph(rv("procedure", procedure_default), body))
+        story.append(Paragraph("Clinical Features:", head))
+        story.append(Paragraph(rv("clinical_features", "—"), body))
+
+        story.append(Paragraph("Findings:", head))
+        if show_right:
+            story.append(Paragraph("RIGHT BREAST:", ParagraphStyle(
+                "rb", parent=head, fontSize=9.5, spaceBefore=4)))
+            story.append(Paragraph(rv("right_breast_findings", "—"), body))
+        if show_left:
+            story.append(Paragraph("LEFT BREAST:", ParagraphStyle(
+                "lb", parent=head, fontSize=9.5, spaceBefore=4)))
+            story.append(Paragraph(rv("left_breast_findings", "—"), body))
+
+        story.append(Paragraph("Opinion:", head))
+        story.append(Paragraph(rv("opinion", "—"), body))
+        birads_lines = []
+        if show_right:
+            birads_lines.append(f"BI-RADS category {rv('birads_right', '—')} for right breast.")
+        if show_left:
+            birads_lines.append(f"BI-RADS category {rv('birads_left', '—')} for left breast.")
+        if birads_lines:
+            story.append(Paragraph(" ".join(birads_lines), body))
+
+        # Signatories
+        story.append(Spacer(1, 30))
+        sig = ParagraphStyle("sig", parent=styles["Normal"], fontSize=9.5,
+                             fontName="Helvetica-Bold", alignment=TA_CENTER)
+        sig_sub = ParagraphStyle("sigsub", parent=styles["Normal"], fontSize=8,
+                                 alignment=TA_CENTER)
+        sig_tbl = Table([
+            [Paragraph(rv("reviewing_doctor", "_______________"), sig),
+             Paragraph(rv("reporting_doctor", "_______________"), sig)],
+            [Paragraph("Reviewing Doctor", sig_sub), Paragraph("Reporting Doctor", sig_sub)],
+        ], colWidths=[8.5 * cm, 8.5 * cm])
+        story.append(sig_tbl)
+
+        doc.build(story, canvasmaker=NumberedCanvas)
+        buf.seek(0)
+        return buf.read()
+
+    def _generate_mri_narrative_report(
+        self,
+        study_uid: str,
+        usecase_name: str,
+        result: dict[str, Any],
+        patient_info: dict[str, Any],
+        narrative: str = "",
+    ) -> bytes:
+        """Render the formal MRI narrative report (departmental brain MRI layout).
+
+        Layout mirrors the reference clinical report: a two-column demographics
+        block, then EXAMINATION / TECHNIQUE / CLINICAL INDICATION / FINDINGS /
+        IMPRESSION sections and a single signatory block, with a computer-generated
+        footer note.
+
+        Like the PET-CT molecular report, FINDINGS / IMPRESSION are AUTO-DERIVED
+        from the AI result (segmentation volumes / lesion flags). Demographics and
+        the clinical indication come from ``patient_info`` (merged with patient
+        onboarding by the caller); section defaults and signatory from settings.
+        """
+        from reportlab.lib import colors
+        from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+        from reportlab.lib.units import cm
+        from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+        from app.config import get_settings
+
+        settings = get_settings()
+        summary = result.get("summary", {}) or {}
+        measurements = result.get("measurements", {}) or {}
+
+        def g(key: str, default: str = "") -> str:
+            val = patient_info.get(key)
+            return str(val) if val not in (None, "") else default
+
+        examination = _MRI_EXAMINATION_BY_USECASE.get(
+            usecase_name, settings.mri_report_examination_default
+        )
+        technique = settings.mri_report_technique_default
+        clinical_indication = g("clinical_history") or g("indication")
+        findings_lines = _build_mri_findings(summary, measurements)
+        impression = _build_mri_impression(summary)
+        doctor = settings.mri_report_signatory_name
+        doctor_title = settings.mri_report_signatory_title
+        doctor_quals = settings.mri_report_signatory_qualifications
+
+        prn = g("patient_id", "—")
+
+        buf = io.BytesIO()
+        doc = SimpleDocTemplate(
+            buf, pagesize=A4,
+            leftMargin=2.2 * cm, rightMargin=2.2 * cm,
+            topMargin=1.8 * cm, bottomMargin=2.0 * cm,
+            title=f"MRI Report — {prn}",
+        )
+
+        styles = getSampleStyleSheet()
+        cell = ParagraphStyle("cell", parent=styles["Normal"], fontSize=10, leading=14)
+        sec_head = ParagraphStyle(
+            "sechead", parent=styles["Normal"], fontSize=10.5,
+            fontName="Helvetica-Bold", spaceBefore=12, spaceAfter=4,
+        )
+        body = ParagraphStyle(
+            "body", parent=styles["Normal"], fontSize=10, leading=15,
+            alignment=TA_JUSTIFY, spaceAfter=8,
+        )
+        sig = ParagraphStyle(
+            "sig", parent=styles["Normal"], fontSize=10,
+            fontName="Helvetica-BoldOblique", leading=14,
+        )
+        footer_note = ParagraphStyle(
+            "footernote", parent=styles["Normal"], fontSize=8.5,
+            fontName="Helvetica-BoldOblique", alignment=TA_CENTER,
+            textColor=colors.HexColor("#444444"),
+        )
+
+        def section(label: str, paras: list[str]) -> list[Any]:
+            """Underlined bold heading + one paragraph per non-empty line."""
+            els: list[Any] = [Paragraph(f"<u>{label}:</u>", sec_head)]
+            clean = [p.strip() for p in paras if p and p.strip()]
+            if not clean:
+                clean = ["—"]
+            for p in clean:
+                els.append(Paragraph(p, body))
+            return els
+
+        story: list[Any] = []
+
+        # ── Demographics block (two columns, label : value) ────────────────────
+        info_data = [
+            [Paragraph(f"<b>PATIENT</b> : {g('patient_name', '—')}", cell),
+             Paragraph(f"<b>MR</b> : {prn}", cell)],
+            [Paragraph(f"<b>DATE</b> : {g('study_date', '—')}", cell),
+             Paragraph(f"<b>AGE</b> : {g('patient_age', '—')}", cell)],
+            [Paragraph(f"<b>GENDER</b> : {g('patient_sex', '—')}", cell),
+             Paragraph(f"<b>REF</b> : {g('referring_physician', '')}", cell)],
+        ]
+        info_table = Table(info_data, colWidths=[9.6 * cm, 7.0 * cm])
+        info_table.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("TOPPADDING", (0, 0), (-1, -1), 1),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ]))
+        story.append(info_table)
+
+        # ── Reading-workflow status (unclaimed / reading by / signed off) ───────
+        _status_text, _is_signed = _reading_status_line(patient_info)
+        story.append(Paragraph(
+            _status_text,
+            ParagraphStyle(
+                "ReportStatus", alignment=TA_CENTER, fontName="Helvetica-Bold", fontSize=9,
+                spaceBefore=6, spaceAfter=2,
+                textColor=colors.HexColor("#067647") if _is_signed else colors.HexColor("#b54708"),
+            ),
+        ))
+        story.append(Spacer(1, 0.3 * cm))
+
+        # ── EXAMINATION (run-in, bold + underlined) ────────────────────────────
+        story.append(Paragraph(f"<u>EXAMINATION:&nbsp; {examination}:</u>", sec_head))
+
+        # ── Narrative sections ─────────────────────────────────────────────────
+        story.append(Paragraph(f"<b><u>TECHNIQUE:</u></b> {technique}", body))
+        story.extend(section("CLINICAL INDICATION", [clinical_indication] if clinical_indication else []))
+        story.extend(section("FINDINGS", findings_lines))
+        story.extend(section("IMPRESSION", [impression]))
+
+        # Optional AI narrative impression (appended, clearly labelled).
+        if narrative:
+            story.append(Paragraph("<u>AI-GENERATED IMPRESSION:</u>", sec_head))
+            story.append(Paragraph(narrative, body))
+
+        # ── Signatory ───────────────────────────────────────────────────────────
+        story.append(Spacer(1, 1.6 * cm))
+        story.append(Paragraph("_______________________________", cell))
+        story.append(Paragraph(doctor, sig))
+        if doctor_title:
+            story.append(Paragraph(doctor_title, sig))
+        if doctor_quals:
+            story.append(Paragraph(doctor_quals, sig))
+
+        story.append(Spacer(1, 1.0 * cm))
+        story.append(Paragraph(
+            "Note: This is a computer generated document and does not require any signature.",
+            footer_note,
+        ))
+
+        doc.build(story)
+        buf.seek(0)
+        return buf.read()
 
     def _generate_petct_molecular_report(
         self,
@@ -307,6 +794,17 @@ class PDFReportGenerator:
         ]))
         story.append(info_table)
 
+        # ── Reading-workflow status (unclaimed / reading by / signed off) ────────
+        _status_text, _is_signed = _reading_status_line(patient_info)
+        story.append(Paragraph(
+            _status_text,
+            ParagraphStyle(
+                "ReportStatus", alignment=TA_CENTER, fontName="Helvetica-Bold", fontSize=9,
+                spaceBefore=5, spaceAfter=2,
+                textColor=colors.HexColor("#067647") if _is_signed else colors.HexColor("#b54708"),
+            ),
+        ))
+
         # ── Report title ───────────────────────────────────────────────────────
         story.append(Paragraph(
             "<super>18</super>F-FDG POSITRON EMISSION-COMPUTERIZED TOMOGRAPHY (FDG PET-CT)",
@@ -335,13 +833,25 @@ class PDFReportGenerator:
         # ── TECHNIQUE ────────────────────────────────────────────────────────────
         story.append(Paragraph("TECHNIQUE:", section_head))
         liver = (measurements.get("reference_organs", {}) or {}).get("liver_suv_mean")
-        liver_txt = f"{liver:.1f}" if isinstance(liver, (int, float)) else "_____"
+        liver_txt = f"{liver:.2f}" if isinstance(liver, (int, float)) else "_____"
         story.append(Paragraph(f"Height: {g('patient_height', '_____')} cm", tech_style))
         story.append(Paragraph(f"Weight: {g('patient_weight', '_____')} kg", tech_style))
+        # BMI is derived from height/weight; fall back to computing it here when the
+        # intake merge did not supply one but height & weight are present.
+        bmi_txt = patient_info.get("bmi")
+        if not bmi_txt:
+            try:
+                h, w = float(patient_info.get("patient_height")), float(patient_info.get("patient_weight"))
+                if h > 0 and w > 0:
+                    bmi_txt = f"{round(w / ((h / 100.0) ** 2), 1):g}"
+            except (TypeError, ValueError):
+                bmi_txt = None
+        story.append(Paragraph(f"BMI: {bmi_txt or '_____'} kg/m<super>2</super>", tech_style))
         story.append(Paragraph(f"Fasting blood sugar: {g('fasting_glucose', '_____')} mg/dl", tech_style))
+        story.append(Paragraph(f"Serum creatinine: {g('creatinine', '_____')} mg/dl", tech_style))
         story.append(Paragraph(f"Site of injection: {g('injection_site', '_____')}", tech_style))
         story.append(Paragraph(
-            f"Normal blood pool liver demonstrates SUV<sub>max</sub> {liver_txt}", tech_style
+            f"Normal blood pool liver demonstrates SUV<sub>mean</sub> {liver_txt}", tech_style
         ))
 
         # ── SCAN FINDINGS ──────────────────────────────────────────────────────
@@ -500,6 +1010,17 @@ class PDFReportGenerator:
                 ["Study Date:", patient_info.get("study_date", "N/A")],
                 ["Study UID:", study_uid[:40] + "..." if len(study_uid) > 40 else study_uid],
             ]
+            # Clinical intake (onboarding) — shown when an order is linked.
+            for _label, _key in (
+                ("Referring Physician:", "referring_physician"),
+                ("Indication:", "indication"),
+                ("Clinical History:", "clinical_history"),
+                ("Priority:", "priority"),
+            ):
+                _v = patient_info.get(_key)
+                if _v:
+                    info_data.append([_label, str(_v)])
+            info_data.append(["Report Status:", _reading_status_line(patient_info)[0]])
             info_table = Table(info_data, colWidths=[120, 350])
             info_table.setStyle(TableStyle([
                 ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
@@ -519,6 +1040,77 @@ class PDFReportGenerator:
             elements.append(Paragraph("AI-Generated Impression", narrative_label_style))
             elements.append(Paragraph(narrative, narrative_style))
             elements.append(Spacer(1, 8))
+
+        # AI-Detected Abnormal Findings (pathology screening) — mirrors the web
+        # ReportView section so the PDF and on-screen report stay consistent.
+        _af_summary = result.get("summary", {}) or {}
+        _af_meas = result.get("measurements", {}) or {}
+        _findings = _af_summary.get("abnormal_findings") or []
+        _segments = _af_meas.get("segments") or []
+        _lesion_detected = _af_summary.get("lesion_detected") is True
+        _lesion_count = _af_summary.get("lesion_count") or 0
+        if (isinstance(_findings, list) and _findings) or (
+            isinstance(_segments, list) and _segments
+        ) or _lesion_detected:
+            af_heading = ParagraphStyle(
+                "AFHeading", parent=heading_style, fontSize=13,
+                textColor=HexColor("#b45309"),
+            )
+            elements.append(Paragraph("AI-Detected Abnormal Findings", af_heading))
+            if _lesion_detected:
+                _lc = f"{_lesion_count} lesion(s) detected" if _lesion_count else "Lesion detected"
+                elements.append(
+                    Paragraph(f'<font color="#b91c1c"><b>{_lc}</b></font>', cds_body_style)
+                )
+            for _f in (_findings if isinstance(_findings, list) else []):
+                if not isinstance(_f, dict):
+                    continue
+                _title = str(
+                    _f.get("organ") or _f.get("finding") or _f.get("side") or "Finding"
+                ).replace("_", " ")
+                _sev = _f.get("severity") or _f.get("status") or ""
+                _note = _f.get("note") or ""
+                _line = f"<b>{_title.title()}</b>"
+                if _sev:
+                    _line += f" — {str(_sev).title()}"
+                if _note:
+                    _line += f": {_note}"
+                elements.append(Paragraph(f"• {_line}", cds_body_style))
+            if isinstance(_segments, list) and _segments:
+                _cad = _af_summary.get("cad_rads")
+                _hdr = "Per-Vessel Stenosis" + (
+                    f" — CAD-RADS {_cad}" if _cad is not None else ""
+                )
+                elements.append(Spacer(1, 4))
+                elements.append(Paragraph(f"<b>{_hdr}</b>", cds_body_style))
+                _rows = [["Vessel", "Stenosis", "Grade", "Min lumen (mm)", "Reference (mm)"]]
+                for _s in _segments:
+                    if not isinstance(_s, dict):
+                        continue
+                    _pct = _s.get("stenosis_pct")
+                    _rows.append([
+                        str(_s.get("name") or _s.get("vessel") or "Vessel"),
+                        f"{_pct:.0f}%" if isinstance(_pct, (int, float)) else "-",
+                        str(_s.get("grade") or "-"),
+                        str(_s.get("min_lumen_diameter_mm", "-")),
+                        str(_s.get("reference_diameter_mm", "-")),
+                    ])
+                _seg_table = Table(_rows, colWidths=[120, 70, 80, 90, 90])
+                _seg_table.setStyle(TableStyle([
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("FONTSIZE", (0, 0), (-1, -1), 9),
+                    ("BACKGROUND", (0, 0), (-1, 0), HexColor("#f3f4f6")),
+                    ("GRID", (0, 0), (-1, -1), 0.5, HexColor("#d1d5db")),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                    ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ]))
+                elements.append(_seg_table)
+            elements.append(Paragraph(
+                "<i>AI screening output — not a diagnosis. Review against the images "
+                "and clinical context.</i>",
+                cds_disclaimer_style,
+            ))
+            elements.append(Spacer(1, 10))
 
         # Clinical Decision Support (Phase 3)
         summary = result.get("summary", {})

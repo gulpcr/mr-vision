@@ -619,6 +619,31 @@ class Pipeline(BasePipeline):
             bilateral_analysis and total_lung_vol < 500.0
         )
 
+        # Structured lung-volume characterization (screening — relative L/R
+        # comparison, robust to partial MRI coverage; not lesion detection).
+        chest_findings: list[dict[str, Any]] = []
+        if bilateral_analysis:
+            smaller, larger, side = (
+                (right_lung_vol, left_lung_vol, "right")
+                if right_lung_vol < left_lung_vol
+                else (left_lung_vol, right_lung_vol, "left")
+            )
+            if larger > 0:
+                reduction = (larger - smaller) / larger
+                if reduction >= 0.20:
+                    sev = "mild" if reduction < 0.35 else "moderate" if reduction < 0.5 else "marked"
+                    chest_findings.append({
+                        "finding": "unilateral_lung_volume_loss",
+                        "side": side,
+                        "severity": sev,
+                        "reduction_pct": round(reduction * 100, 1),
+                        "note": (
+                            f"{side.capitalize()} lung volume reduced {reduction * 100:.0f}% vs "
+                            f"contralateral ({sev}) — consider volume loss (atelectasis/collapse), "
+                            "pleural effusion, or consolidation. Clinical correlation recommended."
+                        ),
+                    })
+
         # ── (Problem C) Dedicated lesion detection result ─────────────────────
         # lesion_detected reflects the dedicated lesion model when active; with
         # no lesion model we do NOT infer lesions from volume asymmetry — we only
@@ -665,6 +690,7 @@ class Pipeline(BasePipeline):
                 "lesion_detection_method": lesion_detection_method,
                 "lesion_count": lesion_count,
                 "lung_volume_asymmetry": lung_volume_asymmetry,
+                "abnormal_findings": chest_findings,
                 "cardiac_segmentation_method": cardiac_method,
                 "bilateral_analysis": bilateral_analysis,
                 "lung_volume_ratio": lung_volume_ratio,
@@ -693,6 +719,7 @@ class Pipeline(BasePipeline):
                 "aorta_volume_ml": aorta_vol,
                 "lesion_count": lesion_count,
                 "lesion_volume_ml": round(lesion_total_ml, 1),
+                "lung_findings": chest_findings,
                 "voxel_spacing_mm": [round(float(s), 3) for s in voxel_spacing],
                 "image_dimensions": inference_output.get("image_shape", []),
             },

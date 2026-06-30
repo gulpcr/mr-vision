@@ -1,0 +1,14 @@
+name: mammography
+version: "1.0.0"
+description: >
+  Bilateral digital mammography analysis. Classifies the four standard views
+  (L/R CC and MLO), produces a per-breast malignancy probability and an
+  AI-suggested BI-RADS category, and renders the views for review. Designed to
+  run an open-source breast model (NYU GMIC) when weights are provided; falls
+  back to a deterministic non-diagnostic placeholder until weights are installed.
+supported_body_parts:
+  - BREAST
+required_sequences:
+  - MG
+model_type: GMIC (NYU) breast classifier — placeholder until weights installed
+enabled: true

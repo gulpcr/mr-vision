@@ -45,6 +45,21 @@ def main() -> int:
         sys.path.insert(0, fork)
 
     import torch
+
+    # torch >= 2.6 defaults torch.load(weights_only=True), which rejects the
+    # AutoPET3 nnU-Net checkpoints (they pickle the trainer/plans/init_args, not
+    # just tensors). The fork's predict_from_raw_data.py calls bare torch.load,
+    # so make weights_only=False the default for THIS process only. The fork is
+    # a vendored submodule we must not edit; the checkpoint source (Zenodo
+    # 14007247, Team LesionTracer) is trusted.
+    _orig_torch_load = torch.load
+
+    def _trusting_load(*a, **kw):
+        kw.setdefault("weights_only", False)
+        return _orig_torch_load(*a, **kw)
+
+    torch.load = _trusting_load
+
     from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor
 
     folds = tuple(f if f == "all" else int(f) for f in args.folds.split(","))

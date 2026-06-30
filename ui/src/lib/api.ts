@@ -30,6 +30,14 @@ async function fetchAPI<T>(path: string, options?: RequestInit): Promise<T> {
     ...options,
   });
   if (!res.ok) {
+    // Session expired / unauthenticated (jwt mode) → clear token and bounce to login.
+    if (res.status === 401 && typeof window !== "undefined") {
+      localStorage.removeItem("auth_token");
+      localStorage.removeItem("user");
+      if (!window.location.pathname.startsWith("/login")) {
+        window.location.href = "/login";
+      }
+    }
     const error = await res.json().catch(() => ({ detail: res.statusText }));
     const detail = error.detail;
     let message: string;
@@ -62,9 +70,117 @@ export interface Study {
   body_part_examined: string | null;
   modality: string | null;
   institution_name: string | null;
+  // Reading workflow + turnaround
+  reading_status?: string;
+  assigned_to?: string | null;
+  assigned_to_username?: string | null;
+  assigned_at?: string | null;
+  reported_at?: string | null;
+  signed_at?: string | null;
+  tat_report_minutes?: number | null;
+  tat_signoff_minutes?: number | null;
   series: Series[];
   created_at: string;
   updated_at: string;
+}
+
+export interface PatientRecordOut {
+  id: string;
+  patient_ref: string;
+  sex: string | null;
+  age_band: string | null;
+  created_at: string | null;
+}
+
+export interface OrderCreate {
+  patient_ref: string;
+  sex: string;
+  age_band: string;
+  modality: string;
+  body_part?: string | null;
+  indication: string;
+  region_profile: string;
+  referrer?: string | null;
+  priority?: string;
+  consent_ack: boolean;
+  study_instance_uid?: string | null;
+  clinical_history?: string | null;
+  comparative_study?: string | null;
+  height_cm?: number | null;
+  weight_kg?: number | null;
+  fasting_glucose?: string | null;
+  injection_site?: string | null;
+  creatinine?: string | null;
+}
+
+export interface ClinicalForStudy {
+  indication?: string;
+  clinical_history?: string;
+  comparative_study?: string;
+  referrer?: string | null;
+  priority?: string;
+  height_cm?: number | null;
+  weight_kg?: number | null;
+  bmi?: number | null;
+  fasting_glucose?: string | null;
+  injection_site?: string | null;
+  creatinine?: string | null;
+  sex?: string | null;
+  age_band?: string | null;
+  patient_ref?: string | null;
+}
+
+export interface MammographyReportData {
+  study_instance_uid?: string;
+  laterality?: string | null;
+  file_no?: string | null;
+  status?: string | null;
+  contact?: string | null;
+  procedure?: string | null;
+  clinical_features?: string | null;
+  right_breast_findings?: string | null;
+  left_breast_findings?: string | null;
+  opinion?: string | null;
+  birads_right?: string | null;
+  birads_left?: string | null;
+  reviewing_doctor?: string | null;
+  reporting_doctor?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface OrderOut {
+  id: string;
+  patient_id: string;
+  modality: string;
+  body_part: string | null;
+  referrer: string | null;
+  priority: string;
+  indication: string;
+  region_profile: string;
+  consent_ack: boolean;
+  study_instance_uid: string | null;
+  clinical_history?: string | null;
+  comparative_study?: string | null;
+  height_cm?: number | null;
+  weight_kg?: number | null;
+  bmi?: number | null;
+  fasting_glucose?: string | null;
+  injection_site?: string | null;
+  creatinine?: string | null;
+  created_at: string | null;
+}
+
+export interface ReadingState {
+  study_instance_uid: string;
+  reading_status: string;
+  assigned_to: string | null;
+  assigned_to_username: string | null;
+  assigned_at: string | null;
+  reported_at: string | null;
+  signed_at: string | null;
+  tat_report_minutes: number | null;
+  tat_signoff_minutes: number | null;
 }
 
 export interface Series {
@@ -344,6 +460,48 @@ export const api = {
     delete: (uid: string) =>
       fetchAPI<void>(`/studies/${uid}`, { method: "DELETE" }),
   },
+  onboarding: {
+    searchPatients: (query = "") =>
+      fetchAPI<PatientRecordOut[]>(`/patients?query=${encodeURIComponent(query)}`),
+    getPatient: (id: string) =>
+      fetchAPI<{ patient: PatientRecordOut; orders: OrderOut[] }>(`/patients/${id}`),
+    getClinical: (studyUid: string) =>
+      fetchAPI<ClinicalForStudy>(`/studies/${studyUid}/clinical`),
+    createOrder: (payload: OrderCreate) =>
+      fetchAPI<{ order: OrderOut; patient: PatientRecordOut }>("/orders", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }),
+    updatePatient: (id: string, body: { sex?: string; age_band?: string }) =>
+      fetchAPI<PatientRecordOut>(`/patients/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      }),
+    updateOrder: (id: string, body: Partial<OrderCreate>) =>
+      fetchAPI<OrderOut>(`/orders/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+    linkStudy: (orderId: string, studyUid: string) =>
+      fetchAPI<OrderOut>(
+        `/orders/${orderId}/link-study?study_uid=${encodeURIComponent(studyUid)}`,
+        { method: "POST" }
+      ),
+  },
+  reading: {
+    claim: (uid: string) =>
+      fetchAPI<ReadingState>(`/studies/${uid}/claim`, { method: "POST" }),
+    autoAssign: (uid: string) =>
+      fetchAPI<ReadingState>(`/studies/${uid}/auto-assign`, { method: "POST" }),
+    assign: (uid: string, assigneeId: string) =>
+      fetchAPI<ReadingState>(
+        `/studies/${uid}/assign?assignee_id=${encodeURIComponent(assigneeId)}`,
+        { method: "POST" }
+      ),
+    unclaim: (uid: string) =>
+      fetchAPI<ReadingState>(`/studies/${uid}/unclaim`, { method: "POST" }),
+    report: (uid: string) =>
+      fetchAPI<ReadingState>(`/studies/${uid}/report`, { method: "POST" }),
+    sign: (uid: string) =>
+      fetchAPI<ReadingState>(`/studies/${uid}/sign`, { method: "POST" }),
+  },
   jobs: {
     create: (studyUid: string, usecases?: string[]) =>
       fetchAPI<{ jobs: Job[] }>(`/studies/${studyUid}/jobs`, {
@@ -504,10 +662,23 @@ export const api = {
   reports: {
     getPdfUrl: (studyUid: string, usecase: string) =>
       `${API_BASE}/reports/${studyUid}/${usecase}/pdf`,
+    downloadPdfBlob: (studyUid: string, usecase: string) =>
+      fetchBlob(`/reports/${studyUid}/${usecase}/pdf`),
     getSrUrl: (studyUid: string, usecase: string) =>
       `${API_BASE}/reports/${studyUid}/${usecase}/dicom-sr`,
     getFhirUrl: (studyUid: string, usecase: string) =>
       `${API_BASE}/reports/${studyUid}/${usecase}/fhir`,
+  },
+  mammography: {
+    getReport: (studyUid: string) =>
+      fetchAPI<MammographyReportData>(`/studies/${studyUid}/mammography-report`),
+    saveReport: (studyUid: string, data: Partial<MammographyReportData>) =>
+      fetchAPI<MammographyReportData>(`/studies/${studyUid}/mammography-report`, {
+        method: "PUT",
+        body: JSON.stringify(data),
+      }),
+    downloadPdfBlob: (studyUid: string) =>
+      fetchBlob(`/studies/${studyUid}/mammography-report.pdf`),
   },
   cpt: {
     getSuggestions: (studyUid: string, usecase: string) =>
@@ -590,17 +761,25 @@ export function getFusedUrl(
   return `${API_BASE}/fused/${studyUid}/${usecase}/${view}`;
 }
 
-// Fused PET/CT for a specific slice of a view — used by the interactive viewer.
+// PET/CT for a specific slice of a view — used by the interactive viewer.
 // `showLesions` toggles the cyan detected-lesion contour overlay (included in
-// the URL so toggled views are cached independently).
+// the URL so toggled views are cached independently). `mode` selects the render:
+// "fused" (CT + PET overlay), "ct" (CT grayscale), or "pet" (PET colormap only).
+export type FusedMode = "fused" | "ct" | "pet";
+
+// Bump when the server-side slice rendering changes (colormap, grayscale, etc.)
+// so the browser's 1h slice cache is bypassed instead of serving stale PNGs.
+const FUSED_RENDER_VERSION = 4;
+
 export function getFusedSliceUrl(
   studyUid: string,
   usecase: string,
   view: "axial" | "coronal" | "sagittal",
   slice: number,
-  showLesions: boolean = true
+  showLesions: boolean = true,
+  mode: FusedMode = "fused"
 ): string {
-  return `${API_BASE}/fused/${studyUid}/${usecase}/${view}/${slice}?lesions=${showLesions}`;
+  return `${API_BASE}/fused/${studyUid}/${usecase}/${view}/${slice}?lesions=${showLesions}&mode=${mode}&r=${FUSED_RENDER_VERSION}`;
 }
 
 export function getArtifactUrl(

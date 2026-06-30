@@ -13,6 +13,13 @@ interface ReportEntry {
   selected?: boolean;
 }
 
+const READING_STATUS: Record<string, [string, string]> = {
+  unread: ["Unclaimed", "bg-gray-100 text-gray-600"],
+  in_progress: ["Reading", "bg-blue-100 text-blue-700"],
+  reported: ["Reported", "bg-amber-100 text-amber-800"],
+  signed: ["Signed off", "bg-green-100 text-green-700"],
+};
+
 export default function ReportsPage() {
   const { data: studyData, isLoading: studiesLoading } = useStudies({ limit: "50" });
   const { data: usecases } = useUsecases();
@@ -153,6 +160,9 @@ export default function ReportsPage() {
                     Use Case
                   </th>
                   <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase">
+                    Status
+                  </th>
+                  <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase">
                     Model Version
                   </th>
                   <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase">
@@ -196,6 +206,24 @@ export default function ReportsPage() {
                           </span>
                         )}
                       </div>
+                    </td>
+                    <td className="px-3 py-3">
+                      {(() => {
+                        const rs = e.study.reading_status || "unread";
+                        const [label, cls] = READING_STATUS[rs] || [rs, "bg-gray-100 text-gray-600"];
+                        return (
+                          <div className="flex flex-col gap-0.5">
+                            <span className={`inline-flex w-fit px-2 py-0.5 rounded-full text-xs font-semibold ${cls}`}>
+                              {label}
+                            </span>
+                            {e.study.assigned_to_username && (
+                              <span className="text-[10px] text-gray-400 truncate max-w-[110px]" title={e.study.assigned_to_username}>
+                                {e.study.assigned_to_username}
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })()}
                     </td>
                     <td className="px-3 py-3 text-gray-600">{e.result.model_version}</td>
                     <td className="px-3 py-3 text-gray-600 text-xs">

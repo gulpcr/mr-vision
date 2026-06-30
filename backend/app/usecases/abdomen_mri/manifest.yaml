@@ -1,10 +1,10 @@
 name: abdomen_mri
 version: "1.0.0"
 description: >
-  Abdominal MRI segmentation and organ volumetry. Segments liver, spleen,
-  right kidney, left kidney, and pancreas. Computes per-organ volumes,
-  total parenchymal volume, and flags hepatomegaly and splenomegaly.
-  Supports T2 HASTE, T1 in-phase/out-of-phase, DWI, and DCE sequences.
+  Abdominal MRI organ segmentation and volumetry using TotalSegmentator
+  (total_mr): liver, spleen, right kidney, left kidney, and pancreas, with
+  per-organ volumes, total parenchymal volume, and hepatomegaly / splenomegaly
+  flags. Supports T2 HASTE, T1 in-phase/out-of-phase, DWI, and DCE sequences.
 supported_body_parts:
   - ABDOMEN
   - LIVER
@@ -13,5 +13,5 @@ supported_body_parts:
 required_sequences:
   - T2_HASTE
   - T1_IP
-model_type: segresnet
+model_type: TotalSegmentator (total_mr)
 enabled: true

@@ -30,6 +30,12 @@ class Study:
     modality: str | None = None
     institution_name: str | None = None
     orthanc_id: str | None = None
+    reading_status: str = "unread"
+    assigned_to: str | None = None
+    assigned_to_username: str | None = None
+    assigned_at: datetime | None = None
+    reported_at: datetime | None = None
+    signed_at: datetime | None = None
     series: list[Series] = field(default_factory=list)
     created_at: datetime = field(default_factory=_utcnow)
     updated_at: datetime = field(default_factory=_utcnow)

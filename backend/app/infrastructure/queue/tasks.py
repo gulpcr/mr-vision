@@ -311,6 +311,12 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
                     body_part_examined=ext(s, "BodyPartExamined"),
                     protocol_name=ext(s, "ProtocolName"),
                     slice_thickness=ext(s, "SliceThickness"),
+                    # Instance count drives CT-vs-scout selection in pet_ct
+                    # (_classify_series); a single-slice topogram must not be
+                    # chosen as the fusion CT. QIDO returns it as a string.
+                    num_instances=int(
+                        float(ext(s, "NumberOfSeriesRelatedInstances") or 0)
+                    ),
                     dicom_tags={
                         "RepetitionTime": ext(s, "RepetitionTime"),
                         "EchoTime": ext(s, "EchoTime"),

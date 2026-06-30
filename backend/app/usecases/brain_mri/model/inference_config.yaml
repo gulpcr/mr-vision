@@ -29,6 +29,10 @@ preprocessing:
   orientation: RAS
   intensity_normalization: z_score
   crop_to_nonzero: true
+  # Skull-strip each sequence before inference. BraTS is trained on skull-stripped
+  # brains, so this brings input in-distribution and stops the model labelling
+  # bright skull/scalp as tumour. Heuristic (Otsu + morphology); set false to disable.
+  skull_strip: true
 
 postprocessing:
   # BraTS SegResNet output channels (sigmoid, not softmax):

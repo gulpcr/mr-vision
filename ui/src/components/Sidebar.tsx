@@ -28,12 +28,14 @@ import {
   Cpu,
   BarChart2,
   Wrench,
+  UserPlus,
 } from "lucide-react";
 import { useCriticalAlertStats } from "@/lib/hooks";
 
 const NAV_ITEMS = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/worklist", label: "Worklist", icon: ClipboardList },
+  { href: "/onboarding", label: "Patient Intake", icon: UserPlus },
   { href: "/upload", label: "Upload DICOM", icon: Upload },
   { href: "/admin/usecases", label: "AI Models", icon: Brain },
   { href: "/admin/routing", label: "Routing Rules", icon: GitBranch },

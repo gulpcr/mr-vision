@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ComparisonData, Result } from "@/lib/api";
 import { getPreviewUrl } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
@@ -54,6 +54,37 @@ function DeltaIcon({ change, severity }: { change: number; severity: string }) {
   );
 }
 
+// Loads a JWT-protected image via fetch (with the Authorization header) and
+// renders it from an object URL — a browser <img> never sends auth headers, so
+// a plain src would 401 under jwt and show only the alt text.
+function AuthImg({ src, alt, className }: { src: string; alt: string; className?: string }) {
+  const [objUrl, setObjUrl] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let revoke: string | null = null;
+    setFailed(false);
+    setObjUrl(null);
+    const token = typeof window !== "undefined" ? localStorage.getItem("auth_token") : null;
+    fetch(src, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+      .then((r) => { if (!r.ok) throw new Error(String(r.status)); return r.blob(); })
+      .then((b) => { const u = URL.createObjectURL(b); revoke = u; setObjUrl(u); })
+      .catch(() => setFailed(true));
+    return () => { if (revoke) URL.revokeObjectURL(revoke); };
+  }, [src]);
+
+  if (failed)
+    return (
+      <div className="w-full h-80 flex items-center justify-center text-xs text-gray-400 bg-black rounded border border-gray-200">
+        Not available
+      </div>
+    );
+  if (!objUrl)
+    return <div className="w-full h-80 bg-gray-900 rounded border border-gray-200 animate-pulse" />;
+  /* eslint-disable-next-line @next/next/no-img-element */
+  return <img src={objUrl} alt={alt} className={className} />;
+}
+
 function PreviewPair({
   uidA,
   uidB,
@@ -69,24 +100,18 @@ function PreviewPair({
     <div className="flex gap-2">
       <div className="flex-1">
         <p className="text-xs text-center text-gray-500 mb-1 capitalize">{view} A</p>
-        <img
+        <AuthImg
           src={getPreviewUrl(uidA, usecase, view)}
           alt={`${view} A`}
-          className="w-full rounded border border-gray-200 bg-black"
-          onError={(e) => {
-            (e.target as HTMLImageElement).style.display = "none";
-          }}
+          className="w-full h-80 object-contain rounded border border-gray-200 bg-black"
         />
       </div>
       <div className="flex-1">
         <p className="text-xs text-center text-gray-500 mb-1 capitalize">{view} B</p>
-        <img
+        <AuthImg
           src={getPreviewUrl(uidB, usecase, view)}
           alt={`${view} B`}
-          className="w-full rounded border border-gray-200 bg-black"
-          onError={(e) => {
-            (e.target as HTMLImageElement).style.display = "none";
-          }}
+          className="w-full h-80 object-contain rounded border border-gray-200 bg-black"
         />
       </div>
     </div>

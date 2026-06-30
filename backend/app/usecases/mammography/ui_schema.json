@@ -1,0 +1,62 @@
+{
+  "title": "Mammography Analysis",
+  "description": "Bilateral digital mammography: per-breast malignancy probability and AI-suggested BI-RADS",
+  "sections": [
+    {
+      "id": "summary",
+      "title": "Summary",
+      "type": "key_value",
+      "data_path": "summary",
+      "fields": [
+        { "key": "birads_right", "label": "AI-suggested BI-RADS (Right)", "format": "number", "precision": 0 },
+        { "key": "birads_left", "label": "AI-suggested BI-RADS (Left)", "format": "number", "precision": 0 },
+        { "key": "malignancy_probability_right", "label": "Malignancy probability (Right)", "format": "number", "precision": 3 },
+        { "key": "malignancy_probability_left", "label": "Malignancy probability (Left)", "format": "number", "precision": 3 },
+        { "key": "density_right", "label": "Breast density (Right)", "format": "text" },
+        { "key": "density_left", "label": "Breast density (Left)", "format": "text" },
+        { "key": "quantitative", "label": "Diagnostic (model loaded)", "format": "boolean" },
+        { "key": "processing_notes", "label": "Notes", "format": "text" }
+      ]
+    },
+    {
+      "id": "findings",
+      "title": "Findings",
+      "type": "key_value",
+      "data_path": "summary",
+      "fields": [
+        { "key": "right_breast_findings", "label": "Right Breast", "format": "text" },
+        { "key": "left_breast_findings", "label": "Left Breast", "format": "text" },
+        { "key": "opinion", "label": "Opinion", "format": "text" }
+      ]
+    },
+    {
+      "id": "views",
+      "title": "Mammography Views",
+      "type": "image",
+      "artifact_filter": "mammo_png"
+    },
+    {
+      "id": "qa",
+      "title": "Quality Assurance",
+      "type": "qa_panel",
+      "flags_path": "qa_flags",
+      "details_path": "qa_details",
+      "severity_map": {
+        "placeholder_no_model": "warning",
+        "gmic_partial_resize_fallback": "info",
+        "missing_views": "warning",
+        "view_classification_uncertain": "info",
+        "series_download_failed": "warning"
+      }
+    },
+    {
+      "id": "model_info",
+      "title": "Model Information",
+      "type": "key_value",
+      "fields": [
+        { "key": "model_version", "label": "Model Version", "format": "text", "data_path": "model_version" },
+        { "key": "model_checksum", "label": "Model Checksum", "format": "text", "data_path": "model_checksum" }
+      ]
+    }
+  ]
+}

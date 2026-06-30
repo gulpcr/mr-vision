@@ -1,10 +1,12 @@
 name: chest_mri
 version: "1.0.0"
 description: >
-  Chest MRI segmentation and volumetric analysis. Segments right lung,
-  left lung, heart, and aorta. Computes individual lung volumes, total
-  lung volume, heart volume, and flags lesion detection. Supports HASTE,
-  T1 GRE, STIR, and TrueFISP sequences.
+  Chest MRI segmentation and volumetric analysis using TotalSegmentator
+  (total_mr): right lung, left lung, heart, and aorta, with per-lung and total
+  lung volumes plus heart volume. N4ITK bias-field correction is applied before
+  segmentation to improve lung-boundary accuracy. Optional supplementary cardiac
+  model and dedicated lesion-detection model; lung-volume asymmetry screening
+  otherwise. Supports HASTE, T1 GRE, STIR, and TrueFISP sequences.
 supported_body_parts:
   - CHEST
   - THORAX
@@ -12,5 +14,5 @@ supported_body_parts:
 required_sequences:
   - T2_HASTE
   - T1_GRE
-model_type: segresnet
+model_type: TotalSegmentator (total_mr) + N4ITK
 enabled: true

@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { Study, Result, getPreviewUrl, getArtifactUrl, getFusedUrl } from "@/lib/api";
 import { QAPanel } from "./QAPanel";
+import { FusedViewer } from "./FusedViewer";
 import {
   formatValue,
   formatDate,
@@ -104,6 +105,22 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
             <p className="text-sm text-gray-500 mt-0.5">
               {uiSchema?.description || ""}
             </p>
+            {(() => {
+              const rs = study.reading_status || "unread";
+              const by = study.assigned_to_username;
+              const m: Record<string, [string, string]> = {
+                unread: ["Unclaimed", "bg-gray-100 text-gray-600"],
+                in_progress: [by ? `Reading — ${by}` : "Reading", "bg-blue-100 text-blue-700"],
+                reported: [by ? `Reported — ${by}` : "Reported", "bg-amber-100 text-amber-800"],
+                signed: [`Signed off${by ? ` — ${by}` : ""}`, "bg-green-100 text-green-700"],
+              };
+              const [label, cls] = m[rs] || [rs, "bg-gray-100 text-gray-600"];
+              return (
+                <span className={`inline-block mt-2 px-2.5 py-0.5 rounded-full text-xs font-semibold ${cls}`}>
+                  {rs !== "signed" ? "Preliminary · " : ""}{label}
+                </span>
+              );
+            })()}
           </div>
           <button
             onClick={() => window.print()}
@@ -269,6 +286,134 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
           </dl>
         </div>
       )}
+
+      {/* AI-Detected Abnormal Findings (pathology: abdomen organs, chest lungs,
+          coronary stenosis, dedicated lesion model). Data-driven from the result
+          so it appears for any use case that emits these keys. */}
+      {(() => {
+        const findings: any[] = Array.isArray(result.summary?.abnormal_findings)
+          ? result.summary.abnormal_findings
+          : [];
+        const segments: any[] = Array.isArray(result.measurements?.segments)
+          ? result.measurements.segments
+          : [];
+        const lesionDetected = result.summary?.lesion_detected === true;
+        const lesionCount = result.summary?.lesion_count ?? 0;
+        if (findings.length === 0 && segments.length === 0 && !lesionDetected) return null;
+
+        const sevCls = (sev?: string): string =>
+          (({
+            marked: "bg-red-100 text-red-800 border-red-300",
+            severe: "bg-red-100 text-red-800 border-red-300",
+            occluded: "bg-red-100 text-red-800 border-red-300",
+            moderate: "bg-amber-100 text-amber-800 border-amber-300",
+            mild: "bg-yellow-100 text-yellow-800 border-yellow-300",
+            minimal: "bg-yellow-50 text-yellow-700 border-yellow-200",
+          } as Record<string, string>)[sev || ""] ||
+            "bg-gray-100 text-gray-700 border-gray-300");
+
+        return (
+          <div
+            className="report-section"
+            style={{ borderLeft: "4px solid #d97706", paddingLeft: "1.25rem" }}
+          >
+            <h2 className="report-section-title flex items-center gap-2">
+              <AlertTriangle className="w-5 h-5 text-amber-600" />
+              AI-Detected Abnormal Findings
+            </h2>
+
+            {lesionDetected && (
+              <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-semibold mt-2 bg-red-100 text-red-800 border border-red-300">
+                <AlertTriangle className="w-4 h-4" />
+                {lesionCount > 0 ? `${lesionCount} lesion(s) detected` : "Lesion detected"}
+              </div>
+            )}
+
+            {findings.length > 0 && (
+              <ul className="mt-3 space-y-2">
+                {findings.map((f: any, i: number) => {
+                  const title = f.organ || f.finding || f.side || "Finding";
+                  const sev = f.severity || f.status;
+                  return (
+                    <li key={i} className="flex items-start gap-3 text-sm">
+                      <span
+                        className={`shrink-0 mt-0.5 px-2 py-0.5 rounded-full text-xs font-semibold border ${sevCls(
+                          sev
+                        )}`}
+                      >
+                        {f.status && f.status !== "normal" ? `${f.status} · ` : ""}
+                        {sev || "finding"}
+                      </span>
+                      <div>
+                        <span className="font-semibold text-gray-900 capitalize">
+                          {String(title).replace(/_/g, " ")}
+                        </span>
+                        {f.note && (
+                          <p className="text-gray-600 mt-0.5 leading-relaxed">{f.note}</p>
+                        )}
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+
+            {segments.length > 0 && (
+              <div className="mt-4">
+                <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
+                  Per-Vessel Stenosis
+                  {result.summary?.cad_rads != null && (
+                    <span className="ml-2 normal-case text-gray-700">
+                      · CAD-RADS {result.summary.cad_rads}
+                    </span>
+                  )}
+                </h3>
+                <table className="w-full measurement-table">
+                  <thead>
+                    <tr>
+                      <th>Vessel</th>
+                      <th>Stenosis</th>
+                      <th>Grade</th>
+                      <th>Min lumen (mm)</th>
+                      <th>Reference (mm)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {segments.map((s: any, i: number) => (
+                      <tr key={i} className={s.stenosis_pct >= 50 ? "bg-red-50" : ""}>
+                        <td className="font-semibold text-gray-900">
+                          {s.name || s.vessel || `Vessel ${i + 1}`}
+                        </td>
+                        <td className={s.stenosis_pct >= 50 ? "text-red-700 font-bold" : ""}>
+                          {typeof s.stenosis_pct === "number"
+                            ? `${s.stenosis_pct.toFixed(0)}%`
+                            : "-"}
+                        </td>
+                        <td>
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-xs font-semibold border ${sevCls(
+                              s.grade
+                            )}`}
+                          >
+                            {s.grade || "-"}
+                          </span>
+                        </td>
+                        <td>{s.min_lumen_diameter_mm ?? "-"}</td>
+                        <td>{s.reference_diameter_mm ?? "-"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            <p className="text-xs text-gray-400 mt-3 italic">
+              AI screening output — not a diagnosis. Review against the images and clinical
+              context.
+            </p>
+          </div>
+        );
+      })()}
 
       {/* Anatomical Region Summary (PET-CT: group lesions by region) */}
       {(() => {
@@ -491,35 +636,16 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
           <div className="report-section">
             <h2 className="report-section-title">Fused PET/CT Images</h2>
             <p className="text-xs text-gray-400 mb-3">
-              CT anatomy (bone colormap) with PET SUV hot-colormap overlay. Only voxels above 20% of
-              the display SUVmax are coloured to preserve CT anatomy in low-uptake regions.
-              Click to enlarge.
+              CT anatomy with PET SUV hot-colormap overlay. Only voxels above 20% of the display
+              SUVmax are coloured to preserve CT anatomy in low-uptake regions. Scroll through every
+              slice in each plane.
             </p>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {VIEWS.map((view) => {
-                const url = getFusedUrl(study.study_instance_uid, result.usecase_name, view);
-                return (
-                  <div key={view} className="relative group">
-                    <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5 text-center">
-                      {view}
-                    </div>
-                    <div
-                      className="relative bg-black rounded-lg overflow-hidden cursor-pointer border-2 border-gray-200 hover:border-primary-400 transition-colors"
-                      onClick={() => setZoomedView(view)}
-                    >
-                      <AuthImage
-                        src={url}
-                        alt={`${view} fused PET/CT`}
-                        className="w-full h-auto"
-                        fallback="Fused image unavailable — re-run the job to generate"
-                      />
-                      <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <Maximize2 className="w-4 h-4 text-white drop-shadow-lg" />
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
+            <div className="rounded-lg overflow-hidden border-2 border-gray-200">
+              <FusedViewer
+                studyUid={study.study_instance_uid}
+                usecase={result.usecase_name}
+                modes={["fused"]}
+              />
             </div>
           </div>
 

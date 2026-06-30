@@ -65,6 +65,24 @@ inference:
   # Fallback PERCIST threshold params (used when custom_pet_weights_path is null)
   percist_liver_factor: 1.5
   suv_threshold_absolute: 2.5
+  # Detection threshold source for CALIBRATED SUV studies (drives which voxels
+  # become "detected lesions" — i.e. the cyan outlines in the fused viewer).
+  #   "liver_mean" — case-adaptive: threshold = calibrated_liver_factor * the
+  #                  study's own liver SUVmean reference (physiologic background),
+  #                  so detection scales with each patient's normal liver uptake.
+  #   "absolute"   — fixed suv_threshold_absolute (e.g. SUV 2.5) for every case.
+  # Falls back to suv_threshold_absolute when no liver reference is available.
+  calibrated_threshold_source: liver_mean   # "liver_mean" | "absolute"
+  calibrated_liver_factor: 1.0              # detection threshold = factor * liver SUVmean
+  # Tumor-positive/negative call cutoff when calibrated_threshold_source is
+  # "liver_mean": a focus is called positive when SUVmax > factor * liver SUVmean.
+  # Raise above calibrated_liver_factor to make the positive call stricter than
+  # detection (e.g. detect at 1.0x liver, call positive only above 1.5x liver).
+  diagnosis_liver_factor: 1.0
+  # Reference SUV regions (liver / aortic blood pool) via TotalSegmentator instead
+  # of the HU-box heuristic, which averages generic soft tissue and under-reads the
+  # liver. Falls back to the heuristic per-organ if segmentation is unavailable.
+  reference_organ_segmentation: true
   # When SUV calibration is absent (no patient weight / injected dose in the PET
   # DICOM header), pixel values are RELATIVE-normalised intensities — not true
   # SUV — so the absolute SUV threshold above is meaningless and lights up a

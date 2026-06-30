@@ -201,22 +201,23 @@ class AuthService:
         }
         return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
+    # Password hashing uses pbkdf2_sha256 (pure-Python via passlib/hashlib).
+    # NOTE: bcrypt is intentionally NOT used — passlib 1.7.4 is incompatible with
+    # bcrypt >= 4.1 (removed __about__), which broke hashing/verification in this
+    # image. pbkdf2_sha256 is a strong, dependency-light scheme with no native lib.
+    @staticmethod
+    def _pwd_context():
+        from passlib.context import CryptContext
+        return CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
+
     @staticmethod
     def _hash_password(password: str) -> str:
-        try:
-            from passlib.context import CryptContext
-            ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
-            return ctx.hash(password)
-        except ImportError:
-            import hashlib
-            return hashlib.sha256(password.encode()).hexdigest()
+        return AuthService._pwd_context().hash(password)
 
     @staticmethod
     def _verify_password(plain: str, hashed: str) -> bool:
         try:
-            from passlib.context import CryptContext
-            ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
-            return ctx.verify(plain, hashed)
-        except ImportError:
-            import hashlib
-            return hashlib.sha256(plain.encode()).hexdigest() == hashed
+            return AuthService._pwd_context().verify(plain, hashed)
+        except Exception:
+            # Unidentifiable / legacy hash → treat as failed auth, never 500.
+            return False

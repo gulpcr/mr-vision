@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from app.usecases.coronary_cta.pipeline import (
+    Pipeline,
     _agatston_weight,
     _cad_rads_from_stenosis,
     _calcium_category,
@@ -189,3 +190,28 @@ class TestComputeAgatstonWithExplicitRoi:
         full_roi = np.ones(SHAPE, dtype=bool)
         roi_res = _compute_agatston(vol, SPACING, CFG, roi=full_roi)
         assert roi_res["agatston_score"] == pytest.approx(box_res["agatston_score"])
+
+
+# ── Lumen stenosis grader (shared by the SwinUNETR and TotalSegmentator sources) ─
+
+class TestGradeLumenMask:
+    """The grader is source-agnostic: it grades whatever binary lumen mask it is
+    handed, whether from the learned model or TotalSegmentator's coronary_arteries
+    task. Empty / None input must short-circuit to no segments."""
+
+    def test_empty_mask_returns_no_segments(self):
+        p = Pipeline()
+        out = p._grade_lumen_mask(np.zeros((10, 10, 10), dtype=np.uint8), (1.0, 1.0, 1.0))
+        assert out == {"segments": [], "max_stenosis_pct": 0.0}
+
+    def test_none_mask_returns_no_segments(self):
+        p = Pipeline()
+        out = p._grade_lumen_mask(None, (1.0, 1.0, 1.0))
+        assert out == {"segments": [], "max_stenosis_pct": 0.0}
+
+    def test_totalseg_coronary_enabled_by_default(self):
+        # Option 1: the no-weights TotalSegmentator coronary lumen source is the
+        # configured default fallback when no learned model is present.
+        p = Pipeline()
+        assert p._model is None
+        assert p._cfg.get("coronary_lumen", {}).get("use_totalseg_coronary") is True

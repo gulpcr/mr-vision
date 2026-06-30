@@ -108,6 +108,77 @@ class Pipeline(BasePipeline):
             except Exception as exc:
                 logger.warning("swin_unetr_load_failed", weights=sw_path, error=str(exc))
 
+        # Optional dedicated lesion-detection model (mirrors chest_mri Problem C).
+        # Inert when its custom_weights_path is null — see inference_config.yaml.
+        self._lesion_model, self._lesion_device = self._load_aux_model(
+            self._config.get("lesion_detection", {})
+        )
+
+    def _load_aux_model(self, cfg: dict):
+        """Load an auxiliary single-channel SwinUNETR model from cfg.
+
+        Returns ``(model, device)`` or ``(None, None)`` when no weights are
+        configured or loading fails. Used for the optional dedicated
+        lesion-detection model; non-intrusive and leaves the primary organ
+        segmentation intact when absent.
+        """
+        path = cfg.get("custom_weights_path")
+        if not path:
+            return None, None
+        try:
+            import torch
+            from monai.networks.nets import SwinUNETR
+
+            device_str = self._config["inference"].get("device", "cuda")
+            if device_str == "auto":
+                device_str = "cuda" if torch.cuda.is_available() else "cpu"
+            device = torch.device(device_str)
+            model = SwinUNETR(
+                img_size=tuple(cfg.get("roi_size", [96, 96, 96])),
+                in_channels=cfg.get("in_channels", 1),
+                out_channels=cfg.get("out_channels", 2),
+                feature_size=cfg.get("feature_size", 48),
+                use_checkpoint=cfg.get("use_checkpoint", False),
+            )
+            state = torch.load(path, map_location="cpu", weights_only=True)
+            if isinstance(state, dict) and "state_dict" in state:
+                state = state["state_dict"]
+            elif isinstance(state, dict) and "model" in state:
+                state = state["model"]
+            model.load_state_dict(state, strict=False)
+            model.to(device)
+            model.eval()
+            logger.info("aux_model_loaded", path=path, out_channels=cfg.get("out_channels", 2))
+            return model, device
+        except Exception as exc:
+            logger.warning("aux_model_load_failed", path=path, error=str(exc))
+            return None, None
+
+    def _run_aux_model(self, model, device, img_data: np.ndarray, cfg: dict) -> np.ndarray:
+        """Run a loaded auxiliary SwinUNETR → argmax label array (uint8)."""
+        import torch
+        from monai.inferers import sliding_window_inference
+
+        arr = img_data.copy()
+        nz = arr != 0
+        if np.any(nz):
+            m = float(np.mean(arr[nz]))
+            s = float(np.std(arr[nz]))
+            if s > 0:
+                arr = (arr - m) / s
+                arr[~nz] = 0.0
+        t = torch.from_numpy(arr).unsqueeze(0).unsqueeze(0).to(device)
+        with torch.no_grad():
+            out = sliding_window_inference(
+                t,
+                tuple(cfg.get("roi_size", [96, 96, 96])),
+                cfg.get("sw_batch_size", 1),
+                model,
+                overlap=cfg.get("overlap", 0.5),
+                mode=cfg.get("mode", "gaussian"),
+            )
+        return torch.argmax(out, dim=1)[0].cpu().numpy().astype(np.uint8)
+
     def _load_swin_unetr(self, weights_path: str, sw_cfg: dict) -> None:
         import torch
         from monai.networks.nets import SwinUNETR
@@ -435,6 +506,23 @@ class Pipeline(BasePipeline):
                     qa_flags.append("no_model_weights")
                     inference_method = "synthetic" if inference_method is None else "synthetic_fallback"
 
+        # ── Dedicated lesion detection (strictly modular) ─────────────────────
+        lesion_active = self._lesion_model is not None
+        lesion_mask_array = None
+        if lesion_active:
+            try:
+                lesion_pred = self._run_aux_model(
+                    self._lesion_model, self._lesion_device,
+                    img_nib.get_fdata().astype(np.float32),
+                    self._config.get("lesion_detection", {}),
+                )
+                lesion_mask_array = (lesion_pred > 0).astype(np.uint8)
+                logger.info("lesion_model_applied", raw_lesion_voxels=int(lesion_mask_array.sum()))
+            except Exception as exc:
+                logger.warning("lesion_model_failed", error=str(exc))
+                lesion_active = False
+                lesion_mask_array = None
+
         seg_path = os.path.join(working_dir, "segmentation_raw.nii.gz")
         seg_img = nib.Nifti1Image(seg_array, affine=affine)
         nib.save(seg_img, seg_path)
@@ -444,6 +532,7 @@ class Pipeline(BasePipeline):
             seg_shape=list(seg_array.shape),
             unique_labels=np.unique(seg_array).tolist(),
             inference_method=inference_method,
+            lesion_detection_active=lesion_active,
         )
 
         return {
@@ -452,6 +541,8 @@ class Pipeline(BasePipeline):
             "affine": affine,
             "image_shape": list(seg_array.shape),
             "inference_method": inference_method,
+            "lesion_active": lesion_active,
+            "lesion_mask_array": lesion_mask_array,
             **{**preprocessed, "qa_flags": qa_flags},
         }
 
@@ -512,6 +603,46 @@ class Pipeline(BasePipeline):
         hepatomegaly_suspected = liver_vol > liver_normal_max
         splenomegaly_suspected = spleen_vol > spleen_normal_max
 
+        # Per-organ reference-range characterization (screening — not diagnostic).
+        ranges = dict(self._ORGAN_REF_RANGES_ML)
+        for organ, rng in (self._config.get("organ_reference_ranges_ml") or {}).items():
+            try:
+                ranges[organ] = (float(rng[0]), float(rng[1]))
+            except Exception:
+                pass
+        organ_findings = self._characterize_organs(volumes_ml, ranges)
+        abnormal_findings = [f for f in organ_findings if f.get("status") != "normal"]
+
+        # ── Dedicated lesion detection result (mirrors chest_mri Problem C) ────
+        # lesion_detected reflects the dedicated lesion model when active; with no
+        # lesion model we do NOT infer lesions from organ volumes — we only report
+        # the reference-range organ characterization above.
+        lesion_active = bool(inference_output.get("lesion_active", False))
+        lesion_mask_array = inference_output.get("lesion_mask_array")
+        lesion_count = 0
+        lesion_total_ml = 0.0
+        lesion_seg_clean = None
+        if lesion_active and lesion_mask_array is not None:
+            lcfg = self._config.get("lesion_detection", {})
+            min_les = lcfg.get("min_lesion_volume_ml", 0.5)
+            labeled, n_les = ndimage.label(lesion_mask_array)
+            kept = np.zeros_like(lesion_mask_array)
+            for cid in range(1, n_les + 1):
+                comp = labeled == cid
+                v = float(np.sum(comp)) * voxel_volume_ml
+                if v >= min_les:
+                    kept[comp] = 1
+                    lesion_count += 1
+                    lesion_total_ml += v
+            lesion_seg_clean = kept
+
+        if lesion_active:
+            lesion_detected = lesion_count > 0
+            lesion_detection_method = "swin_unetr"
+        else:
+            lesion_detected = False
+            lesion_detection_method = "not_active"
+
         # Save artifacts
         artifacts_dir = os.path.join(working_dir, "artifacts")
         os.makedirs(artifacts_dir, exist_ok=True)
@@ -522,8 +653,12 @@ class Pipeline(BasePipeline):
 
         report = {
             "summary": {
+                "lesion_detected": lesion_detected,
+                "lesion_detection_method": lesion_detection_method,
+                "lesion_count": lesion_count,
                 "hepatomegaly_suspected": hepatomegaly_suspected,
                 "splenomegaly_suspected": splenomegaly_suspected,
+                "abnormal_findings": abnormal_findings,
                 "organ_count_segmented": organ_count_segmented,
                 "segmentation_labels": {
                     str(k): v for k, v in label_map.items() if int(k) != 0
@@ -536,11 +671,17 @@ class Pipeline(BasePipeline):
                     hepatomegaly_suspected,
                     splenomegaly_suspected,
                     organ_count_segmented,
+                    abnormal_findings,
+                    lesion_active=lesion_active,
+                    lesion_count=lesion_count,
                 ),
             },
             "measurements": {
                 "volumes_ml": volumes_ml,
+                "organ_findings": organ_findings,
                 "total_parenchymal_volume_ml": total_parenchymal_volume_ml,
+                "lesion_count": lesion_count,
+                "lesion_volume_ml": round(lesion_total_ml, 1),
                 "voxel_spacing_mm": [round(float(s), 3) for s in voxel_spacing],
                 "image_dimensions": inference_output.get("image_shape", []),
             },
@@ -594,6 +735,18 @@ class Pipeline(BasePipeline):
         except Exception as exc:
             logger.warning("preview_generation_failed", error=str(exc))
 
+        # Lesion mask artifact (only when the dedicated lesion model detected any).
+        lesion_artifacts = []
+        if lesion_seg_clean is not None and int(lesion_seg_clean.sum()) > 0:
+            lesion_path = os.path.join(artifacts_dir, "lesion_mask.nii.gz")
+            nib.save(nib.Nifti1Image(lesion_seg_clean.astype(np.uint8), affine), lesion_path)
+            lesion_artifacts = [{
+                "name": "lesion_mask.nii.gz",
+                "artifact_type": "segmentation_nifti",
+                "local_path": lesion_path,
+                "content_type": "application/gzip",
+            }]
+
         result = {
             "summary": report["summary"],
             "measurements": report["measurements"],
@@ -615,6 +768,7 @@ class Pipeline(BasePipeline):
                     "content_type": "application/json",
                 },
                 *preview_artifacts,
+                *lesion_artifacts,
             ],
         }
 
@@ -624,6 +778,7 @@ class Pipeline(BasePipeline):
             total_parenchymal_volume_ml=total_parenchymal_volume_ml,
             hepatomegaly_suspected=hepatomegaly_suspected,
             splenomegaly_suspected=splenomegaly_suspected,
+            lesion_detected=lesion_detected,
             qa_flags=qa_flags,
         )
 
@@ -940,6 +1095,58 @@ class Pipeline(BasePipeline):
             result[np.logical_and(labeled != largest, labeled > 0)] = 0
         return result
 
+    # Adult parenchymal volume reference ranges (mL), approximate — for
+    # abnormality SCREENING only, not diagnosis. Override via config
+    # `organ_reference_ranges_ml: {organ: [low, high]}`.
+    _ORGAN_REF_RANGES_ML: dict[str, tuple[float, float]] = {
+        "liver": (1200.0, 1800.0),
+        "spleen": (100.0, 315.0),
+        "right_kidney": (110.0, 220.0),
+        "left_kidney": (110.0, 220.0),
+        "pancreas": (40.0, 120.0),
+    }
+
+    @staticmethod
+    def _characterize_organs(
+        volumes_ml: dict[str, float], ranges: dict[str, tuple[float, float]]
+    ) -> list[dict[str, Any]]:
+        """Compare each segmented organ volume to its reference range and classify
+        as small / normal / enlarged with a severity. Deterministic, derived from
+        the segmentation — a screening characterization, not a diagnosis."""
+        findings: list[dict[str, Any]] = []
+        for organ, vol in volumes_ml.items():
+            if vol <= 0:
+                continue  # not segmented in this study
+            rng = ranges.get(organ)
+            if not rng:
+                continue
+            low, high = float(rng[0]), float(rng[1])
+            label = organ.replace("_", " ")
+            if vol > high:
+                dev = (vol - high) / high
+                sev = "mild" if dev < 0.25 else "moderate" if dev < 0.5 else "marked"
+                findings.append({
+                    "organ": organ, "volume_ml": vol, "status": "enlarged",
+                    "severity": sev, "reference_ml": [low, high],
+                    "note": f"{label} {vol:.0f} mL exceeds upper reference {high:.0f} mL "
+                            f"({sev} enlargement)",
+                })
+            elif vol < low:
+                dev = (low - vol) / low
+                sev = "mild" if dev < 0.25 else "moderate" if dev < 0.5 else "marked"
+                findings.append({
+                    "organ": organ, "volume_ml": vol, "status": "small",
+                    "severity": sev, "reference_ml": [low, high],
+                    "note": f"{label} {vol:.0f} mL below lower reference {low:.0f} mL "
+                            f"({sev} volume loss / atrophy)",
+                })
+            else:
+                findings.append({
+                    "organ": organ, "volume_ml": vol, "status": "normal",
+                    "reference_ml": [low, high],
+                })
+        return findings
+
     @staticmethod
     def _generate_processing_notes(
         qa_flags: list[str],
@@ -947,6 +1154,9 @@ class Pipeline(BasePipeline):
         hepatomegaly_suspected: bool,
         splenomegaly_suspected: bool,
         organ_count: int,
+        abnormal_findings: list[dict[str, Any]] | None = None,
+        lesion_active: bool = False,
+        lesion_count: int = 0,
     ) -> str:
         notes = []
         if organ_count > 0:
@@ -956,6 +1166,20 @@ class Pipeline(BasePipeline):
             notes.append(f"Segmented {organ_count} organ(s): {organ_list}.")
         else:
             notes.append("No abdominal organs detected in this study.")
+        # Lesion reporting: dedicated model vs. reference-range screening only.
+        if lesion_active:
+            if lesion_count > 0:
+                notes.append(
+                    f"Dedicated lesion model detected {lesion_count} lesion(s); "
+                    "clinical correlation recommended."
+                )
+            else:
+                notes.append("Dedicated lesion model found no lesions.")
+        else:
+            notes.append(
+                "No dedicated lesion-detection model active — only organ-volume "
+                "reference-range screening was performed (not lesion detection)."
+            )
         if hepatomegaly_suspected:
             liver_vol = volumes_ml.get("liver", 0.0)
             notes.append(
@@ -968,6 +1192,11 @@ class Pipeline(BasePipeline):
                 f"Spleen volume ({spleen_vol:.0f} mL) exceeds the 95th-percentile "
                 "reference threshold; splenomegaly possible. Clinical correlation required."
             )
+        # Per-organ reference-range abnormalities beyond liver/spleen.
+        for f in (abnormal_findings or []):
+            if f.get("organ") in ("liver", "spleen"):
+                continue  # already covered above
+            notes.append(f["note"].capitalize() + ". Clinical correlation recommended.")
         if "missing_sequence" in qa_flags:
             notes.append(
                 "One or more expected sequences were missing; "

@@ -1,12 +1,12 @@
 name: pet_ct_brain
 version: "1.0.0"
 description: >
-  Brain PET/CT pipeline for neurology and neuro-oncology. Supports FDG
-  (metabolic mapping), amyloid (Florbetapir, Flutemetamol), tau, and PSMA
-  radiotracers. Computes regional cortical SUVR, asymmetry index, and
-  compares to age-matched normative atlases. Detects hypometabolism patterns
-  consistent with Alzheimer's, FTD, and DLB, and flags focal hypermetabolism
-  for tumour recurrence evaluation.
+  Brain PET/CT pipeline for neurology and neuro-oncology. Registers PET to the
+  MNI152 template and applies the AAL3 atlas to compute per-region SUVR and an
+  asymmetry index; centiloid is derived for amyloid tracers. Supports FDG
+  (metabolic mapping), amyloid (Florbetapir / Florbetaben), and tau
+  (Flortaucipir) radiotracers. Flags hypometabolism patterns and focal
+  hypermetabolism for tumour-recurrence evaluation.
 supported_body_parts:
   - BRAIN
   - HEAD

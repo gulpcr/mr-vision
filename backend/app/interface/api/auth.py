@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.auth_service import AuthService
 from app.interface.api.dependencies import get_session
+from app.interface.middleware.auth import require_permission
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -86,11 +87,11 @@ async def register(
     )
 
 
-@router.get("/users", response_model=list[UserResponse])
+@router.get("/users", response_model=list[UserResponse], dependencies=[require_permission("user.manage")])
 async def list_users(
     session: Annotated[AsyncSession, Depends(get_session)],
 ):
-    """List all users (admin only — enforced by middleware)."""
+    """List all users (requires user.manage)."""
     service = AuthService(session)
     users = await service.list_users()
     return [
@@ -108,13 +109,13 @@ async def list_users(
     ]
 
 
-@router.put("/users/{user_id}/role")
+@router.put("/users/{user_id}/role", dependencies=[require_permission("user.manage")])
 async def update_user_role(
     user_id: str,
     role: str,
     session: Annotated[AsyncSession, Depends(get_session)],
 ):
-    """Update a user's role (admin only)."""
+    """Update a user's role (requires user.manage)."""
     service = AuthService(session)
     user = await service.update_user_role(user_id, role)
     if not user:
@@ -122,12 +123,12 @@ async def update_user_role(
     return {"status": "ok", "user_id": user_id, "role": role}
 
 
-@router.delete("/users/{user_id}")
+@router.delete("/users/{user_id}", dependencies=[require_permission("user.manage")])
 async def deactivate_user(
     user_id: str,
     session: Annotated[AsyncSession, Depends(get_session)],
 ):
-    """Deactivate a user account (admin only)."""
+    """Deactivate a user account (requires user.manage)."""
     service = AuthService(session)
     await service.deactivate_user(user_id)
     return {"status": "ok", "user_id": user_id}

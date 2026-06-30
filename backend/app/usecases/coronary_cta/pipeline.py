@@ -330,16 +330,275 @@ class Pipeline(BasePipeline):
         self._model_version = f"coronary_cta_swinunetr_{Path(weights_path).stem}"
         logger.info("ccta_model_loaded", device=str(self._device), checksum=self._model_checksum)
 
-    def _run_lumen_segmentation(self, ccta_hu: np.ndarray) -> dict[str, Any]:
-        """Learned coronary lumen segmentation → centerline → per-segment stenosis.
+    def _run_lumen_inference(self, ccta_hu: np.ndarray) -> np.ndarray:
+        """Run the loaded SwinUNETR lumen model → binary lumen mask (uint8).
 
-        NOT YET IMPLEMENTED. Requires: (1) a trained lumen-segmentation model,
-        (2) centerline extraction (e.g. skimage.morphology.skeletonize_3d or
-        VMTK/kimimaro), (3) curved-MPR cross-sectional lumen-area sampling, and
-        (4) per-segment assignment on the SCCT 18-segment model. Until then the
-        pipeline runs Agatston-only.
+        Z-score-normalises the contrast CCTA over its non-zero voxels (matching
+        the other MONAI pipelines) and runs sliding-window inference. With
+        out_channels == 1 a sigmoid threshold is applied; otherwise argmax over
+        the channel dimension selects the lumen class (label 1).
         """
-        raise NotImplementedError("coronary lumen segmentation / stenosis grading not yet implemented")
+        import torch
+        from monai.inferers import sliding_window_inference
+
+        inf_cfg = self._cfg.get("inference", {})
+        model_cfg = self._cfg.get("model", {})
+
+        arr = ccta_hu.astype(np.float32).copy()
+        nz = arr != 0
+        if np.any(nz):
+            m = float(np.mean(arr[nz]))
+            s = float(np.std(arr[nz]))
+            if s > 0:
+                arr = (arr - m) / s
+                arr[~nz] = 0.0
+
+        t = torch.from_numpy(arr).unsqueeze(0).unsqueeze(0).to(self._device)
+        with torch.no_grad():
+            out = sliding_window_inference(
+                t,
+                tuple(inf_cfg.get("roi_size", [96, 96, 96])),
+                inf_cfg.get("sw_batch_size", 1),
+                self._model,
+                overlap=inf_cfg.get("overlap", 0.5),
+                mode=inf_cfg.get("mode", "gaussian"),
+            )
+        if model_cfg.get("out_channels", 2) == 1:
+            prob = torch.sigmoid(out)[0, 0].cpu().numpy()
+            mask = (prob >= inf_cfg.get("dl_lumen_threshold", 0.5)).astype(np.uint8)
+        else:
+            mask = (torch.argmax(out, dim=1)[0].cpu().numpy() == 1).astype(np.uint8)
+        return mask
+
+    def _grade_stenosis(self, pct: float) -> str:
+        """Severity label for a per-vessel diameter-stenosis percentage."""
+        if pct >= 100:
+            return "occluded"
+        if pct >= 70:
+            return "severe"
+        if pct >= 50:
+            return "moderate"
+        if pct >= 25:
+            return "mild"
+        if pct > 0:
+            return "minimal"
+        return "none"
+
+    def _vessel_stenosis(
+        self,
+        vessel_mask: np.ndarray,
+        voxel_spacing_mm: tuple[float, float, float],
+        scfg: dict,
+    ) -> dict[str, Any] | None:
+        """Quantify diameter stenosis for a single connected lumen component.
+
+        Method (purely geometric — NO anatomical labelling):
+          1. Skeletonise the vessel to a 1-voxel centerline.
+          2. Prune skeleton endpoints (which taper to a point and would create a
+             false minimum) by iteratively removing voxels with <=1 neighbour.
+          3. Sample the local lumen radius at each centerline voxel from the
+             Euclidean distance transform (mm, anisotropy-aware), diameter = 2r.
+          4. diameter-stenosis % = (D_ref - D_min) / D_ref, where D_ref is a high
+             percentile (healthy proximal reference) and D_min a low percentile
+             (minimal lumen) of the along-vessel diameter profile.
+
+        Returns None for vessels too small/short to grade reliably.
+        """
+        from scipy import ndimage as _ndi
+
+        try:
+            from skimage.morphology import skeletonize
+        except Exception as exc:
+            logger.warning("skeletonize_unavailable", error=str(exc))
+            return None
+
+        min_vox = int(scfg.get("min_centerline_voxels", 10))
+        min_ref_mm = float(scfg.get("min_reference_diameter_mm", 1.5))
+        ref_pct = float(scfg.get("reference_percentile", 80))
+        min_pct = float(scfg.get("minimal_percentile", 5))
+        prune_iters = int(scfg.get("endpoint_prune_iterations", 3))
+
+        # Radius (mm) at every interior voxel = distance to the lumen boundary.
+        dt = _ndi.distance_transform_edt(vessel_mask, sampling=voxel_spacing_mm)
+
+        skel = skeletonize(vessel_mask > 0)
+        # Prune endpoints: 3x3x3 neighbour count (minus self) <= 1 ⇒ tip.
+        kernel = np.ones((3, 3, 3), dtype=np.uint8)
+        for _ in range(max(prune_iters, 0)):
+            if skel.sum() == 0:
+                break
+            neighbours = _ndi.convolve(skel.astype(np.uint8), kernel, mode="constant") - skel.astype(np.uint8)
+            endpoints = skel & (neighbours <= 1)
+            if not endpoints.any():
+                break
+            skel = skel & ~endpoints
+
+        coords = np.argwhere(skel)
+        if coords.shape[0] < min_vox:
+            return None
+
+        diameters = 2.0 * dt[coords[:, 0], coords[:, 1], coords[:, 2]]
+        diameters = diameters[diameters > 0]
+        if diameters.size < min_vox:
+            return None
+
+        d_ref = float(np.percentile(diameters, ref_pct))
+        if d_ref < min_ref_mm:
+            return None  # too small to be a gradeable coronary segment
+        d_min = float(np.percentile(diameters, min_pct))
+        stenosis_pct = max(0.0, min(100.0, (d_ref - d_min) / d_ref * 100.0))
+
+        length_mm = float(coords.shape[0]) * float(np.mean(voxel_spacing_mm))
+        return {
+            "stenosis_pct": round(stenosis_pct, 1),
+            "grade": self._grade_stenosis(stenosis_pct),
+            "reference_diameter_mm": round(d_ref, 2),
+            "min_lumen_diameter_mm": round(d_min, 2),
+            "centerline_length_mm": round(length_mm, 1),
+        }
+
+    def _run_lumen_segmentation(
+        self, ccta_hu: np.ndarray, voxel_spacing_mm: tuple[float, float, float]
+    ) -> dict[str, Any]:
+        """Learned coronary lumen segmentation → centerline → per-vessel stenosis.
+
+        Active ONLY when a lumen-segmentation model is loaded
+        (``model.custom_ccta_weights_path``). Steps: (1) SwinUNETR lumen
+        segmentation on the contrast CCTA, (2) split the lumen into connected
+        vessel trees, (3) per vessel skeletonise + distance-transform to obtain a
+        diameter profile and a diameter-stenosis estimate (see _vessel_stenosis).
+
+        IMPORTANT LIMITATION: vessels are reported as geometric branches, NOT as
+        SCCT 18-segment anatomical labels — true segment assignment requires a
+        labelled coronary model / centerline registration, which is not done
+        here. Callers surface this via the ``stenosis_segment_labels_approximate``
+        QA flag. Returns ``segments`` (sorted worst-first) and ``max_stenosis_pct``.
+        """
+        if self._model is None:
+            raise NotImplementedError("no coronary lumen-segmentation model loaded")
+        lumen_mask = self._run_lumen_inference(ccta_hu)
+        return self._grade_lumen_mask(lumen_mask, voxel_spacing_mm)
+
+    def _grade_lumen_mask(
+        self, lumen_mask: np.ndarray, voxel_spacing_mm: tuple[float, float, float]
+    ) -> dict[str, Any]:
+        """Geometric per-vessel stenosis grading on a binary coronary lumen mask.
+
+        Source-agnostic: the mask may come from the learned SwinUNETR model
+        (_run_lumen_inference) or from TotalSegmentator's coronary_arteries task
+        (_run_coronary_lumen_totalseg). Splits the lumen into connected vessel
+        trees and, per vessel, skeletonises + distance-transforms to estimate a
+        diameter-stenosis percentage (see _vessel_stenosis). Vessels are reported
+        as geometric branches, NOT SCCT 18-segment anatomical labels. Returns
+        ``segments`` (sorted worst-first) and ``max_stenosis_pct``.
+        """
+        from scipy import ndimage as _ndi
+
+        if lumen_mask is None or lumen_mask.sum() == 0:
+            logger.info("lumen_segmentation_empty")
+            return {"segments": [], "max_stenosis_pct": 0.0}
+
+        scfg = self._cfg.get("stenosis", {})
+        # Voxel volume for the per-vessel size gate.
+        voxel_vol_mm3 = float(np.prod(voxel_spacing_mm))
+        min_vessel_mm3 = float(scfg.get("min_vessel_volume_mm3", 50.0))
+
+        labeled, n = _ndi.label(lumen_mask)
+        segments: list[dict[str, Any]] = []
+        for cid in range(1, n + 1):
+            comp = labeled == cid
+            if float(comp.sum()) * voxel_vol_mm3 < min_vessel_mm3:
+                continue
+            graded = self._vessel_stenosis(comp, voxel_spacing_mm, scfg)
+            if graded is None:
+                continue
+            graded["name"] = f"Vessel {len(segments) + 1} (geometric)"
+            graded["vessel"] = "unassigned"
+            segments.append(graded)
+
+        segments.sort(key=lambda s: s["stenosis_pct"], reverse=True)
+        max_stenosis_pct = segments[0]["stenosis_pct"] if segments else 0.0
+
+        logger.info(
+            "lumen_grading_complete",
+            vessels_graded=len(segments),
+            max_stenosis_pct=max_stenosis_pct,
+        )
+        return {"segments": segments, "max_stenosis_pct": max_stenosis_pct}
+
+    def _run_coronary_lumen_totalseg(
+        self,
+        ccta_nifti_path: str,
+        hu_shape: tuple[int, int, int],
+        voxel_spacing_mm: tuple[float, float, float],
+        working_dir: str,
+    ) -> np.ndarray | None:
+        """Coronary lumen mask from TotalSegmentator's ``coronary_arteries`` task.
+
+        Needs NO external weights — it uses the TotalSegmentator model cache
+        already relied on by the heart-ROI step and the other CT pipelines. Runs
+        the task on the contrast CCTA, unions whatever coronary label file(s) it
+        emits, and returns a binary uint8 mask aligned to the CCTA grid (or None on
+        any failure, so infer() falls back to calcium-only). The mask is fed to the
+        shared geometric grader (_grade_lumen_mask).
+
+        NOTE: some TotalSegmentator versions gate the coronary_arteries task behind
+        a free non-commercial license — set ``coronary_lumen.totalseg_license_number``
+        to apply it; without it the task may fail and the pipeline degrades to
+        calcium-only.
+        """
+        import glob
+
+        from totalsegmentator.python_api import totalsegmentator as ts_run
+        import torch
+
+        lumen_cfg = self._cfg.get("coronary_lumen", {})
+        task = lumen_cfg.get("totalseg_task", "coronary_arteries")
+        license_number = lumen_cfg.get("totalseg_license_number")
+        if license_number:
+            try:
+                from totalsegmentator.config import set_license_number
+                set_license_number(str(license_number))
+            except Exception as exc:
+                logger.warning("totalseg_set_license_failed", error=str(exc))
+
+        device = "gpu" if torch.cuda.is_available() else "cpu"
+        ts_out = os.path.join(working_dir, "ccta_coronary_seg")
+        os.makedirs(ts_out, exist_ok=True)
+
+        logger.info("coronary_lumen_totalseg_start", task=task, device=device)
+        ts_run(
+            input=Path(ccta_nifti_path),
+            output=Path(ts_out),
+            task=task,
+            device=device,
+            quiet=True,
+        )
+
+        # The task may emit a single coronary_arteries.nii.gz or several per-branch
+        # label files; union whatever .nii.gz masks were produced.
+        mask = np.zeros(tuple(hu_shape), dtype=bool)
+        primary = os.path.join(ts_out, "coronary_arteries.nii.gz")
+        candidates = (
+            [primary] if os.path.exists(primary)
+            else sorted(glob.glob(os.path.join(ts_out, "*.nii.gz")))
+        )
+        found = False
+        for path in candidates:
+            m = nib.load(path).get_fdata() > 0.5
+            if m.shape != tuple(hu_shape):
+                logger.warning(
+                    "coronary_lumen_shape_mismatch",
+                    path=path, mask_shape=tuple(m.shape), hu_shape=tuple(hu_shape),
+                )
+                continue
+            mask |= m
+            found = True
+        if not found or not mask.any():
+            logger.warning("coronary_lumen_empty_or_missing", out_dir=ts_out)
+            return None
+        logger.info("coronary_lumen_totalseg_complete", lumen_voxels=int(mask.sum()))
+        return mask.astype(np.uint8)
 
     # ── Cardiac ROI (TotalSegmentator heart mask) ─────────────────────────────
 
@@ -611,23 +870,61 @@ class Pipeline(BasePipeline):
                 roi_method=qa_details["calcium_roi_method"],
             )
 
-        # ── DL stenosis (stub → fallback) ─────────────────────────────────────
+        # ── Lumen stenosis analysis (optional) ────────────────────────────────
+        # Two lumen sources feed the SAME geometric per-vessel grader, in priority
+        # order: (1) the learned SwinUNETR model when weights are loaded, then
+        # (2) TotalSegmentator's coronary_arteries task (no external weights) when
+        # coronary_lumen.use_totalseg_coronary is enabled. Either is optional; any
+        # failure falls back to calcium-only.
         segments: list[dict[str, Any]] = []
         max_stenosis_pct: float | None = None
         inference_method = "calcium_only"
 
-        if self._model is not None and preprocessed.get("ccta_nifti_path"):
+        lumen_cfg = self._cfg.get("coronary_lumen", {})
+        ccta_path = preprocessed.get("ccta_nifti_path")
+        _stenosis_note = (
+            "Per-vessel stenosis is a geometric diameter estimate "
+            "(skeleton + distance transform) on the coronary lumen mask; "
+            "vessels are NOT mapped to SCCT 18-segment anatomy."
+        )
+
+        if self._model is not None and ccta_path:
             try:
-                ccta_img = nib.load(preprocessed["ccta_nifti_path"])
+                ccta_img = nib.load(ccta_path)
                 ccta_hu = ccta_img.get_fdata().astype(np.float32)
-                dl_out = self._run_lumen_segmentation(ccta_hu)
+                ccta_affine = ccta_img.affine
+                ccta_spacing = tuple(abs(float(ccta_affine[i, i])) for i in range(3))
+                dl_out = self._run_lumen_segmentation(ccta_hu, ccta_spacing)
                 segments = dl_out.get("segments", [])
                 max_stenosis_pct = dl_out.get("max_stenosis_pct")
                 inference_method = "dl_stenosis"
+                qa_flags.append("stenosis_segment_labels_approximate")
+                qa_details["stenosis_note"] = _stenosis_note
             except NotImplementedError:
                 logger.info("lumen_segmentation_not_implemented_using_calcium_only")
             except Exception as exc:
                 logger.warning("dl_stenosis_failed_using_calcium_only", error=str(exc))
+        elif lumen_cfg.get("use_totalseg_coronary", False) and ccta_path:
+            try:
+                ccta_img = nib.load(ccta_path)
+                ccta_affine = ccta_img.affine
+                ccta_spacing = tuple(abs(float(ccta_affine[i, i])) for i in range(3))
+                lumen_mask = self._run_coronary_lumen_totalseg(
+                    ccta_path, ccta_img.shape, ccta_spacing, working_dir
+                )
+                if lumen_mask is not None:
+                    graded = self._grade_lumen_mask(lumen_mask, ccta_spacing)
+                    segments = graded.get("segments", [])
+                    max_stenosis_pct = graded.get("max_stenosis_pct")
+                    inference_method = "totalseg_coronary_stenosis"
+                    qa_flags.append("stenosis_segment_labels_approximate")
+                    qa_details["stenosis_note"] = _stenosis_note
+                    qa_details["lumen_source"] = "totalsegmentator_coronary_arteries"
+                else:
+                    qa_flags.append("coronary_lumen_unavailable")
+            except Exception as exc:
+                logger.warning("totalseg_coronary_failed_using_calcium_only", error=str(exc))
+                qa_flags.append("coronary_lumen_unavailable")
 
         return {
             "agatston": {k: v for k, v in agatston.items() if k != "calcium_mask"},
@@ -665,7 +962,7 @@ class Pipeline(BasePipeline):
 
         score = agatston["agatston_score"]
         category = _calcium_category(score)
-        stenosis_available = inference_method == "dl_stenosis"
+        stenosis_available = inference_method in ("dl_stenosis", "totalseg_coronary_stenosis")
 
         cad_rads: int | None = None
         if stenosis_available and max_stenosis_pct is not None:
@@ -685,12 +982,15 @@ class Pipeline(BasePipeline):
 
         artifacts: list[dict] = []
 
-        # Segmentation NIfTI (so the Phase-7 DICOM Seg export picks it up).
+        # Segmentation NIfTI. Stored under the conventional `segmentation.nii.gz`
+        # name (not a coronary-specific name) so the shared consumers find it:
+        # the on-demand preview-overlay endpoint and the Phase-7 DICOM Seg export
+        # both look up segmentation masks by that name.
         if calcium_mask is not None and affine is not None:
-            seg_path = os.path.join(artifacts_dir, "calcium_mask.nii.gz")
+            seg_path = os.path.join(artifacts_dir, "segmentation.nii.gz")
             nib.save(nib.Nifti1Image(calcium_mask, affine), seg_path)
             artifacts.append({
-                "name": "calcium_mask",
+                "name": "segmentation.nii.gz",
                 "artifact_type": "segmentation_nifti",
                 "local_path": seg_path,
                 "content_type": "application/gzip",
@@ -795,6 +1095,10 @@ class Pipeline(BasePipeline):
         parts: list[str] = []
         method_label = {
             "dl_stenosis": "DL coronary lumen segmentation + Agatston calcium scoring",
+            "totalseg_coronary_stenosis": (
+                "TotalSegmentator coronary-artery lumen + geometric stenosis grading "
+                "+ Agatston calcium scoring"
+            ),
             "calcium_only": "Agatston calcium scoring (deterministic; no stenosis analysis)",
         }.get(inference_method, inference_method)
         parts.append(f"Method: {method_label}.")

@@ -1,0 +1,50 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Mammography Result",
+  "type": "object",
+  "required": [
+    "summary",
+    "measurements",
+    "qa_flags",
+    "qa_details",
+    "model_version",
+    "model_checksum",
+    "artifacts"
+  ],
+  "properties": {
+    "summary": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "birads_left": { "type": ["integer", "null"], "minimum": 0, "maximum": 6 },
+        "birads_right": { "type": ["integer", "null"], "minimum": 0, "maximum": 6 },
+        "malignancy_probability_left": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+        "malignancy_probability_right": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+        "density_left": { "type": ["string", "null"] },
+        "density_right": { "type": ["string", "null"] },
+        "right_breast_findings": { "type": "string" },
+        "left_breast_findings": { "type": "string" },
+        "opinion": { "type": "string" },
+        "quantitative": { "type": "boolean" }
+      }
+    },
+    "measurements": { "type": "object", "additionalProperties": true },
+    "qa_flags": { "type": "array", "items": { "type": "string" } },
+    "qa_details": { "type": "object", "additionalProperties": true },
+    "model_version": { "type": "string" },
+    "model_checksum": { "type": "string" },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "artifact_type", "local_path", "content_type"],
+        "properties": {
+          "name": { "type": "string" },
+          "artifact_type": { "type": "string" },
+          "local_path": { "type": "string" },
+          "content_type": { "type": "string" }
+        }
+      }
+    }
+  }
+}

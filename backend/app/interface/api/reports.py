@@ -210,6 +210,48 @@ async def generate_pdf_report(
     patient_info = build_petct_patient_info(study_rec)
     patient_info["study_uid"] = study_uid
 
+    # Reading-workflow status for the report (unclaimed / reading by / signed off).
+    if study_rec is not None:
+        patient_info["reading_status"] = getattr(study_rec, "reading_status", "unread") or "unread"
+        patient_info["assigned_to_username"] = getattr(study_rec, "assigned_to_username", None)
+        _signed = getattr(study_rec, "signed_at", None)
+        patient_info["signed_at"] = _signed.strftime("%d/%m/%Y") if _signed else ""
+
+    # Merge clinical intake (patient onboarding) so it appears in the report.
+    try:
+        from app.application.onboarding_service import OnboardingService
+
+        clinical = await OnboardingService(async_session).get_clinical_for_study(study_uid)
+        if clinical:
+            if clinical.get("indication"):
+                patient_info["indication"] = clinical["indication"]
+            if clinical.get("clinical_history"):
+                patient_info["clinical_history"] = clinical["clinical_history"]
+            if clinical.get("comparative_study"):
+                patient_info["comparative_study"] = clinical["comparative_study"]
+            if clinical.get("referrer") and not patient_info.get("referring_physician"):
+                patient_info["referring_physician"] = clinical["referrer"]
+            if clinical.get("fasting_glucose"):
+                patient_info["fasting_glucose"] = clinical["fasting_glucose"]
+            if clinical.get("injection_site"):
+                patient_info["injection_site"] = clinical["injection_site"]
+            if clinical.get("creatinine"):
+                patient_info["creatinine"] = clinical["creatinine"]
+            if clinical.get("bmi"):
+                patient_info["bmi"] = f"{clinical['bmi']:g}"
+            if clinical.get("height_cm") and not patient_info.get("patient_height"):
+                patient_info["patient_height"] = f"{clinical['height_cm']:g}"
+            if clinical.get("weight_kg") and not patient_info.get("patient_weight"):
+                patient_info["patient_weight"] = f"{clinical['weight_kg']:g}"
+            # Fall back to coarse age band when DICOM age is absent.
+            if clinical.get("age_band") and not patient_info.get("patient_age"):
+                patient_info["patient_age"] = clinical["age_band"]
+            for _k in ("priority", "region_profile", "body_part"):
+                if clinical.get(_k):
+                    patient_info[_k] = clinical[_k]
+    except Exception:
+        pass  # clinical merge is best-effort — never block report generation
+
     pdf_bytes = generator.generate(
         study_uid=study_uid,
         usecase_name=usecase,

@@ -77,6 +77,16 @@ async def _load_fused_volumes(service: "ResultService", study_uid: str, usecase:
                     fh.write(ct_data)
                 ct_arr = nib.load(ct_path).get_fdata().astype(np.float32)
                 ct_arr = resample_ct_to_suv(suv_arr, ct_arr)
+                # Guard against a degenerate CT artifact (e.g. a scout was
+                # resampled onto the PET grid, yielding an all-air -1000 HU
+                # volume). Rendering it produces a misleading all-black CT pane,
+                # so treat a CT with no soft tissue as "no CT" — the viewer then
+                # drops the CT row instead of showing blank panels.
+                if ct_arr is not None and not np.any(ct_arr > -500.0):
+                    logger.warning(
+                        "fused_ct_all_air_dropped", study_uid=study_uid, usecase=usecase
+                    )
+                    ct_arr = None
             except Exception:
                 ct_arr = None
 
@@ -333,6 +343,22 @@ async def get_preview(
 
     filename = f"preview_{view}.png"
 
+    # PET/CT use cases produce no segmentation-overlay preview — serve the
+    # pre-generated fused PET-on-CT image (CT anatomy + PET hot-colormap + lesion
+    # outline) instead. The generic on-demand overlay has no usable background
+    # for these (the lesion mask lives in PET space, not the raw CT grid).
+    if usecase in ("pet_ct", "pet_ct_brain"):
+        for candidate in (f"fused_{view}.png", f"mip_{view}.png"):
+            try:
+                data = await service.get_artifact_data(study_uid, usecase, candidate)
+                return Response(content=data, media_type="image/png")
+            except Exception:
+                continue  # try the next PET/CT image
+        # No fused/MIP image (e.g. PET-only study). Do NOT fall through to the
+        # generic raw-CT on-demand overlay — it renders black for PET-space
+        # lesion masks. Surface a clean 404 instead.
+        raise HTTPException(404, "No PET/CT preview image available")
+
     # Try to serve pre-generated preview from storage
     try:
         data = await service.get_artifact_data(study_uid, usecase, filename)
@@ -368,10 +394,12 @@ async def get_preview(
             if not series_list:
                 raise ValueError("No series found in Orthanc")
 
-            # Preferred background modality per usecase (CT for PET-CT, else MR)
+            # Preferred background modality per usecase (CT for PET-CT and
+            # coronary calcium scoring, else MR)
             BG_MODALITY: dict[str, str] = {
                 "pet_ct": "CT",
                 "pet_ct_brain": "CT",
+                "coronary_cta": "CT",
             }
             preferred_mod = BG_MODALITY.get(usecase, "MR")
 
@@ -472,14 +500,20 @@ async def get_fused_slice(
     slice_index: int,
     service: Annotated[ResultService, Depends(get_result_service)],
     lesions: bool = True,
+    mode: str = "fused",
 ):
-    """Serve the fused PET/CT PNG for a specific slice of a view (interactive viewer).
+    """Serve a PET/CT PNG for a specific slice of a view (interactive viewer).
+
+    ``mode`` selects the render: ``"fused"`` (CT + PET overlay, default), ``"ct"``
+    (CT grayscale only), or ``"pet"`` (PET colormap only).
 
     When ``lesions`` is true (default) and a lesion segmentation exists, detected
-    foci are outlined in cyan over the fused image.
+    foci are outlined in cyan over the image.
     """
     if view not in ("axial", "coronal", "sagittal"):
         raise HTTPException(400, "view must be axial, coronal, or sagittal")
+    if mode not in ("fused", "ct", "pet"):
+        raise HTTPException(400, "mode must be fused, ct, or pet")
 
     vols = await _load_fused_volumes(service, study_uid, usecase)
     from app.services.fused_image_service import generate_fused_slice_fast
@@ -487,7 +521,7 @@ async def get_fused_slice(
     try:
         png_bytes = generate_fused_slice_fast(
             vols["suv"], vols["ct"], view, slice_index, vols["vmin"], vols["vmax"],
-            mask_arr=vols.get("mask"), show_lesions=lesions,
+            mask_arr=vols.get("mask"), show_lesions=lesions, mode=mode,
         )
     except Exception as exc:
         logger.error("fused_slice_failed", study_uid=study_uid, usecase=usecase, error=str(exc))

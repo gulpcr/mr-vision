@@ -43,6 +43,15 @@ class StudyRecord(Base):
     institution_name = Column(String(256), nullable=True)
     orthanc_id = Column(String(128), nullable=True)
     tenant_id = Column(String(36), nullable=True, server_default="default")
+    # ── Reading workflow (radiologist lifecycle) ──────────────────────────────
+    # unread → in_progress → reported → signed. created_at is the "received" time
+    # used for turnaround-time tracking.
+    reading_status = Column(String(16), nullable=False, server_default="unread", index=True)
+    assigned_to = Column(String(36), nullable=True, index=True)          # user id
+    assigned_to_username = Column(String(128), nullable=True)            # denormalised for display
+    assigned_at = Column(DateTime, nullable=True)
+    reported_at = Column(DateTime, nullable=True)
+    signed_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
 
@@ -194,6 +203,82 @@ class TenantRecord(Base):
     slug = Column(String(128), unique=True, nullable=False, index=True)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class PatientRecord(Base):
+    """De-identified patient (intake). Identity stays in the DICOM/PACS layer;
+    patient_ref is the MRN / DICOM PatientID used to match ingested studies."""
+
+    __tablename__ = "patients"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    patient_ref = Column(String(128), nullable=False)
+    sex = Column(String(16), nullable=True)            # female | male | other
+    age_band = Column(String(16), nullable=True)       # 0-17 | 18-39 | 40-64 | 65+
+    tenant_id = Column(String(36), nullable=False, server_default="default")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index("ix_patients_tenant_ref", "tenant_id", "patient_ref", unique=True),
+    )
+
+
+class OrderRecord(Base):
+    """Imaging order (intake) linking a patient's clinical data to a study."""
+
+    __tablename__ = "orders"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    patient_id = Column(String(36), ForeignKey("patients.id", ondelete="CASCADE"), nullable=False)
+    modality = Column(String(16), nullable=False)
+    body_part = Column(String(64), nullable=False)
+    referrer = Column(String(256), nullable=True)
+    priority = Column(String(16), nullable=False, server_default="routine")  # routine | stat
+    indication = Column(Text, nullable=False)
+    region_profile = Column(String(64), nullable=False)
+    consent_ack = Column(Boolean, nullable=False, default=False, server_default="false")
+    # Richer clinical fields that populate the PET-CT report.
+    clinical_history = Column(Text, nullable=True)
+    comparative_study = Column(Text, nullable=True)
+    height_cm = Column(Float, nullable=True)
+    weight_kg = Column(Float, nullable=True)
+    fasting_glucose = Column(String(32), nullable=True)
+    injection_site = Column(String(128), nullable=True)
+    creatinine = Column(String(32), nullable=True)
+    study_instance_uid = Column(
+        String(128), ForeignKey("studies.study_instance_uid", ondelete="SET NULL"), nullable=True
+    )
+    created_by = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    tenant_id = Column(String(36), nullable=False, server_default="default")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index("ix_orders_patient_id", "patient_id"),
+        Index("ix_orders_study_uid", "study_instance_uid"),
+    )
+
+
+class RoleRecord(Base):
+    """Per-tenant RBAC role with a permission set (see app.domain.permissions).
+
+    System roles (is_system=True) are seeded and cannot be deleted; their
+    permissions may be edited. Custom roles can be created/edited/deleted.
+    ``users.role`` references a role by ``name`` within the same tenant.
+    """
+
+    __tablename__ = "roles"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = Column(String(36), nullable=False, server_default="default", index=True)
+    name = Column(String(64), nullable=False)
+    permissions = Column(JSON, nullable=False, default=list)
+    is_system = Column(Boolean, nullable=False, default=False, server_default="false")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index("ix_roles_tenant_name", "tenant_id", "name", unique=True),
+    )
 
 
 class ModelVersionRecord(Base):
@@ -361,4 +446,75 @@ class CriticalAlertRecord(Base):
     __table_args__ = (
         Index("ix_critical_alerts_status_severity", "status", "severity"),
         Index("ix_critical_alerts_study_usecase", "study_instance_uid", "usecase_name"),
+    )
+
+
+class MammographyReportRecord(Base):
+    """Radiologist-authored bilateral mammography report, keyed by study.
+
+    Pre-filled from the mammography AI result (per-breast findings / BI-RADS) and
+    then edited/finalised by the radiologist. One row per study (upsert)."""
+
+    __tablename__ = "mammography_reports"
+
+    study_instance_uid = Column(
+        String(128),
+        ForeignKey("studies.study_instance_uid", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    # bilateral | right | left — which breast(s) the study imaged.
+    laterality = Column(String(16), nullable=True)
+    # Header fields not derivable from DICOM/study data.
+    file_no = Column(String(64), nullable=True)
+    status = Column(String(64), nullable=True)
+    contact = Column(String(64), nullable=True)
+    # Report body (free text).
+    procedure = Column(Text, nullable=True)
+    clinical_features = Column(Text, nullable=True)
+    right_breast_findings = Column(Text, nullable=True)
+    left_breast_findings = Column(Text, nullable=True)
+    opinion = Column(Text, nullable=True)
+    # BI-RADS 0-6 per breast (stored as string; CHECK-constrained in the migration).
+    birads_right = Column(String(8), nullable=True)
+    birads_left = Column(String(8), nullable=True)
+    reviewing_doctor = Column(String(256), nullable=True)
+    reporting_doctor = Column(String(256), nullable=True)
+    created_by = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    tenant_id = Column(String(36), nullable=False, server_default="default")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime, server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class MriReportRecord(Base):
+    """Radiologist-authored MRI narrative report, keyed by study.
+
+    Follows the standard radiology narrative layout (EXAMINATION / TECHNIQUE /
+    CLINICAL INDICATION / FINDINGS / IMPRESSION). Optionally pre-filled from the
+    MRI AI result and then edited/finalised by the radiologist. Surfaced for the
+    MRI use cases (brain/spine/chest/abdomen). One row per study (upsert)."""
+
+    __tablename__ = "mri_reports"
+
+    study_instance_uid = Column(
+        String(128),
+        ForeignKey("studies.study_instance_uid", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    # Report body (free text).
+    examination = Column(Text, nullable=True)
+    technique = Column(Text, nullable=True)
+    clinical_indication = Column(Text, nullable=True)
+    findings = Column(Text, nullable=True)
+    impression = Column(Text, nullable=True)
+    # Signatory (config-defaulted, editable per report).
+    reporting_doctor = Column(String(256), nullable=True)
+    doctor_title = Column(String(256), nullable=True)
+    doctor_qualifications = Column(String(256), nullable=True)
+    created_by = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    tenant_id = Column(String(36), nullable=False, server_default="default")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime, server_default=func.now(), onupdate=func.now(), nullable=False
     )

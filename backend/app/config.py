@@ -151,6 +151,46 @@ class Settings(BaseSettings):
     report_signatory_primary: str = "Dr. Salman Habib"
     report_signatory_secondary: str = "Dr. Saifullah Sethar"
 
+    # Mammography report layout (formal bilateral mammography report). Hospital
+    # header, footer roster, and address are config so branding isn't hardcoded.
+    report_hospital_name: str = "AECH-KIRAN"
+    report_hospital_subtitle: str = (
+        "Atomic Energy Cancer Hospital — "
+        "Karachi Institute of Radiotherapy and Nuclear Medicine (KIRAN)"
+    )
+    report_footer_address: str = (
+        "Haider Bux Gabol Road, Gulzar-e-Hijri, KDA Scheme 33, Karachi. "
+        "Ph: 021-99261601-04 Ext. 222, 345"
+    )
+    # Footer doctor roster as "Name | Title" entries.
+    report_footer_roster: list[str] = [
+        "Dr. Asghar H. Asghar, FCPS | Oncologist, Director KIRAN",
+        "Dr. Javed Mehboob, MCPS & FCPS | Radiologist (HOD)",
+        "Dr. Muhammad Hanif, Ph.D | Molecular Pathologist",
+        "Dr. Talal A. Rahman, M.Sc | Nuclear Physician",
+        "Dr. Saifullah Sethar, FCPS | Radiologist",
+        "Dr. Salman Habib, M.Sc, MD | Nuclear Physician (HOD)",
+        "Dr. Adnan Hashmi, MCPS | Radiologist",
+        "Dr. Javaid Iqbal, FCPS | Nuclear Physician",
+        "Dr. Imran Hadi, M.Sc | Nuclear Physician",
+        "Dr. Hasnain Dilawar, M.Sc | Nuclear Physician",
+    ]
+    mammography_procedure_default: str = (
+        "Digital mammography of both breasts performed in routine CC and MLO views."
+    )
+
+    # MRI narrative report layout (formal radiology report for the MRI use cases:
+    # brain/spine/chest/abdomen). Defaults match the departmental brain MRI template;
+    # all body fields are editable per study by the radiologist.
+    mri_report_examination_default: str = "MRI OF THE BRAIN PLAIN AND CONTRAST"
+    mri_report_technique_default: str = (
+        "Multiplanar, multi-sequential MRI images of brain acquired with and "
+        "without contrast."
+    )
+    mri_report_signatory_name: str = "Dr. Ammar-e-Yasir"
+    mri_report_signatory_title: str = "Consultant Radiologist"
+    mri_report_signatory_qualifications: str = "MBBS, FCPS, M.Med"
+
     @property
     def database_url(self) -> str:
         return (

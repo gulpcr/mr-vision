@@ -60,3 +60,23 @@ swin_unetr:
   overlap: 0.5
   mode: gaussian
   threshold: 0.5
+
+# ── Dedicated lesion detection (mirrors chest_mri) ────────────────────────────
+# Optional, strictly modular lesion-detection model. Inert while
+# custom_weights_path is null: the pipeline then performs ONLY per-organ
+# reference-range screening (reported as organ_findings / abnormal_findings, NOT
+# as a detected lesion). When weights are supplied, a binary lesion mask is
+# produced and lesion_detected reflects the model output, with a
+# lesion_mask.nii.gz artifact.
+lesion_detection:
+  custom_weights_path: null
+  in_channels: 1
+  out_channels: 2             # background + lesion
+  feature_size: 48
+  use_checkpoint: false
+  roi_size: [96, 96, 96]
+  sw_batch_size: 1
+  overlap: 0.5
+  mode: gaussian
+  threshold: 0.5
+  min_lesion_volume_ml: 0.5

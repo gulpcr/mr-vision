@@ -1,10 +1,11 @@
 model:
   architecture: swin_unetr
-  # Path to a .pt weights file for learned coronary lumen segmentation.
-  # When null, the pipeline runs in Agatston-only fallback mode (no stenosis
-  # grading / CAD-RADS). Lumen segmentation + stenosis grading are NOT yet
-  # implemented (see pipeline._run_lumen_segmentation); setting this path will
-  # currently still fall back until that method is filled in.
+  # Path to a .pt weights file (SwinUNETR state_dict) for learned coronary lumen
+  # segmentation. When null, the pipeline runs in Agatston-only fallback mode (no
+  # stenosis grading / CAD-RADS). When set, the pipeline segments the lumen and
+  # derives a geometric per-vessel diameter-stenosis estimate + CAD-RADS (see
+  # pipeline._run_lumen_segmentation and the `stenosis` block below). Vessels are
+  # reported as geometric branches, not SCCT 18-segment anatomical labels.
   custom_ccta_weights_path: null
   # SwinUNETR architecture hyperparameters — must match the trained checkpoint.
   in_channels: 1           # contrast CCTA HU volume (single channel)
@@ -19,6 +20,40 @@ inference:
   overlap: 0.5
   mode: gaussian
   dl_lumen_threshold: 0.5
+
+# ── Per-vessel diameter-stenosis grading ──────────────────────────────────────
+# Geometric stenosis estimate computed from the learned lumen mask: each
+# connected vessel is skeletonised and its local lumen diameter sampled from the
+# distance transform; stenosis% = (D_ref - D_min) / D_ref over the diameter
+# profile. Active only when a lumen-segmentation model is loaded. Vessels are
+# reported as geometric branches, NOT SCCT 18-segment anatomical labels (sets the
+# stenosis_segment_labels_approximate QA flag). All thresholds are tunable and
+# should be validated on local data.
+stenosis:
+  min_vessel_volume_mm3: 50.0        # drop tiny noise components before grading
+  min_centerline_voxels: 10          # minimum skeleton length to grade a vessel
+  min_reference_diameter_mm: 1.5      # ignore sub-coronary-calibre structures
+  reference_percentile: 80           # healthy proximal reference diameter (D_ref)
+  minimal_percentile: 5              # minimal lumen diameter (D_min)
+  endpoint_prune_iterations: 3       # trim tapering skeleton tips (false minima)
+
+# ── Coronary lumen source for stenosis grading ────────────────────────────────
+# When no learned SwinUNETR model is configured (model.custom_ccta_weights_path
+# is null), derive the coronary lumen from TotalSegmentator's `coronary_arteries`
+# task instead — no external weights needed; it uses the same TotalSegmentator
+# model cache already relied on by the heart-ROI step. The resulting lumen mask is
+# fed to the SAME geometric per-vessel grader (the `stenosis` block above), so the
+# output is still a geometric diameter-stenosis estimate, NOT SCCT 18-segment
+# anatomy. A learned model (when present) always takes precedence. Falls back to
+# Agatston-only on any failure.
+coronary_lumen:
+  use_totalseg_coronary: true
+  totalseg_task: coronary_arteries
+  # Some TotalSegmentator versions gate the coronary_arteries task behind a free
+  # non-commercial license. Set the license number here (or via the
+  # `totalseg_set_license` CLI) to enable it; leave null otherwise. Without a
+  # required license the task fails and the pipeline degrades to calcium-only.
+  totalseg_license_number: null
 
 # ── Coronary artery calcium (Agatston) scoring ────────────────────────────────
 # Agatston is defined on the NON-CONTRAST gated series. HU >= 130 within the

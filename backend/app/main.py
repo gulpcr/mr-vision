@@ -21,6 +21,10 @@ from app.interface.api.studies import orthanc_router, router as studies_router
 from app.interface.api.usecases import router as usecases_router
 from app.interface.api.critical_alerts import router as critical_alerts_router
 from app.interface.api.dicomweb import router as dicomweb_router
+from app.interface.api.roles import router as roles_router
+from app.interface.api.reading import router as reading_router
+from app.interface.api.onboarding import router as onboarding_router
+from app.interface.api.mammography import router as mammography_router
 from app.interface.api.ws import router as ws_router
 from app.interface.middleware.auth import RBACMiddleware
 
@@ -93,6 +97,10 @@ def create_app() -> FastAPI:
     app.include_router(orthanc_router, prefix="/api")
     app.include_router(reports_router, prefix="/api")
     app.include_router(critical_alerts_router, prefix="/api")
+    app.include_router(roles_router, prefix="/api")
+    app.include_router(reading_router, prefix="/api")
+    app.include_router(onboarding_router, prefix="/api")
+    app.include_router(mammography_router, prefix="/api")
     app.include_router(dicomweb_router, prefix="/api")
     app.include_router(ws_router)
 

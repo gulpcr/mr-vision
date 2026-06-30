@@ -1,0 +1,35 @@
+model:
+  # Architecture tier. "gmic" loads the NYU GMIC breast classifier when
+  # custom_weights_path points at the released weights; otherwise the pipeline
+  # falls back to the deterministic, NON-DIAGNOSTIC placeholder below.
+  architecture: gmic
+  version: "1.0.0"
+  # GMIC weights dir (holds sample_model_1.p .. sample_model_5.p), staged into the
+  # model_cache volume. While null/missing, the placeholder is used and results
+  # are flagged non-diagnostic.
+  custom_weights_path: /model_cache/gmic
+
+inference:
+  device: auto          # "cuda" | "cpu" | "auto"
+  # GMIC operating point for mapping malignancy probability -> suspicion.
+  malignancy_threshold: 0.5
+
+# AI-suggested BI-RADS mapping from malignancy probability. This is an AI
+# suggestion only; the radiologist sets the final BI-RADS in the report.
+birads_thresholds:
+  - { max_prob: 0.05, birads: 1 }   # negative
+  - { max_prob: 0.20, birads: 2 }   # benign
+  - { max_prob: 0.40, birads: 3 }   # probably benign
+  - { max_prob: 0.70, birads: 4 }   # suspicious
+  - { max_prob: 1.01, birads: 5 }   # highly suggestive of malignancy
+
+preprocessing:
+  # Display window for rendering the mammogram views to PNG (percentile clip).
+  window_low_percentile: 1.0
+  window_high_percentile: 99.0
+  out_size: 1024
+
+quality_checks:
+  # Standard bilateral mammography has 4 views (L/R x CC/MLO).
+  expected_views: 4
+  warn_on_missing_views: true
