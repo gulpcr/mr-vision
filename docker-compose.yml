@@ -83,10 +83,18 @@ services:
       context: ./backend
       target: worker
     env_file: .env
+    # TotalSegmentator's nnU-Net backend passes whole-body volumes between
+    # preprocessing worker processes via /dev/shm; Docker's 64 MB default kills
+    # them ("Background workers died"), which breaks physiologic-uptake suppression
+    # and per-lesion structure labelling in the pet_ct pipeline. 8 GB is ample.
+    shm_size: '8gb'
     environment:
       - PYTHONPATH=/app
       - DATABASE_URL=postgresql://${POSTGRES_USER:-mri_admin}:${POSTGRES_PASSWORD}@postgres:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-mri_platform}
-      - CUDA_VISIBLE_DEVICES=0,1
+      # CUDA_VISIBLE_DEVICES is NOT set here — the image entrypoint
+      # (docker/select-healthy-gpu.sh) real-compute-tests every GPU exposed
+      # via NVIDIA_VISIBLE_DEVICES below and sets it dynamically to whichever
+      # pass, so a wedged card degrades to "use the other one" automatically.
       - TOTALSEG_WEIGHTS_PATH=/model_cache/totalsegmentator
       - MONAI_HOME=/model_cache/monai
       - NVIDIA_VISIBLE_DEVICES=all

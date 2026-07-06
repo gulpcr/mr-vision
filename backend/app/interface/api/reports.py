@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,6 +19,8 @@ from app.interface.api.dependencies import (
     get_result_service,
     get_session,
 )
+
+logger = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
@@ -206,6 +209,56 @@ async def generate_pdf_report(
         )
     ).scalar_one_or_none()
 
+    # Fetched early so both the AI-report fallback below and the patient_info merge
+    # further down can reuse it without querying twice.
+    clinical: dict | None = None
+    try:
+        from app.application.onboarding_service import OnboardingService
+
+        clinical = await OnboardingService(async_session).get_clinical_for_study(study_uid)
+    except Exception:
+        pass  # clinical lookup is best-effort — never block report generation
+
+    # On-the-fly AI-report fallback: only reached for pet_ct results that predate this
+    # feature or were processed while it was disabled (Result.summary lacks "ai_report",
+    # which is normally generated once during the pipeline — see tasks.py — and cached
+    # there). Not persisted back to the DB (no partial-update path on ResultRepository,
+    # only versioned save()), so unlike the cached path this MAY reword across repeat
+    # downloads until the study is reprocessed. Never blocks report generation on failure.
+    summary_for_pdf = result.summary or {}
+    if (
+        usecase == "pet_ct"
+        and settings.petct_ai_report_enabled
+        and settings.gemini_api_key
+        and not (isinstance(summary_for_pdf.get("ai_report"), dict))
+    ):
+        try:
+            from app.application.pet_ct_narrative_service import PetCtNarrativeService
+            from app.infrastructure.llm.gemini_client import GeminiClient
+
+            images: dict[str, bytes] = {}
+            for name in (
+                "mip_axial.png", "mip_coronal.png", "mip_sagittal.png",
+                "fused_axial.png", "fused_coronal.png", "fused_sagittal.png",
+            ):
+                try:
+                    images[name] = await service.get_artifact_data(study_uid, usecase, name)
+                except Exception:
+                    continue  # artifact missing (e.g. no CT was available) — skip it
+
+            narr_client = GeminiClient(api_key=settings.gemini_api_key, model_name=settings.gemini_model)
+            ai_report = await PetCtNarrativeService(narr_client).generate(
+                summary=summary_for_pdf,
+                measurements=result.measurements or {},
+                images=images,
+                clinical_indication=(clinical or {}).get("indication"),
+                clinical_history=(clinical or {}).get("clinical_history"),
+            )
+            if ai_report:
+                summary_for_pdf = {**summary_for_pdf, "ai_report": ai_report}
+        except Exception as exc:
+            logger.warning("petct_ai_report_ondemand_failed", study_uid=study_uid, error=str(exc))
+
     generator = PDFReportGenerator()
     patient_info = build_petct_patient_info(study_rec)
     patient_info["study_uid"] = study_uid
@@ -218,10 +271,8 @@ async def generate_pdf_report(
         patient_info["signed_at"] = _signed.strftime("%d/%m/%Y") if _signed else ""
 
     # Merge clinical intake (patient onboarding) so it appears in the report.
+    # `clinical` was already fetched above (reused for the AI-report fallback).
     try:
-        from app.application.onboarding_service import OnboardingService
-
-        clinical = await OnboardingService(async_session).get_clinical_for_study(study_uid)
         if clinical:
             if clinical.get("indication"):
                 patient_info["indication"] = clinical["indication"]
@@ -256,7 +307,7 @@ async def generate_pdf_report(
         study_uid=study_uid,
         usecase_name=usecase,
         result={
-            "summary": result.summary,
+            "summary": summary_for_pdf,
             "measurements": result.measurements,
             "qa_flags": [f.value if hasattr(f, "value") else f for f in result.qa_flags],
             "qa_details": result.qa_details,
@@ -271,7 +322,14 @@ async def generate_pdf_report(
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            # Content is regenerated per request from whichever result version is
+            # currently latest — a browser-cached response could silently keep
+            # showing a prior version's findings (e.g. before ai_report was cached
+            # or after a reprocess), so this response must never be cached.
+            "Cache-Control": "no-store",
+        },
     )
 
 

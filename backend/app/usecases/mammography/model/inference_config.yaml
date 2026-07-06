@@ -14,6 +14,48 @@ inference:
   # GMIC operating point for mapping malignancy probability -> suspicion.
   malignancy_threshold: 0.5
 
+# Mammo-CLIP zero-shot classifier — fills the STRUCTURED per-breast finding slots
+# (density a-d, mass presence, calcification presence) without any training. Gated by
+# Settings.mammography_clip_enabled + weights at Settings.mammography_clip_weights_path
+# (env: MAMMOGRAPHY_CLIP_ENABLED / MAMMOGRAPHY_CLIP_WEIGHTS_PATH). When disabled or the
+# weights/deps are absent the pipeline degrades gracefully and leaves these slots unset
+# for the radiologist. NON-DIAGNOSTIC, research-grade, uncalibrated.
+mammo_clip:
+  # Checkpoint file inside the weights dir (HF shawn24/Mammo-CLIP, B5 encoder).
+  checkpoint_name: b5-model-best-epoch-7.tar
+  # Zero-shot text prompt pair per finding: [positive, negative]. Argmax of the
+  # image-text cosine similarity over the pair decides the slot value.
+  prompts:
+    mass:
+      present: "a mammogram showing a soft tissue mass"
+      absent: "a mammogram with no mass"
+    calcification:
+      present: "a mammogram showing suspicious clustered microcalcifications"
+      absent: "a mammogram with no calcification"
+  # Density (BI-RADS composition a-d) zero-shot prompts, argmax over the four.
+  density_prompts:
+    a: "an almost entirely fatty breast"
+    b: "a breast with scattered fibroglandular density"
+    c: "a heterogeneously dense breast"
+    d: "an extremely dense breast"
+  # always_output: emit the best-guess for every model slot regardless of confidence
+  # (no blank "—" slots). Each slot carries its confidence; calls below min_confidence
+  # are flagged low-confidence for the UI/report rather than suppressed.
+  always_output: true
+  # Threshold below which a call is flagged "low confidence" (not suppressed when
+  # always_output is true).
+  min_confidence: 0.55
+
+# Mammo-CLIP RetinaNet detectors (Mass + Suspicious Calcification) — LOCALIZED detection
+# on the Mammo-CLIP B5 backbone (released `Mammo-CLIP-Detection` checkpoints, VinDr-trained).
+# Gated by Settings.mammography_detector_enabled + weights at
+# Settings.mammography_detector_weights_path (staged by scripts/download_mammo_clip.py).
+# When available, mass/calcification slots come from the detector (with coarse location),
+# overriding the CLIP zero-shot. Research-grade (mass mAP ~0.58) — radiologist confirms.
+detector:
+  # Box score threshold to accept a detection.
+  score_threshold: 0.2
+
 # AI-suggested BI-RADS mapping from malignancy probability. This is an AI
 # suggestion only; the radiologist sets the final BI-RADS in the report.
 birads_thresholds:

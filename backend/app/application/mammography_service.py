@@ -11,6 +11,23 @@ from app.infrastructure.database.models import (
     StudyRecord,
 )
 
+# Structured per-breast finding slots and their allowed values (None always allowed).
+# density: BI-RADS breast composition a-d; presence slots: none|present; nodes: normal|abnormal.
+_SLOT_VALUES: dict[str, set[str]] = {}
+for _side in ("right", "left"):
+    _SLOT_VALUES[f"density_{_side}"] = {"a", "b", "c", "d"}
+    for _slot in (
+        "mass",
+        "calcification",
+        "skin_thickening",
+        "nipple_retraction",
+        "architectural_distortion",
+    ):
+        _SLOT_VALUES[f"{_slot}_{_side}"] = {"none", "present"}
+    _SLOT_VALUES[f"axillary_nodes_{_side}"] = {"normal", "abnormal"}
+
+STRUCTURED_SLOT_FIELDS = list(_SLOT_VALUES.keys())
+
 # Editable report fields (everything the radiologist can set/override).
 EDITABLE_FIELDS = [
     "laterality",
@@ -24,6 +41,7 @@ EDITABLE_FIELDS = [
     "opinion",
     "birads_right",
     "birads_left",
+    *STRUCTURED_SLOT_FIELDS,
     "reviewing_doctor",
     "reporting_doctor",
 ]
@@ -60,6 +78,13 @@ class MammographyService:
             val = payload.get(key)
             if val not in (None, "") and str(val) not in _BIRADS_VALUES:
                 raise ReportValidationError(f"{key} must be one of 0-6")
+
+        for key, allowed in _SLOT_VALUES.items():
+            val = payload.get(key)
+            if val not in (None, "") and str(val) not in allowed:
+                raise ReportValidationError(
+                    f"{key} must be one of {sorted(allowed)}"
+                )
 
         rec = await self._session.get(MammographyReportRecord, study_uid)
         created = rec is None

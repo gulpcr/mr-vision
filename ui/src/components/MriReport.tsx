@@ -64,19 +64,27 @@ function sizePhrase(summary: any): string {
   return ordered.length === 3 ? `${ordered.map((v) => v.toFixed(1)).join(" × ")} cm` : "";
 }
 
-// "T2 and FLAIR hyperintense, T1 hypointense relative to brain parenchyma."
+const MODALITY_DISPLAY: Record<string, string> = {
+  T1: "T1", T1CE: "post-contrast T1", T2: "T2", FLAIR: "FLAIR",
+};
+
+// "T2 and FLAIR hyperintense, T1 hypointense … It demonstrates enhancement."
 function signalPhrase(summary: any): string {
-  const signal: Record<string, string> = summary?.signal_profile || {};
-  const mods = Object.keys(signal);
-  if (!mods.length) return "";
+  const signal: Record<string, string> = { ...(summary?.signal_profile || {}) };
+  const t1ce = signal.T1CE;
+  delete signal.T1CE; // post-contrast T1 → described as enhancement below
   const byDesc: Record<string, string[]> = {};
-  for (const m of mods) (byDesc[signal[m]] ||= []).push(m);
+  for (const m of Object.keys(signal)) (byDesc[signal[m]] ||= []).push(MODALITY_DISPLAY[m] || m);
   const clauses = (["hyperintense", "hypointense", "isointense"] as const)
     .filter((d) => byDesc[d]?.length)
     .map((d) => `${byDesc[d].join(" and ")} ${d}`);
-  return clauses.length
+  let sentence = clauses.length
     ? `The lesion appears ${clauses.join(", ")} relative to surrounding brain parenchyma.`
     : "";
+  if (t1ce === "hyperintense") sentence = `${sentence} It demonstrates enhancement on post-contrast T1.`.trim();
+  else if (t1ce === "hypointense" || t1ce === "isointense")
+    sentence = `${sentence} No appreciable post-contrast enhancement is noted.`.trim();
+  return sentence;
 }
 
 // Auto-derive FINDINGS paragraphs from the MRI AI segmentation result. Mirrors how
@@ -131,6 +139,16 @@ function buildFindings(summary: any, measurements: any): string[] {
   }
 
   if (summary?.processing_notes) lines.push(String(summary.processing_notes));
+
+  const present: string[] = Array.isArray(summary?.modalities_present) ? summary.modalities_present : [];
+  if (present.length) {
+    let footer = `Sequences analysed by AI: ${present.map((m) => MODALITY_DISPLAY[m] || m).join(", ")}.`;
+    const absent: string[] = Array.isArray(summary?.modalities_absent) ? summary.modalities_absent : [];
+    if (absent.length) {
+      footer += ` Note: ${absent.map((m) => MODALITY_DISPLAY[m] || m).join(", ")} not available — findings are limited to the sequences present.`;
+    }
+    lines.push(footer);
+  }
   return lines;
 }
 

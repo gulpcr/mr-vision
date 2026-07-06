@@ -19,8 +19,36 @@
       ]
     },
     {
+      "id": "structured_right",
+      "title": "Structured Findings — Right Breast",
+      "type": "key_value",
+      "fields": [
+        { "key": "density", "label": "Density (a-d)", "format": "text", "data_path": "summary.findings.right.density" },
+        { "key": "mass", "label": "Mass", "format": "text", "data_path": "summary.findings.right.mass" },
+        { "key": "calcification", "label": "Clustered microcalcification", "format": "text", "data_path": "summary.findings.right.calcification" },
+        { "key": "skin_thickening", "label": "Skin thickening", "format": "text", "data_path": "summary.findings.right.skin_thickening" },
+        { "key": "nipple_retraction", "label": "Nipple retraction", "format": "text", "data_path": "summary.findings.right.nipple_retraction" },
+        { "key": "architectural_distortion", "label": "Architectural distortion", "format": "text", "data_path": "summary.findings.right.architectural_distortion" },
+        { "key": "axillary_nodes", "label": "Axillary nodes", "format": "text", "data_path": "summary.findings.right.axillary_nodes" }
+      ]
+    },
+    {
+      "id": "structured_left",
+      "title": "Structured Findings — Left Breast",
+      "type": "key_value",
+      "fields": [
+        { "key": "density", "label": "Density (a-d)", "format": "text", "data_path": "summary.findings.left.density" },
+        { "key": "mass", "label": "Mass", "format": "text", "data_path": "summary.findings.left.mass" },
+        { "key": "calcification", "label": "Clustered microcalcification", "format": "text", "data_path": "summary.findings.left.calcification" },
+        { "key": "skin_thickening", "label": "Skin thickening", "format": "text", "data_path": "summary.findings.left.skin_thickening" },
+        { "key": "nipple_retraction", "label": "Nipple retraction", "format": "text", "data_path": "summary.findings.left.nipple_retraction" },
+        { "key": "architectural_distortion", "label": "Architectural distortion", "format": "text", "data_path": "summary.findings.left.architectural_distortion" },
+        { "key": "axillary_nodes", "label": "Axillary nodes", "format": "text", "data_path": "summary.findings.left.axillary_nodes" }
+      ]
+    },
+    {
       "id": "findings",
-      "title": "Findings",
+      "title": "Findings (narrative)",
       "type": "key_value",
       "data_path": "summary",
       "fields": [
@@ -43,6 +71,7 @@
       "details_path": "qa_details",
       "severity_map": {
         "placeholder_no_model": "warning",
+        "mammo_clip_unavailable": "info",
         "gmic_partial_resize_fallback": "info",
         "missing_views": "warning",
         "view_classification_uncertain": "info",

@@ -33,6 +33,17 @@ _REPORT_SECTIONS: list[tuple[str, str]] = [
      "No FDG-avid / non-avid skeletal lesion is noted in this region."),
 ]
 
+# Maps each report heading onto the fixed key PetCtNarrativeService's Gemini prompt
+# is instructed to return (see pet_ct_narrative_service.py) — keeps the printed
+# headings identical regardless of whether the text came from Gemini or the
+# deterministic aggregator below.
+_REPORT_SECTION_TO_AI_KEY = {
+    "HEAD & NECK": "head_neck",
+    "THORAX": "thorax",
+    "ABDOMEN / PELVIS": "abdomen_pelvis",
+    "BONES / BONE MARROW": "bones_marrow",
+}
+
 
 def _lesion_finding_sentence(lesion: dict[str, Any]) -> str:
     """Build a clinician-style finding sentence from a pet_ct lesion dict."""
@@ -64,6 +75,105 @@ def _group_lesions_by_report_section(lesions: list[dict]) -> dict[str, list[dict
     return grouped
 
 
+def _prettify_structure(name: str | None) -> str:
+    """TotalSegmentator label → human-readable structure (e.g. 'kidney_right' →
+    'right kidney', 'vertebrae_L3' → 'L3 vertebra')."""
+    if not name:
+        return "soft-tissue site"
+    n, side = name, ""
+    for suf in ("_left", "_right"):
+        if n.endswith(suf):
+            side = suf[1:] + " "
+            n = n[: -len(suf)]
+            break
+    if n.startswith("vertebrae_"):
+        return f"{side}{n.split('_', 1)[1]} vertebra".strip()
+    return f"{side}{n.replace('_', ' ')}".strip()
+
+
+# TotalSegmentator skeletal-muscle labels. A muscle is not a reportable organ,
+# so foci that localise to muscle are named by region ("soft-tissue site")
+# rather than by the muscle name (e.g. avoid "Right iliopsoas: ...").
+_MUSCLE_BASENAMES = {
+    "iliopsoas", "gluteus_maximus", "gluteus_medius", "gluteus_minimus",
+    "autochthon",
+}
+
+
+def _is_muscle_structure(name: str | None) -> bool:
+    """True if a TotalSegmentator label is a skeletal muscle."""
+    if not name:
+        return False
+    base = name
+    for suf in ("_left", "_right"):
+        if base.endswith(suf):
+            base = base[: -len(suf)]
+            break
+    return base in _MUSCLE_BASENAMES
+
+
+def _aggregate_section_findings(section_lesions: list[dict]) -> str:
+    """One sentence per anatomical structure in a report section (dominant SUVmax,
+    focus count, size), instead of one sentence per focus. Foci in physiologic /
+    excretory structures are summarised separately and not reported as disease.
+    Foci in skeletal muscle are reported by region ("soft-tissue site"), not by
+    the muscle name."""
+    disease = [le for le in section_lesions if not le.get("physiologic_uptake")]
+    physiologic = [le for le in section_lesions if le.get("physiologic_uptake")]
+
+    groups: dict[str, list[dict]] = {}
+    for le in disease:
+        struct = le.get("structure") or ""
+        if _is_muscle_structure(struct):
+            struct = ""  # report muscle foci generically by region
+        groups.setdefault(struct, []).append(le)
+
+    def _peak(foci: list[dict]) -> float:
+        return max((x.get("suv_max") or 0) for x in foci)
+
+    def _size(le: dict) -> str:
+        d = le.get("dimensions_cm")
+        if not d:
+            return ""
+        src = "CT" if le.get("size_source") == "ct" else "PET extent"
+        return " × ".join(f"{x:.1f}" for x in d) + f" cm ({src})"
+
+    parts: list[str] = []
+    for key in sorted(groups, key=lambda k: _peak(groups[k]), reverse=True):
+        foci = groups[key]
+        label = _prettify_structure(key) if key else "soft-tissue site"
+        lead = label[0].upper() + label[1:]
+        suvs = [x["suv_max"] for x in foci if isinstance(x.get("suv_max"), (int, float))]
+        vols = [x["volume_ml"] for x in foci if isinstance(x.get("volume_ml"), (int, float))]
+        dominant = max(foci, key=lambda x: x.get("suv_max") or 0)
+        size_txt = _size(dominant)
+        if len(foci) == 1:
+            s = f"{lead}: FDG-avid focus"
+            if suvs:
+                s += f" with SUV<sub>max</sub> {max(suvs):.1f}"
+            if size_txt:
+                s += f", {size_txt}"
+            if vols:
+                s += f" (metabolic volume {vols[0] * 1000:.0f} mm³)"
+        else:
+            s = f"{lead}: {len(foci)} FDG-avid foci"
+            if suvs:
+                s += f", most avid SUV<sub>max</sub> {max(suvs):.1f}"
+            if size_txt:
+                s += f" ({size_txt})"
+            if vols:
+                s += f", largest {max(vols) * 1000:.0f} mm³"
+        parts.append(s + ".")
+
+    if physiologic:
+        sites = sorted({_prettify_structure(le.get("structure")) for le in physiologic})
+        parts.append(
+            f"Note: {len(physiologic)} focus/foci localise to {', '.join(sites)} — "
+            "pattern of physiologic / excretory uptake, not reported as disease."
+        )
+    return " ".join(parts) if parts else "No FDG-avid lesion is seen in this region."
+
+
 def _build_conclusions(summary: dict[str, Any], lesions: list[dict]) -> list[str]:
     """Derive the CONCLUSIONS bullet list from the result summary."""
     bullets: list[str] = []
@@ -90,7 +200,7 @@ def _build_conclusions(summary: dict[str, Any], lesions: list[dict]) -> list[str
         mtv = summary.get("mtv_total_ml")
         tlg = summary.get("tlg_total")
         if isinstance(mtv, (int, float)) and isinstance(tlg, (int, float)):
-            bullets.append(f"Total metabolic tumour volume {mtv:.1f} mL; total lesion glycolysis {tlg:.1f}.")
+            bullets.append(f"Total metabolic tumour volume {mtv * 1000:.0f} mm³; total lesion glycolysis {tlg:.1f}.")
     else:
         bullets.append("No FDG-avid lesion suggestive of metabolically active disease was detected.")
 
@@ -124,22 +234,32 @@ def _mri_size_phrase(summary: dict[str, Any]) -> str:
     return ""
 
 
+_MODALITY_DISPLAY = {"T1": "T1", "T1CE": "post-contrast T1", "T2": "T2", "FLAIR": "FLAIR"}
+
+
 def _mri_signal_phrase(summary: dict[str, Any]) -> str:
-    """e.g. 'T2 and FLAIR hyperintense, T1 hypointense relative to brain parenchyma.'"""
-    signal = summary.get("signal_profile") or {}
+    """e.g. 'T2 and FLAIR hyperintense, T1 hypointense … It demonstrates enhancement.'"""
+    signal = dict(summary.get("signal_profile") or {})
     if not signal:
         return ""
+    # Post-contrast T1 is described as enhancement, not "hyperintense".
+    t1ce = signal.pop("T1CE", None)
     by_desc: dict[str, list[str]] = {}
     for modality, desc in signal.items():
-        by_desc.setdefault(desc, []).append(modality)
+        by_desc.setdefault(desc, []).append(_MODALITY_DISPLAY.get(modality, modality))
     clauses = [
         f"{' and '.join(mods)} {desc}"
         for desc in ("hyperintense", "hypointense", "isointense")
         if (mods := by_desc.get(desc))
     ]
-    if not clauses:
-        return ""
-    return "The lesion appears " + ", ".join(clauses) + " relative to surrounding brain parenchyma."
+    sentence = ""
+    if clauses:
+        sentence = "The lesion appears " + ", ".join(clauses) + " relative to surrounding brain parenchyma."
+    if t1ce == "hyperintense":
+        sentence = (sentence + " It demonstrates enhancement on post-contrast T1.").strip()
+    elif t1ce in ("hypointense", "isointense"):
+        sentence = (sentence + " No appreciable post-contrast enhancement is noted.").strip()
+    return sentence
 
 
 def _build_mri_findings(summary: dict[str, Any], measurements: dict[str, Any]) -> list[str]:
@@ -205,6 +325,19 @@ def _build_mri_findings(summary: dict[str, Any], measurements: dict[str, Any]) -
     notes = summary.get("processing_notes")
     if notes:
         lines.append(str(notes))
+
+    present = summary.get("modalities_present")
+    if present:
+        names = [_MODALITY_DISPLAY.get(m, m) for m in present]
+        footer = "Sequences analysed by AI: " + ", ".join(names) + "."
+        absent = summary.get("modalities_absent")
+        if absent:
+            footer += (
+                " Note: "
+                + ", ".join(_MODALITY_DISPLAY.get(m, m) for m in absent)
+                + " not available — findings are limited to the sequences present."
+            )
+        lines.append(footer)
     return lines
 
 
@@ -461,6 +594,43 @@ class PDFReportGenerator:
         story.append(Paragraph(rv("clinical_features", "—"), body))
 
         story.append(Paragraph("Findings:", head))
+
+        # Compact structured findings table (per-breast checklist). Values come from
+        # the saved report's flat slot fields; blank when unset.
+        def _slot(name: str, side: str) -> str:
+            val = r.get(f"{name}_{side}")
+            return str(val).capitalize() if val not in (None, "") else "—"
+
+        slot_rows = [
+            ("Breast density (a-d)", "density"),
+            ("Mass", "mass"),
+            ("Clustered microcalcification", "calcification"),
+            ("Skin thickening", "skin_thickening"),
+            ("Nipple retraction", "nipple_retraction"),
+            ("Architectural distortion", "architectural_distortion"),
+            ("Axillary nodes", "axillary_nodes"),
+        ]
+        header_row = ["Finding"] + ([" Right"] if show_right else []) + ([" Left"] if show_left else [])
+        struct_data = [[Paragraph(f"<b>{c}</b>", cell) for c in header_row]]
+        for label, key in slot_rows:
+            row = [Paragraph(label, cell)]
+            if show_right:
+                row.append(Paragraph(_slot(key, "right"), cell))
+            if show_left:
+                row.append(Paragraph(_slot(key, "left"), cell))
+            struct_data.append(row)
+        n_cols = len(header_row)
+        col_w = [7 * cm] + [(10 * cm) / max(1, n_cols - 1)] * (n_cols - 1)
+        struct_tbl = Table(struct_data, colWidths=col_w)
+        struct_tbl.setStyle(TableStyle([
+            ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#333333")),
+            ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#cccccc")),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f0f0f0")),
+            ("TOPPADDING", (0, 0), (-1, -1), 2), ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        ]))
+        story.append(struct_tbl)
+        story.append(Spacer(1, 6))
+
         if show_right:
             story.append(Paragraph("RIGHT BREAST:", ParagraphStyle(
                 "rb", parent=head, fontSize=9.5, spaceBefore=4)))
@@ -855,27 +1025,81 @@ class PDFReportGenerator:
         ))
 
         # ── SCAN FINDINGS ──────────────────────────────────────────────────────
+        # ai_report (Result.summary["ai_report"]) holds Gemini's image-read findings,
+        # generated once during the pipeline (see tasks.py) from the MIP/fused PNGs +
+        # this same lesion list. Falls back per-section to the deterministic aggregator
+        # below when absent (feature disabled, Gemini unavailable, or a pre-existing
+        # result from before this feature shipped) — never a blank section.
+        ai_report = summary.get("ai_report") if isinstance(summary.get("ai_report"), dict) else None
+        ai_scan_findings = (ai_report or {}).get("scan_findings") or {}
+
         story.append(Paragraph("SCAN FINDINGS:", section_head))
         grouped = _group_lesions_by_report_section(lesions)
         for section_name, default_text in _REPORT_SECTIONS:
-            sec_lesions = grouped.get(section_name, [])
-            if sec_lesions:
-                sentences = " ".join(_lesion_finding_sentence(le) for le in sec_lesions)
-                text = sentences
+            ai_text = ai_scan_findings.get(_REPORT_SECTION_TO_AI_KEY[section_name])
+            if ai_text:
+                text = ai_text
             else:
-                text = default_text
+                sec_lesions = grouped.get(section_name, [])
+                text = _aggregate_section_findings(sec_lesions) if sec_lesions else default_text
             story.append(Paragraph(f"<b><i>{section_name}:</i></b> {text}", body))
 
         # ── CONCLUSIONS ──────────────────────────────────────────────────────────
         story.append(Paragraph("CONCLUSIONS:", section_head))
-        for bullet in _build_conclusions(summary, lesions):
-            story.append(Paragraph(bullet, bullet_style, bulletText="•"))
+        ai_conclusions = (ai_report or {}).get("conclusions")
+        for bullet in (ai_conclusions or _build_conclusions(summary, lesions)):
+            story.append(Paragraph(str(bullet), bullet_style, bulletText="•"))
+
+        if ai_report and ai_report.get("disclaimer"):
+            story.append(Spacer(1, 0.1 * cm))
+            story.append(Paragraph(f"<i>{ai_report['disclaimer']}</i>", body))
 
         # Optional AI narrative impression (appended, clearly labelled)
         if narrative:
             story.append(Spacer(1, 0.2 * cm))
             story.append(Paragraph("<b>AI-Generated Impression:</b>", section_head))
             story.append(Paragraph(narrative, body))
+
+        # ── Appendix: raw AI-detected foci ──────────────────────────────────────
+        # Printed regardless of whether ai_report is present, so the underlying
+        # (AI-based, not ground-truth) detections stay auditable against the prose
+        # above — the report text is generated FROM this data, not the other way
+        # around, and a radiologist should be able to cross-check the two.
+        if lesions:
+            story.append(Spacer(1, 0.3 * cm))
+            story.append(Paragraph(
+                "APPENDIX: AI-DETECTED FOCI (for radiologist cross-reference)", section_head
+            ))
+            appx_cell = ParagraphStyle("ApxCell", parent=styles["Normal"], fontSize=7.5, leading=9)
+            appx_head = ParagraphStyle("ApxHead", parent=appx_cell, fontName="Helvetica-Bold")
+            header_row = [Paragraph(h, appx_head) for h in
+                          ("#", "Region", "Structure", "SUVmax", "Vol (mL)", "CT (HU)")]
+            rows = [header_row]
+            for le in sorted(lesions, key=lambda x: x.get("id", 0)):
+                suv = le.get("suv_max")
+                vol = le.get("volume_ml")
+                hu = le.get("ct_mean_hu")
+                rows.append([
+                    Paragraph(str(le.get("id", "")), appx_cell),
+                    Paragraph(str(le.get("anatomical_region") or "—"), appx_cell),
+                    Paragraph(_prettify_structure(le.get("structure")), appx_cell),
+                    Paragraph(f"{suv:.1f}" if isinstance(suv, (int, float)) else "—", appx_cell),
+                    Paragraph(f"{vol:.1f}" if isinstance(vol, (int, float)) else "—", appx_cell),
+                    Paragraph(f"{hu:.0f}" if isinstance(hu, (int, float)) else "—", appx_cell),
+                ])
+            appx_table = Table(
+                rows, colWidths=[1.0 * cm, 3.2 * cm, 3.6 * cm, 2.0 * cm, 2.2 * cm, 2.0 * cm],
+                repeatRows=1,
+            )
+            appx_table.setStyle(TableStyle([
+                ("BOX", (0, 0), (-1, -1), 0.6, colors.grey),
+                ("INNERGRID", (0, 0), (-1, -1), 0.3, colors.lightgrey),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f0f0f0")),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("TOPPADDING", (0, 0), (-1, -1), 2),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+            ]))
+            story.append(appx_table)
 
         # ── Signatures ───────────────────────────────────────────────────────────
         story.append(Spacer(1, 1.4 * cm))

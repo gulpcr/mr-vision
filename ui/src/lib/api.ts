@@ -143,6 +143,21 @@ export interface MammographyReportData {
   opinion?: string | null;
   birads_right?: string | null;
   birads_left?: string | null;
+  // Structured per-breast finding slots.
+  density_right?: string | null;
+  density_left?: string | null;
+  mass_right?: string | null;
+  mass_left?: string | null;
+  calcification_right?: string | null;
+  calcification_left?: string | null;
+  skin_thickening_right?: string | null;
+  skin_thickening_left?: string | null;
+  nipple_retraction_right?: string | null;
+  nipple_retraction_left?: string | null;
+  architectural_distortion_right?: string | null;
+  architectural_distortion_left?: string | null;
+  axillary_nodes_right?: string | null;
+  axillary_nodes_left?: string | null;
   reviewing_doctor?: string | null;
   reporting_doctor?: string | null;
   created_at?: string | null;

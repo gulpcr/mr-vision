@@ -37,6 +37,21 @@ class MammographyReportUpdate(BaseModel):
     opinion: str | None = None
     birads_right: str | None = Field(None, description="0-6")
     birads_left: str | None = Field(None, description="0-6")
+    # Structured per-breast finding slots (validated server-side in the service).
+    density_right: str | None = Field(None, description="a-d")
+    density_left: str | None = Field(None, description="a-d")
+    mass_right: str | None = Field(None, description="none|present")
+    mass_left: str | None = Field(None, description="none|present")
+    calcification_right: str | None = Field(None, description="none|present")
+    calcification_left: str | None = Field(None, description="none|present")
+    skin_thickening_right: str | None = Field(None, description="none|present")
+    skin_thickening_left: str | None = Field(None, description="none|present")
+    nipple_retraction_right: str | None = Field(None, description="none|present")
+    nipple_retraction_left: str | None = Field(None, description="none|present")
+    architectural_distortion_right: str | None = Field(None, description="none|present")
+    architectural_distortion_left: str | None = Field(None, description="none|present")
+    axillary_nodes_right: str | None = Field(None, description="normal|abnormal")
+    axillary_nodes_left: str | None = Field(None, description="normal|abnormal")
     reviewing_doctor: str | None = None
     reporting_doctor: str | None = None
 

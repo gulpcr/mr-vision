@@ -27,6 +27,7 @@ import numpy as np
 import structlog
 import yaml
 
+from app.config import get_settings
 from app.domain.interfaces import PACSClient
 from app.domain.models import Series, Study
 from app.usecases.base import BasePipeline
@@ -92,6 +93,32 @@ class Pipeline(BasePipeline):
             except Exception as exc:  # never block; fall back to placeholder
                 logger.warning("gmic_load_failed_using_placeholder", error=str(exc))
                 self._model = None
+
+        # Mammo-CLIP zero-shot classifier (structured slots). Gated by Settings; loads
+        # only when enabled and the weights dir exists. Never blocks the pipeline.
+        self._cfg_clip = self._config.get("mammo_clip", {})
+        self._clip = None  # loaded Mammo-CLIP bundle when available; None otherwise
+        settings = get_settings()
+        clip_dir = settings.mammography_clip_weights_path
+        if settings.mammography_clip_enabled and clip_dir and Path(clip_dir).exists():
+            try:
+                self._load_mammo_clip(clip_dir)
+            except Exception as exc:  # never block; slots simply stay unset
+                logger.warning("mammo_clip_load_failed", error=str(exc))
+                self._clip = None
+
+        # Mammo-CLIP RetinaNet detectors (Mass + Suspicious Calcification) — localized
+        # detection. Gated by Settings; overrides the CLIP zero-shot for those two slots
+        # when available. Never blocks the pipeline.
+        self._cfg_det = self._config.get("detector", {})
+        self._detector = None
+        det_dir = settings.mammography_detector_weights_path
+        if settings.mammography_detector_enabled and det_dir and Path(det_dir).exists():
+            try:
+                self._load_detector(det_dir)
+            except Exception as exc:  # never block; falls back to CLIP/defaults
+                logger.warning("mammo_detector_load_failed", error=str(exc))
+                self._detector = None
 
     # ── Model loading (real model goes here once weights are downloaded) ────────
 
@@ -245,6 +272,206 @@ class Pipeline(BasePipeline):
         t = torch.from_numpy(np.ascontiguousarray(arr))[None, None].float()
         return F.interpolate(t, size=self._GMIC_INPUT, mode="bilinear", align_corners=False)
 
+    # ── Mammo-CLIP zero-shot (structured slots) ─────────────────────────────────
+
+    def _load_mammo_clip(self, weights_dir: str) -> None:
+        """Load the Mammo-CLIP B5 model (batmanlab/Mammo-CLIP, HF `shawn24/Mammo-CLIP`)
+        for zero-shot structured findings, via the vendored adapter at
+        backend/external/Mammo-CLIP (mirrors the GMIC loader's sys.path approach).
+
+        On any failure the caller degrades gracefully (slots left unset)."""
+        import sys
+
+        import torch
+
+        clip_root = Path(__file__).resolve().parents[3] / "external" / "Mammo-CLIP"
+        if not (clip_root / "breastclip").exists():
+            raise FileNotFoundError(
+                f"Mammo-CLIP not vendored at {clip_root} (run scripts/download_mammo_clip.py)"
+            )
+        if str(clip_root) not in sys.path:
+            sys.path.insert(0, str(clip_root))
+
+        ckpt_name = self._cfg_clip.get("checkpoint_name", "")
+        ckpt_path = Path(weights_dir) / ckpt_name if ckpt_name else None
+        if ckpt_path is None or not ckpt_path.exists():
+            tars = sorted(Path(weights_dir).glob("*.tar"))
+            if not tars:
+                raise FileNotFoundError(f"No Mammo-CLIP checkpoint (*.tar) in {weights_dir}")
+            ckpt_path = tars[0]
+
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+        import mammo_clip_adapter  # vendored adapter next to breastclip/
+
+        self._clip = mammo_clip_adapter.load_model(str(ckpt_path), device)
+        logger.info("mammo_clip_loaded", checkpoint=ckpt_path.name, device=str(device))
+
+    def _clip_probs(self, pil_image, prompts: list[str]) -> list[float] | None:
+        """Zero-shot softmax over the given prompts via the adapter; None on failure."""
+        if not self._clip:
+            return None
+        try:
+            return self._clip.zero_shot(pil_image, prompts)
+        except Exception as exc:
+            logger.warning("mammo_clip_infer_failed", error=str(exc))
+            return None
+
+    def _run_mammo_clip(self, view_pngs: dict[str, str]) -> dict[str, dict[str, str]]:
+        """Per-breast zero-shot slots {density, mass, calcification} from the rendered
+        view PNGs. Only confident calls are set; low-confidence/failed slots are left
+        out (radiologist decides). Returns {"R": {...}, "L": {...}}."""
+        from PIL import Image
+
+        cfg = self._cfg_clip
+        min_conf = float(cfg.get("min_confidence", 0.55))
+        presence_prompts = cfg.get("prompts", {})
+        density_prompts = cfg.get("density_prompts", {})
+
+        # Gather per-side probability lists across that side's views. Presence prompts
+        # are ordered [absent, present] so index 1 is P(present) (upstream convention).
+        per_side: dict[str, dict[str, list]] = {
+            "R": {"mass": [], "calc": [], "density": []},
+            "L": {"mass": [], "calc": [], "density": []},
+        }
+        for view_code, png_path in view_pngs.items():
+            side = view_code.split("_")[0]
+            if side not in per_side:
+                continue
+            try:
+                pil = Image.open(png_path)
+            except Exception:
+                continue
+
+            mass_p = presence_prompts.get("mass", {})
+            if mass_p:
+                probs = self._clip_probs(pil, [mass_p.get("absent", ""), mass_p.get("present", "")])
+                if probs:
+                    per_side[side]["mass"].append(probs[1])  # P(present)
+
+            calc_p = presence_prompts.get("calcification", {})
+            if calc_p:
+                probs = self._clip_probs(pil, [calc_p.get("absent", ""), calc_p.get("present", "")])
+                if probs:
+                    per_side[side]["calc"].append(probs[1])
+
+            if density_prompts:
+                keys = ["a", "b", "c", "d"]
+                probs = self._clip_probs(pil, [density_prompts.get(k, "") for k in keys])
+                if probs:
+                    per_side[side]["density"].append(probs)
+
+        # always_output: emit the best guess for every slot regardless of confidence
+        # (no blanks). The confidence is recorded per slot (in "_confidence") and slots
+        # below min_confidence are listed in "_low_confidence" so the UI/report can flag
+        # them — surfaced, never silently authoritative.
+        always = bool(cfg.get("always_output", True))
+        out: dict[str, dict] = {}
+        for side, data in per_side.items():
+            slots: dict[str, str] = {}
+            conf: dict[str, float] = {}
+            low: list[str] = []
+
+            def _set(name: str, value: str, c: float) -> None:
+                if always or c >= min_conf:
+                    slots[name] = value
+                    conf[name] = round(float(c), 3)
+                    if c < min_conf:
+                        low.append(name)
+
+            if data["mass"]:
+                p = max(data["mass"])  # most-suspicious view drives presence
+                _set("mass", "present" if p >= 0.5 else "none", max(p, 1 - p))
+            if data["calc"]:
+                p = max(data["calc"])
+                _set("calcification", "present" if p >= 0.5 else "none", max(p, 1 - p))
+            if data["density"]:
+                mean = np.mean(np.asarray(data["density"], dtype=float), axis=0)
+                idx = int(np.argmax(mean))
+                _set("density", ["a", "b", "c", "d"][idx], float(mean[idx]))
+
+            if slots:
+                slots["_confidence"] = conf
+                if low:
+                    slots["_low_confidence"] = low
+                out[side] = slots
+        return out
+
+    # ── Mammo-CLIP RetinaNet detectors (Mass + Calcification, localized) ─────────
+
+    def _load_detector(self, weights_dir: str) -> None:
+        """Load the released Mammo-CLIP RetinaNet detectors via the vendored adapter."""
+        import sys
+
+        import torch
+
+        clip_root = Path(__file__).resolve().parents[3] / "external" / "Mammo-CLIP"
+        if not (clip_root / "Detectors").exists():
+            raise FileNotFoundError(f"Detector code not vendored at {clip_root}")
+        if str(clip_root) not in sys.path:
+            sys.path.insert(0, str(clip_root))
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        threshold = float(self._cfg_det.get("score_threshold", 0.2))
+
+        import mammo_detector_adapter
+
+        self._detector = mammo_detector_adapter.load_detectors(weights_dir, device, threshold=threshold)
+        logger.info(
+            "mammo_detector_loaded", detectors=list(self._detector.models.keys()), device=str(device)
+        )
+
+    @staticmethod
+    def _quadrant(box: list[float]) -> str:
+        """Coarse, AI-estimated vertical location of a detection box (normalized 0..1),
+        robust on MLO (top of image = superior). Outer/inner is intentionally NOT claimed
+        here — it is display-orientation dependent and left for the radiologist."""
+        y_center = (box[1] + box[3]) / 2.0
+        return "upper" if y_center < 0.5 else "lower"
+
+    def _run_detector(self, view_pngs: dict[str, str]) -> dict[str, dict]:
+        """Per-breast localized detection. Returns
+        {"R": {"mass": {present, confidence, location, n}, "calcification": {...}}, "L": {...}}.
+        A finding is 'present' if any view of that side has a detection above threshold."""
+        from PIL import Image
+
+        per_side: dict[str, dict[str, list]] = {
+            "R": {"mass": [], "calcification": []},
+            "L": {"mass": [], "calcification": []},
+        }
+        for view_code, png_path in view_pngs.items():
+            side = view_code.split("_")[0]
+            if side not in per_side:
+                continue
+            try:
+                pil = Image.open(png_path)
+            except Exception:
+                continue
+            dets = self._detector.detect(pil)  # {"mass": [...], "calcification": [...]}
+            for slot in ("mass", "calcification"):
+                for d in dets.get(slot, []):
+                    per_side[side][slot].append({**d, "view": view_code})
+
+        out: dict[str, dict] = {}
+        for side, data in per_side.items():
+            side_out: dict[str, dict] = {}
+            for slot in ("mass", "calcification"):
+                boxes = data[slot]
+                if boxes:
+                    best = max(boxes, key=lambda b: b["score"])
+                    locs = sorted({self._quadrant(b["box"]) for b in boxes})
+                    views = sorted({b["view"] for b in boxes})
+                    side_out[slot] = {
+                        "present": True,
+                        "confidence": round(float(best["score"]), 3),
+                        "location": "/".join(locs),   # e.g. "upper" or "upper/lower"
+                        "views": views,
+                        "n": len(boxes),
+                    }
+                else:
+                    side_out[slot] = {"present": False, "confidence": None}
+            out[side] = side_out
+        return out
+
     # ── Phase 1: preprocess ─────────────────────────────────────────────────────
 
     def preprocess(
@@ -364,6 +591,33 @@ class Pipeline(BasePipeline):
     def infer(self, preprocessed: dict[str, Any], working_dir: str) -> dict[str, Any]:
         logger.info("mammography_inference_start")
         view_nifti = preprocessed.get("view_nifti_paths", {})
+        view_pngs = preprocessed.get("view_png_paths", {})
+
+        # Mammo-CLIP zero-shot structured slots (density / mass / calcification),
+        # independent of the malignancy classifier below. Empty when disabled/failed.
+        clip_findings: dict[str, dict[str, str]] = {}
+        clip_ran = False
+        if self._clip is not None:
+            try:
+                clip_findings = self._run_mammo_clip(view_pngs)
+                clip_ran = True
+            except Exception as exc:
+                logger.warning("mammo_clip_run_failed", error=str(exc))
+
+        # RetinaNet detectors (Mass + Calcification, localized) — override CLIP for those slots.
+        detector_findings: dict[str, dict] = {}
+        detector_ran = False
+        if self._detector is not None:
+            try:
+                detector_findings = self._run_detector(view_pngs)
+                detector_ran = True
+            except Exception as exc:
+                logger.warning("mammo_detector_run_failed", error=str(exc))
+
+        clip_out = {
+            "clip_findings": clip_findings, "clip_ran": clip_ran,
+            "detector_findings": detector_findings, "detector_ran": detector_ran,
+        }
 
         if self._model is not None:
             # Real GMIC path.
@@ -374,6 +628,7 @@ class Pipeline(BasePipeline):
                     qa.append("gmic_partial_resize_fallback")
                 return {
                     **preprocessed,
+                    **clip_out,
                     "qa_flags": qa,
                     "scores": scores,
                     "inference_method": "gmic",
@@ -397,7 +652,7 @@ class Pipeline(BasePipeline):
 
         scores = {"R": _agg(per_side["R"]), "L": _agg(per_side["L"])}
         logger.info("mammography_inference_complete", method="placeholder", scores=scores)
-        return {**preprocessed, "scores": scores, "inference_method": "placeholder"}
+        return {**preprocessed, **clip_out, "scores": scores, "inference_method": "placeholder"}
 
     @staticmethod
     def _placeholder_prob(arr: np.ndarray) -> float:
@@ -440,10 +695,29 @@ class Pipeline(BasePipeline):
         findings_l = self._findings_text("left", prob_l, birads_l, is_placeholder) if present_l else None
         opinion = self._opinion_text(birads_r, birads_l, is_placeholder, laterality)
 
+        # Structured per-breast finding slots. Model-fillable slots (density, mass,
+        # calcification) come from Mammo-CLIP when it ran confidently; otherwise they
+        # are left unset for the radiologist. Radiologist-only slots default to their
+        # negative so the baseline report reads like a normal study.
+        clip_findings: dict[str, dict[str, str]] = inference_output.get("clip_findings", {}) or {}
+        clip_ran = bool(inference_output.get("clip_ran"))
+        detector_findings: dict[str, dict] = inference_output.get("detector_findings", {}) or {}
+        detector_ran = bool(inference_output.get("detector_ran"))
+        findings_struct = {
+            "right": self._build_breast_slots(clip_findings.get("R"), detector_findings.get("R")) if present_r else None,
+            "left": self._build_breast_slots(clip_findings.get("L"), detector_findings.get("L")) if present_l else None,
+        }
+        density_r = (findings_struct["right"] or {}).get("density") if present_r else None
+        density_l = (findings_struct["left"] or {}).get("density") if present_l else None
+
         qa_flags = list(inference_output.get("qa_flags", []))
         qa_details = dict(inference_output.get("qa_details", {}))
         if is_placeholder:
             qa_flags.append("placeholder_no_model")
+        if self._clip is not None and not clip_ran:
+            qa_flags.append("mammo_clip_unavailable")
+
+        inference_method = method + ("+mammo_clip" if clip_ran else "") + ("+detector" if detector_ran else "")
 
         notes = (
             "NON-DIAGNOSTIC placeholder — no mammography model weights installed. "
@@ -451,6 +725,8 @@ class Pipeline(BasePipeline):
             if is_placeholder
             else "AI-assisted mammography analysis."
         )
+        if clip_ran:
+            notes += " Structured slots pre-filled by Mammo-CLIP (zero-shot, non-diagnostic)."
 
         artifacts = [
             {
@@ -474,13 +750,14 @@ class Pipeline(BasePipeline):
                 "birads_left": birads_l,
                 "malignancy_probability_right": prob_r,
                 "malignancy_probability_left": prob_l,
-                "density_right": None,
-                "density_left": None,
+                "density_right": density_r,
+                "density_left": density_l,
+                "findings": findings_struct,
                 "right_breast_findings": findings_r,
                 "left_breast_findings": findings_l,
                 "opinion": opinion,
                 "quantitative": not is_placeholder,
-                "inference_method": method,
+                "inference_method": inference_method,
                 "processing_notes": notes,
             },
             "measurements": {
@@ -493,6 +770,59 @@ class Pipeline(BasePipeline):
             "model_version": model_version,
             "model_checksum": self._model_checksum_cache or "placeholder",
             "artifacts": artifacts,
+        }
+
+    @staticmethod
+    def _build_breast_slots(clip_slots: dict | None, det_slots: dict | None = None) -> dict[str, Any]:
+        """Full structured slot set for one imaged breast.
+
+        - density comes from Mammo-CLIP (zero-shot best guess).
+        - mass / calcification come from the RetinaNet **detector** when available (it
+          localizes and is far stronger than the zero-shot classifier); otherwise they
+          fall back to the CLIP zero-shot guess.
+        - radiologist-only slots default to their negative.
+
+        `source` records each slot's origin, `confidence` the per-slot score,
+        `low_confidence` CLIP slots below the gate, `location` the detector's coarse
+        vertical location (upper/lower) for detected mass/calcification."""
+        clip_slots = clip_slots or {}
+        det_slots = det_slots or {}
+        confidence = dict(clip_slots.get("_confidence", {}) or {})
+        low = list(clip_slots.get("_low_confidence", []) or [])
+        source = {k: "mammo_clip" for k in ("density", "mass", "calcification") if k in clip_slots}
+
+        mass = clip_slots.get("mass")
+        calcification = clip_slots.get("calcification")
+        location: dict[str, str] = {}
+        for slot in ("mass", "calcification"):
+            d = det_slots.get(slot)
+            if not d:
+                continue
+            value = "present" if d.get("present") else "none"
+            if slot == "mass":
+                mass = value
+            else:
+                calcification = value
+            source[slot] = "detector"          # detector overrides CLIP
+            if d.get("confidence") is not None:
+                confidence[slot] = d["confidence"]
+            if slot in low:
+                low.remove(slot)               # detector call is not "low-confidence CLIP"
+            if d.get("present") and d.get("location"):
+                location[slot] = d["location"]
+
+        return {
+            "density": clip_slots.get("density"),
+            "mass": mass,
+            "calcification": calcification,
+            "skin_thickening": "none",
+            "nipple_retraction": "none",
+            "architectural_distortion": "none",
+            "axillary_nodes": "normal",
+            "source": source,
+            "confidence": confidence,
+            "low_confidence": low,
+            "location": location,
         }
 
     def _suggest_birads(self, prob: float | None) -> int | None:

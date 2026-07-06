@@ -38,6 +38,13 @@
               "volume_ml":         { "type": "number" },
               "tlg":               { "type": "number" },
               "anatomical_region": { "type": "string" },
+              "structure":          { "type": ["string", "null"] },
+              "physiologic_uptake": { "type": "boolean" },
+              "dimensions_cm":      { "type": ["array", "null"], "items": { "type": "number" } },
+              "long_diameter_cm":   { "type": ["number", "null"] },
+              "short_diameter_cm":  { "type": ["number", "null"] },
+              "ct_volume_ml":       { "type": ["number", "null"] },
+              "size_source":        { "type": ["string", "null"], "enum": ["ct", "metabolic", null] },
               "centroid_voxel":    {
                 "type": "array",
                 "items": { "type": "number" },

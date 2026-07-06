@@ -53,6 +53,34 @@ _CT_SCOUT_PATTERNS = [
     r"(?i)surview", r"(?i)scanogram", r"(?i)\bscano\b",
 ]
 
+# TotalSegmentator structures whose FDG uptake is normally physiologic/excretory.
+# A focus that localises to one of these is flagged as likely-physiologic in the
+# report rather than presented as a lesion (backstops incomplete organ suppression,
+# e.g. the hot renal-collecting-system / bladder halo that leaks past the mask).
+_PHYSIOLOGIC_STRUCTURES = {
+    "brain", "heart", "myocardium", "urinary_bladder",
+    "kidney_left", "kidney_right", "kidney_cyst_left", "kidney_cyst_right",
+}
+
+# Bony TotalSegmentator structures — used to sanity-check structure naming against
+# the focus's own CT density (see _is_bone_structure / the plausibility veto in
+# infer()). Vertebrae and ribs use per-level label names (vertebrae_C1, rib_left_1,
+# ...), so those are matched by prefix rather than enumerated individually.
+_BONE_STRUCTURE_NAMES = {
+    "skull", "sternum", "sacrum", "hip_left", "hip_right",
+    "clavicula_left", "clavicula_right", "scapula_left", "scapula_right",
+    "humerus_left", "humerus_right", "femur_left", "femur_right",
+    "patella_left", "patella_right", "tibia_left", "tibia_right",
+    "fibula_left", "fibula_right",
+}
+_BONE_STRUCTURE_PREFIXES = ("vertebrae_", "rib_", "costal_")
+
+
+def _is_bone_structure(name: str | None) -> bool:
+    if not name:
+        return False
+    return name in _BONE_STRUCTURE_NAMES or name.startswith(_BONE_STRUCTURE_PREFIXES)
+
 
 # ── DICOM / SUV helpers ────────────────────────────────────────────────────────
 
@@ -273,6 +301,26 @@ def _resample_ct_to_pet(pet_path: str, ct_path: str, output_path: str) -> str:
     return output_path
 
 
+def _resample_labelmap_to_reference(label_path: str, reference_path: str, output_path: str) -> str:
+    """Resample an integer label map onto another image's grid via nearest-neighbor.
+
+    TotalSegmentator label maps are categorical (label IDs), so linear/spline
+    interpolation (correct for continuous HU/SUV) is invalid here — it would
+    blend adjacent label IDs into fractional, meaningless intermediate values.
+    Nearest-neighbor is the only interpolator that preserves discrete labels.
+    """
+    ref_img = sitk.ReadImage(reference_path, sitk.sitkFloat32)
+    label_img = sitk.ReadImage(label_path, sitk.sitkInt32)
+
+    resampler = sitk.ResampleImageFilter()
+    resampler.SetReferenceImage(ref_img)
+    resampler.SetInterpolator(sitk.sitkNearestNeighbor)
+    resampler.SetDefaultPixelValue(0)
+    resampled = resampler.Execute(label_img)
+    sitk.WriteImage(resampled, output_path)
+    return output_path
+
+
 def _extract_reference_region_stats(
     pet_arr: np.ndarray, ct_arr: np.ndarray, cfg: dict
 ) -> dict[str, dict[str, float]]:
@@ -402,6 +450,117 @@ def _ct_hu_on_original(
         return None
     vals = ct_data[ct_ijk[:, 0], ct_ijk[:, 1], ct_ijk[:, 2]]
     return round(float(np.median(vals)), 1)
+
+
+def _dims_from_mask(mask: np.ndarray, spacing) -> dict[str, Any] | None:
+    """Bounding-box dimensions (cm, descending) of a boolean mask given voxel
+    spacing (mm per array axis)."""
+    ijk = np.argwhere(mask)
+    if ijk.size == 0:
+        return None
+    extent_vox = ijk.max(0) - ijk.min(0) + 1
+    dims_mm = np.sort(np.asarray(extent_vox, dtype=float) * np.asarray(spacing, dtype=float))[::-1]
+    dims_cm = [round(float(d) / 10.0, 1) for d in dims_mm]
+    return {
+        "dimensions_cm": dims_cm,
+        "long_diameter_cm": dims_cm[0],
+        "short_diameter_cm": dims_cm[1] if len(dims_cm) > 1 else dims_cm[0],
+    }
+
+
+def _measure_lesion_ct(
+    orig_ct_img, comp_mask: np.ndarray, suv_affine: np.ndarray,
+    metabolic_vol_ml: float, cfg: dict,
+) -> dict[str, Any] | None:
+    """PET-seeded, CT-constrained anatomic size of a lesion on the original CT.
+
+    Maps the metabolic focus onto the full-resolution CT, region-grows a
+    homogeneous soft-tissue component around it (bounded to a margin so it cannot
+    run away), and returns anatomic dimensions (cm) + volume. Returns None when the
+    CT boundary is not trustworthy — non-soft-tissue seed, leak (grown volume ≫
+    metabolic), or the segment reaches the ROI border — so the caller falls back to
+    the metabolic-extent dimensions. NOT a validated tumour segmenter; an estimate.
+    """
+    try:
+        ct_data = orig_ct_img.get_fdata()
+        ct_affine = orig_ct_img.affine
+        ct_spacing = np.sqrt((ct_affine[:3, :3] ** 2).sum(axis=0))
+        ct_vox_ml = float(np.prod(ct_spacing)) / 1000.0
+
+        # Metabolic focus voxels → original-CT index space (proven mapping,
+        # mirrors _ct_hu_on_original).
+        ijk = np.argwhere(comp_mask)
+        if ijk.size == 0:
+            return None
+        world = nib.affines.apply_affine(suv_affine, ijk)
+        ct_ijk = np.rint(nib.affines.apply_affine(np.linalg.inv(ct_affine), world)).astype(int)
+        shp = np.array(ct_data.shape)
+        inside = np.all((ct_ijk >= 0) & (ct_ijk < shp), axis=1)
+        ct_ijk = ct_ijk[inside]
+        if len(ct_ijk) < 3:
+            return None
+
+        # Only meaningful for soft-tissue-density lesions; region-growing on
+        # air/lung/bone is not interpretable — keep the metabolic size there.
+        focus_hu = ct_data[ct_ijk[:, 0], ct_ijk[:, 1], ct_ijk[:, 2]]
+        seed_hu = float(np.median(focus_hu))
+        if seed_hu < float(cfg.get("min_seed_hu", -50.0)) or seed_hu > float(cfg.get("max_seed_hu", 150.0)):
+            return None
+
+        # Bounded ROI = focus bbox + margin (keeps the grow local).
+        margin_vox = np.ceil(float(cfg.get("roi_margin_mm", 20.0)) / np.maximum(ct_spacing, 0.1)).astype(int)
+        lo = np.maximum(ct_ijk.min(0) - margin_vox, 0)
+        hi = np.minimum(ct_ijk.max(0) + margin_vox + 1, shp)
+        sub = ct_data[lo[0]:hi[0], lo[1]:hi[1], lo[2]:hi[2]]
+        if sub.size == 0:
+            return None
+
+        tol = float(cfg.get("hu_tolerance", 40.0))
+        band = (sub >= seed_hu - tol) & (sub <= seed_hu + tol)
+        if not band.any():
+            return None
+        labeled, n = ndimage.label(band)
+        if n == 0:
+            return None
+        seed = np.clip(np.rint(ct_ijk.mean(0)).astype(int) - lo, 0, np.array(sub.shape) - 1)
+        seed_label = int(labeled[seed[0], seed[1], seed[2]])
+        if seed_label == 0:
+            fv = np.clip(ct_ijk[len(ct_ijk) // 2] - lo, 0, np.array(sub.shape) - 1)
+            seed_label = int(labeled[fv[0], fv[1], fv[2]])
+            if seed_label == 0:
+                return None
+        seg = labeled == seed_label
+
+        seg_vox = int(seg.sum())
+        if seg_vox < int(cfg.get("min_seg_voxels", 8)):
+            return None
+        seg_vol_ml = seg_vox * ct_vox_ml
+
+        # Guardrail: segment fills most of the ROI → grew into background/everything.
+        if seg_vox / max(sub.size, 1) > float(cfg.get("max_roi_fill_frac", 0.6)):
+            return None
+        # Guardrail (primary leak detector): a real compact mass sits INSIDE the
+        # margin-padded ROI. If the segment spans the FULL ROI along any axis it ran
+        # through the box — a region-grow leaking along a muscle or vessel (e.g. the
+        # psoas or aorta) — so reject. Volume ratio is NOT the leak test (the
+        # anatomic mass is legitimately several× the metabolic core); it's only a
+        # loose backstop below.
+        for ax in range(3):
+            proj = seg.any(axis=tuple(a for a in range(3) if a != ax))
+            if proj[0] and proj[-1]:
+                return None
+        # Backstop: implausibly large relative to the metabolic focus.
+        if metabolic_vol_ml > 0 and seg_vol_ml > float(cfg.get("max_leak_factor", 20.0)) * metabolic_vol_ml:
+            return None
+
+        dims = _dims_from_mask(seg, ct_spacing)
+        if dims is None:
+            return None
+        dims["volume_ml"] = round(seg_vol_ml, 2)
+        dims["source"] = "ct"
+        return dims
+    except Exception:
+        return None
 
 
 def _compute_suv_peak(
@@ -688,206 +847,6 @@ class Pipeline(BasePipeline):
                     error=str(exc),
                 )
 
-        # AutoPET3 (nnU-Net v2) tier — only when no SwinUNETR model is loaded.
-        self._nnunet_predictor = None
-        if self._model is None:
-            nnunet_dir = self._cfg.get("model", {}).get("custom_pet_nnunet_dir")
-            if nnunet_dir:
-                try:
-                    self._load_nnunet_model(nnunet_dir)
-                except Exception as exc:
-                    logger.warning(
-                        "autopet3_nnunet_load_failed_using_threshold",
-                        nnunet_dir=nnunet_dir,
-                        error=str(exc),
-                    )
-
-    def _load_nnunet_model(self, model_dir: str) -> None:
-        """Load an AutoPET3 / nnU-Netv2 trained-model folder via nnUNetPredictor."""
-        import torch
-        from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor
-
-        model_cfg = self._cfg.get("model", {})
-        folds = tuple(model_cfg.get("nnunet_folds", [0]))
-        checkpoint = model_cfg.get("nnunet_checkpoint", "checkpoint_final.pth")
-
-        device_str = self._cfg.get("inference", {}).get("device", "auto")
-        if device_str == "auto":
-            device_str = "cuda" if torch.cuda.is_available() else "cpu"
-
-        predictor = nnUNetPredictor(device=torch.device(device_str), allow_tqdm=False)
-        predictor.initialize_from_trained_model_folder(
-            model_dir, use_folds=folds, checkpoint_name=checkpoint
-        )
-        self._nnunet_predictor = predictor
-        self._model_version = f"pet_ct_autopet3_nnunet_{Path(model_dir).name}"
-        self._model_checksum = "nnunet_model_dir"
-        logger.info(
-            "autopet3_nnunet_loaded", nnunet_dir=model_dir, folds=folds, device=device_str
-        )
-
-    def _run_nnunet_inference(
-        self,
-        suv_arr: np.ndarray,
-        ct_arr: np.ndarray | None,
-        voxel_spacing: tuple[float, float, float],
-    ) -> np.ndarray:
-        """AutoPET3 nnU-Net sliding-window inference → binary lesion mask (int32).
-
-        Channels are stacked in the configured order (AutoPET default CT, PET).
-        Wrapped by the caller in try/except → PERCIST fallback, so a spacing/
-        channel mismatch degrades safely rather than crashing the pipeline.
-        """
-        model_cfg = self._cfg.get("model", {})
-        order = list(model_cfg.get("nnunet_channel_order", ["ct", "pet"]))
-
-        channels: list[np.ndarray] = []
-        for ch in order:
-            if ch == "pet":
-                channels.append(suv_arr.astype(np.float32))
-            elif ch == "ct":
-                if ct_arr is None:
-                    raise ValueError("AutoPET3 nnU-Net needs a CT channel but no CT is available")
-                channels.append(ct_arr.astype(np.float32))
-            else:
-                raise ValueError(f"unknown nnunet channel '{ch}'")
-
-        vol = np.stack(channels, axis=0)  # (C, X, Y, Z)
-        props = {"spacing": [float(s) for s in voxel_spacing]}
-        seg = self._nnunet_predictor.predict_single_npy_array(vol, props, None, None, False)
-        return (np.asarray(seg) > 0).astype(np.int32)
-
-    @staticmethod
-    def _resolve_autopet3_model_folder(model_dir: str | None) -> str | None:
-        """Resolve the nnU-Net MODEL_FOLDER (the dir containing fold_X subdirs).
-
-        Accepts either the model folder itself or a parent (e.g. the download
-        target /model_cache/autopet3, under which the zip extracted a nested
-        folder). Searches a couple of levels down. Returns the path or None.
-        """
-        if not model_dir:
-            return None
-        root = Path(model_dir)
-        if not root.exists():
-            return None
-
-        def has_folds(p: Path) -> bool:
-            return any((p / f"fold_{x}").is_dir() for x in (0, 1, 2, 3, 4, "all"))
-
-        if has_folds(root):
-            return str(root)
-        # Breadth-limited search (download targets are small dirs).
-        for depth1 in (d for d in root.iterdir() if d.is_dir()):
-            if has_folds(depth1):
-                return str(depth1)
-            for depth2 in (d for d in depth1.iterdir() if d.is_dir()):
-                if has_folds(depth2):
-                    return str(depth2)
-        return None
-
-    def _run_autopet3(
-        self,
-        suv_arr: np.ndarray,
-        ct_arr: np.ndarray | None,
-        affine: np.ndarray,
-        working_dir: str,
-    ) -> np.ndarray | None:
-        """AutoPET3 (Team LesionTracer) lesion segmentation via isolated subprocess.
-
-        Writes CT (_0000) + SUV (_0001) NIfTIs, invokes
-        scripts/run_autopet3_predict.py (which loads the autopet3 nnU-Net fork in
-        its own process), and reads back the lesion mask. Returns an int32 mask or
-        None on any failure / missing prerequisite so the caller falls back.
-
-        Requires CT — the AutoPET3 model is a 2-channel [CT, PET] model.
-        """
-        import subprocess
-        import sys
-
-        cfg = self._cfg.get("model", {}).get("autopet3", {})
-        if not cfg.get("enabled", False):
-            return None
-        model_dir = self._resolve_autopet3_model_folder(cfg.get("model_dir"))
-        if model_dir is None:
-            logger.warning("autopet3_model_dir_unresolved", configured=cfg.get("model_dir"))
-            return None
-        if ct_arr is None:
-            logger.warning("autopet3_requires_ct_skipping")
-            return None
-
-        backend_root = Path(__file__).resolve().parents[3]
-        fork_path = cfg.get("fork_path") or str(backend_root / "external" / "autopet3")
-        if not Path(fork_path).exists():
-            logger.warning("autopet3_fork_missing", fork_path=fork_path)
-            return None
-        runner = backend_root / "scripts" / "run_autopet3_predict.py"
-        if not runner.exists():
-            logger.warning("autopet3_runner_missing", runner=str(runner))
-            return None
-
-        in_dir = os.path.join(working_dir, "autopet3_in")
-        out_dir = os.path.join(working_dir, "autopet3_out")
-        os.makedirs(in_dir, exist_ok=True)
-        os.makedirs(out_dir, exist_ok=True)
-
-        # nnU-Net channel convention: CT = _0000, PET (SUV) = _0001.
-        nib.save(nib.Nifti1Image(ct_arr.astype(np.float32), affine),
-                 os.path.join(in_dir, "case_0000.nii.gz"))
-        nib.save(nib.Nifti1Image(suv_arr.astype(np.float32), affine),
-                 os.path.join(in_dir, "case_0001.nii.gz"))
-
-        try:
-            import torch
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-        except Exception:
-            device = "cpu"
-
-        python_exe = cfg.get("python_executable") or sys.executable
-        folds = ",".join(str(f) for f in cfg.get("folds", [0, 1, 2, 3, 4]))
-        cmd = [
-            python_exe, str(runner),
-            "--input", in_dir,
-            "--output", out_dir,
-            "--model", str(model_dir),
-            "--fork", fork_path,
-            "--folds", folds,
-            "--checkpoint", cfg.get("checkpoint_name", "checkpoint_final.pth"),
-            "--device", device,
-        ]
-        logger.info("autopet3_subprocess_start", device=device, folds=folds, model_dir=model_dir)
-        try:
-            proc = subprocess.run(
-                cmd, capture_output=True, text=True,
-                timeout=int(cfg.get("timeout_sec", 3600)),
-            )
-        except Exception as exc:
-            logger.warning("autopet3_subprocess_error", error=str(exc))
-            return None
-        if proc.returncode != 0:
-            logger.warning(
-                "autopet3_subprocess_failed",
-                returncode=proc.returncode,
-                stderr=(proc.stderr or "")[-1500:],
-            )
-            return None
-
-        # nnU-Net names the output after the input case → case.nii.gz
-        out_path = os.path.join(out_dir, "case.nii.gz")
-        if not os.path.exists(out_path):
-            candidates = [f for f in os.listdir(out_dir) if f.endswith(".nii.gz")]
-            if not candidates:
-                logger.warning("autopet3_no_output_produced", out_dir=out_dir)
-                return None
-            out_path = os.path.join(out_dir, candidates[0])
-
-        seg = nib.load(out_path).get_fdata()
-        lesion_label = cfg.get("lesion_label", 1)
-        mask = (np.rint(seg) == int(lesion_label)) if lesion_label is not None else (seg > 0)
-        self._model_version = f"pet_ct_autopet3_lesiontracer_{Path(str(model_dir)).name}"
-        self._model_checksum = "autopet3_modelfolder"
-        logger.info("autopet3_complete", lesion_voxels=int(mask.sum()))
-        return mask.astype(np.int32)
-
     # ── DL model management ──────────────────────────────────────────────────
 
     def _load_model(self, weights_path: str) -> None:
@@ -1014,14 +973,17 @@ class Pipeline(BasePipeline):
         suv_shape: tuple,
         working_dir: str,
         supp_cfg: dict[str, Any],
+        suv_reference_path: str,
     ) -> tuple[np.ndarray, list[str]] | None:
         """Anatomy-aware physiologic FDG exclusion mask via TotalSegmentator.
 
-        Segments the configured organs on the (PET-grid) CT and ORs them into a
-        boolean exclusion mask aligned with the SUV grid. Returns (mask, organs)
-        or None on any failure so the caller can fall back to the geometric mask.
+        ``ct_nifti_path`` must be the native-resolution diagnostic CT (see
+        ``_run_totalseg_ml`` docstring). Segments the configured organs and ORs
+        them into a boolean exclusion mask, resampled onto the SUV grid via
+        nearest-neighbor. Returns (mask, organs) or None on any failure so the
+        caller can fall back to the geometric mask.
         """
-        from totalsegmentator.python_api import totalsegmentator as ts_run
+        import subprocess
 
         task = supp_cfg.get("totalseg_task", "total")
         organs = list(supp_cfg.get("exclude_organs", []) or [])
@@ -1029,24 +991,43 @@ class Pipeline(BasePipeline):
         if not organs:
             return None
 
-        import torch
+        try:
+            import torch
 
-        device = "gpu" if torch.cuda.is_available() else "cpu"
+            device = "gpu" if torch.cuda.is_available() else "cpu"
+        except Exception:
+            device = "cpu"
         ts_out = os.path.join(working_dir, "petct_physio_seg")
         os.makedirs(ts_out, exist_ok=True)
 
-        # Weights are located via the TOTALSEG_WEIGHTS_PATH env var (set on the
-        # worker) and downloaded there on first use — the python_api takes no
-        # weights_dir argument.
+        # Run via the CLI in a separate subprocess — NOT the python_api.
+        # TotalSegmentator's nnU-Net backend spawns multiprocessing children for
+        # preprocessing/export, which a daemonic Celery worker is forbidden from
+        # doing ("daemonic processes are not allowed to have children") — that made
+        # organ suppression silently fall back to the coarse geometric mask. A
+        # fork+exec'd subprocess is exempt (same isolation _segment_reference_organs
+        # uses). Weights resolve via the TOTALSEG_WEIGHTS_PATH env var on the worker.
+        cmd = [
+            "TotalSegmentator",
+            "-i", str(ct_nifti_path),
+            "-o", ts_out,
+            "-ta", task,
+            "-rs", *organs,
+            "-d", device,
+        ]
         logger.info("physiologic_totalseg_start", task=task, device=device, organs=organs)
-        ts_run(
-            input=Path(ct_nifti_path),
-            output=Path(ts_out),
-            task=task,
-            device=device,
-            quiet=True,
-            roi_subset=organs,
-        )
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+        except Exception as exc:
+            logger.warning("physiologic_organ_seg_failed", error=str(exc))
+            return None
+        if proc.returncode != 0:
+            logger.warning(
+                "physiologic_organ_seg_failed",
+                returncode=proc.returncode,
+                stderr=(proc.stderr or "")[-600:],
+            )
+            return None
 
         excl = np.zeros(suv_shape, dtype=bool)
         found: list[str] = []
@@ -1055,7 +1036,13 @@ class Pipeline(BasePipeline):
             if not os.path.exists(organ_path):
                 logger.warning("physiologic_organ_missing", organ=organ)
                 continue
-            mask = nib.load(organ_path).get_fdata() > 0.5
+            resampled_path = os.path.join(ts_out, f"{organ}_on_suv_grid.nii.gz")
+            try:
+                _resample_labelmap_to_reference(organ_path, suv_reference_path, resampled_path)
+            except Exception as exc:
+                logger.warning("physiologic_organ_resample_failed", organ=organ, error=str(exc))
+                continue
+            mask = nib.load(resampled_path).get_fdata() > 0.5
             if mask.shape != tuple(suv_shape):
                 logger.warning(
                     "physiologic_organ_shape_mismatch",
@@ -1076,15 +1063,21 @@ class Pipeline(BasePipeline):
         return excl, found
 
     def _segment_reference_organs(
-        self, ct_nifti_path: str, suv_shape: tuple, working_dir: str
+        self, ct_nifti_path: str, suv_shape: tuple, working_dir: str, suv_reference_path: str,
     ) -> dict[str, np.ndarray]:
         """Segment SUV reference organs (liver + aortic blood pool) via
-        TotalSegmentator on the PET-grid CT.
+        TotalSegmentator on the native-resolution diagnostic CT.
 
-        Returns a dict of ``{organ: bool mask}`` (at the SUV grid shape) for those
-        successfully segmented. Returns ``{}`` on any failure, so the caller falls
-        back to the HU-box heuristic. These masks are used only for reference SUV
-        statistics — they are NOT added to the lesion-exclusion mask.
+        ``ct_nifti_path`` must be the native-resolution CT (see ``_run_totalseg_ml``
+        docstring) — a coarse liver boundary here directly skews the liver-SUVmean
+        reference that the whole detection threshold is keyed off, so resolution
+        matters even more here than for lesion naming.
+
+        Returns a dict of ``{organ: bool mask}`` (at the SUV grid shape, resampled
+        via nearest-neighbor) for those successfully segmented. Returns ``{}`` on
+        any failure, so the caller falls back to the HU-box heuristic. These masks
+        are used only for reference SUV statistics — they are NOT added to the
+        lesion-exclusion mask.
         """
         import subprocess
 
@@ -1103,8 +1096,8 @@ class Pipeline(BasePipeline):
         # backend uses Python multiprocessing for preprocessing/export, which a
         # daemonic Celery worker process is forbidden from spawning ("daemonic
         # processes are not allowed to have children"). A subprocess (fork+exec of
-        # a separate program) is exempt from that restriction — same isolation the
-        # AutoPET3 tier uses.
+        # a separate program) is exempt from that restriction — the same isolation
+        # the physiologic organ-suppression path uses.
         cmd = [
             "TotalSegmentator",
             "-i", str(ct_nifti_path),
@@ -1128,7 +1121,13 @@ class Pipeline(BasePipeline):
                 organ_path = os.path.join(ts_out, f"{organ}.nii.gz")
                 if not os.path.exists(organ_path):
                     continue
-                mask = nib.load(organ_path).get_fdata() > 0.5
+                resampled_path = os.path.join(ts_out, f"{organ}_on_suv_grid.nii.gz")
+                try:
+                    _resample_labelmap_to_reference(organ_path, suv_reference_path, resampled_path)
+                except Exception as exc:
+                    logger.warning("reference_organ_resample_failed", organ=organ, error=str(exc))
+                    continue
+                mask = nib.load(resampled_path).get_fdata() > 0.5
                 if mask.shape == tuple(suv_shape):
                     masks[organ] = mask
             logger.info(
@@ -1140,6 +1139,172 @@ class Pipeline(BasePipeline):
         except Exception as exc:
             logger.warning("reference_organ_seg_failed", error=str(exc))
             return {}
+
+    def _run_totalseg_ml(
+        self, ct_nifti_path: str, task: str, suv_shape: tuple, working_dir: str, fast: bool,
+        suv_reference_path: str,
+    ) -> tuple[np.ndarray, dict[int, str]] | None:
+        """Run one TotalSegmentator task in ``--ml`` (multilabel) mode via subprocess.
+
+        ``ct_nifti_path`` MUST be the native-resolution diagnostic CT, not the
+        PET-grid-resampled one — TotalSegmentator's models expect ~1.5mm (full) or
+        ~3mm (fast) input and do their own internal resampling; feeding them a CT
+        already downsampled to the PET grid (typically ~4x4x3mm) throws away detail
+        before the model ever sees it, producing mushy organ boundaries (e.g. a
+        "sternum" label reading soft-tissue HU instead of bone).
+
+        Returns ``(label_array_on_suv_grid, {label_id: structure_name})`` or None on
+        any failure. CLI subprocess for the same daemonic-safety reason as
+        ``_segment_reference_organs``. ``--fast`` (3 mm) only applies to the ``total``
+        task; other tasks run at their native resolution. The native-grid output is
+        resampled onto the SUV/PET grid via nearest-neighbor (label maps are
+        categorical — linear/spline interpolation would invent invalid label IDs at
+        boundaries).
+        """
+        import subprocess
+
+        try:
+            import torch
+
+            device = "gpu" if torch.cuda.is_available() else "cpu"
+        except Exception:
+            device = "cpu"
+
+        out_dir = os.path.join(working_dir, f"petct_seg_{task}")
+        os.makedirs(out_dir, exist_ok=True)
+        out_file = os.path.join(out_dir, "seg.nii.gz")
+        cmd = [
+            "TotalSegmentator",
+            "-i", str(ct_nifti_path),
+            "-o", out_file,
+            "-ta", task,
+            "--ml",
+            "-d", device,
+        ]
+        if fast and task == "total":
+            cmd.append("--fast")  # 3 mm model — big runtime win, adequate for naming
+        try:
+            logger.info("structure_seg_start", task=task, device=device)
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+        except Exception as exc:
+            logger.warning("structure_seg_failed", task=task, error=str(exc))
+            return None
+        if proc.returncode != 0:
+            logger.warning(
+                "structure_seg_failed", task=task,
+                returncode=proc.returncode, stderr=(proc.stderr or "")[-600:],
+            )
+            return None
+
+        path = out_file
+        if not os.path.exists(path):
+            cand = [f for f in os.listdir(out_dir) if f.endswith((".nii", ".nii.gz"))]
+            if not cand:
+                logger.warning("structure_seg_no_output", task=task, out_dir=out_dir)
+                return None
+            path = os.path.join(out_dir, cand[0])
+
+        # Resample the native-CT-grid label map onto the SUV/PET grid (nearest-
+        # neighbor — see docstring). This is what makes the shape check below
+        # meaningful again now that the input CT is no longer pre-resampled to the
+        # PET grid.
+        resampled_path = os.path.join(out_dir, "seg_on_suv_grid.nii.gz")
+        try:
+            _resample_labelmap_to_reference(path, suv_reference_path, resampled_path)
+        except Exception as exc:
+            logger.warning("structure_seg_resample_failed", task=task, error=str(exc))
+            return None
+
+        arr = nib.load(resampled_path).get_fdata()
+        if arr.shape != tuple(suv_shape):
+            logger.warning(
+                "structure_seg_shape_mismatch", task=task,
+                got=tuple(arr.shape), expected=tuple(suv_shape),
+            )
+            return None
+        labels = np.rint(arr).astype(np.int32)
+
+        try:
+            from totalsegmentator.map_to_binary import class_map
+            id2name = {int(k): str(v) for k, v in dict(class_map.get(task, {})).items()}
+        except Exception as exc:
+            logger.warning("structure_classmap_unavailable", task=task, error=str(exc))
+            return None
+        if not id2name:
+            logger.warning("structure_classmap_empty", task=task)
+            return None
+        return labels, id2name
+
+    def _segment_structures_multilabel(
+        self, ct_nifti_path: str, suv_shape: tuple, working_dir: str, suv_reference_path: str,
+    ) -> tuple[np.ndarray, dict[int, str]] | None:
+        """TotalSegmentator multilabel map for naming lesions by structure.
+
+        ``ct_nifti_path`` is the native-resolution diagnostic CT (see
+        ``_run_totalseg_ml`` docstring for why the PET-grid CT must not be used here).
+
+        Runs the free ``total`` task and, when enabled, merges the free ``breasts``
+        task (breast tissue is absent from ``total``) so breast lesions localise
+        correctly. Additional-task labels are merged only where ``total`` is
+        background, so they never overwrite a named organ. Returns
+        ``(labels, {id: name})`` or None so the caller falls back to the Z-region.
+        """
+        struct_cfg = self._cfg.get("inference", {}).get("structure_labeling", {})
+        fast = struct_cfg.get("fast", True)
+
+        total = self._run_totalseg_ml(
+            ct_nifti_path, "total", suv_shape, working_dir, fast, suv_reference_path
+        )
+        if total is None:
+            return None
+        labels, id2name = total
+
+        # Merge extra free tasks that cover anatomy missing from `total` (e.g.
+        # breasts). Each extra task's IDs are offset to avoid collisions, and its
+        # voxels are painted only where `total` found nothing.
+        _LABEL_OFFSET = 10000
+        for i, task in enumerate(struct_cfg.get("extra_tasks", ["breasts"]) or []):
+            extra = self._run_totalseg_ml(
+                ct_nifti_path, task, suv_shape, working_dir, fast, suv_reference_path
+            )
+            if extra is None:
+                continue
+            e_labels, e_names = extra
+            off = _LABEL_OFFSET * (i + 1)
+            merged = []
+            for eid, ename in e_names.items():
+                m = (e_labels == eid) & (labels == 0)
+                if m.any():
+                    labels[m] = off + int(eid)
+                    id2name[off + int(eid)] = ename
+                    merged.append(ename)
+            if merged:
+                logger.info("structure_seg_merged", task=task, structures=merged)
+
+        logger.info("structure_seg_complete", n_structures=int((np.unique(labels) > 0).sum()))
+        return labels, id2name
+
+    @staticmethod
+    def _masks_from_labels(
+        labels: np.ndarray, id2name: dict[int, str], names
+    ) -> dict[str, np.ndarray]:
+        """Per-structure boolean masks for the requested names from a multilabel map.
+
+        Returns ``{name: mask}`` only for names present (non-empty) in the map, so a
+        caller can distinguish organs the segmentation found from those it missed.
+        """
+        name2id: dict[str, int] = {}
+        for i, nm in id2name.items():
+            name2id.setdefault(nm, i)
+        out: dict[str, np.ndarray] = {}
+        for nm in names:
+            i = name2id.get(nm)
+            if i is None:
+                continue
+            m = labels == i
+            if m.any():
+                out[nm] = m
+        return out
 
     # ── Series classification ─────────────────────────────────────────────────
 
@@ -1348,19 +1513,51 @@ class Pipeline(BasePipeline):
         # Reference region extraction
         ct_arr = None
         ref_stats: dict[str, dict[str, float]] = {}
+        # A SINGLE TotalSegmentator multilabel pass on the CT serves all three
+        # downstream needs — reference-organ SUV stats, physiologic-uptake
+        # exclusion, and per-lesion structure naming — instead of three separate
+        # full-body segmentations. Falls back to the dedicated per-purpose segs (and
+        # then the HU-box / geometric heuristics) if it is unavailable.
+        structure_labels = None
+        structure_names: dict[int, str] = {}
+        # Structure segmentation (naming + reference-organ masks) always runs
+        # TotalSegmentator on the native-resolution CT, never the PET-grid-resampled
+        # one — see _run_totalseg_ml docstring. Falls back to the coarse PET-grid CT
+        # only if the native CT wasn't preserved (shouldn't happen when CT exists;
+        # preprocess() sets both ct_original_nifti_path and ct_nifti_path together).
+        seg_ct_path = orig_ct_path or preprocessed.get("ct_nifti_path")
         if preprocessed.get("ct_nifti_path"):
             ct_img = nib.load(preprocessed["ct_nifti_path"])
             ct_arr = ct_img.get_fdata().astype(np.float32)
             if ct_arr.shape == suv_arr.shape:
+                if cfg_inf.get("structure_labeling", {}).get("enabled", True) and seg_ct_path:
+                    try:
+                        res = self._segment_structures_multilabel(
+                            seg_ct_path, suv_arr.shape, working_dir,
+                            preprocessed["suv_nifti_path"],
+                        )
+                        if res is not None:
+                            structure_labels, structure_names = res
+                    except Exception as exc:
+                        logger.warning("structure_labeling_failed", error=str(exc))
+
                 # Prefer true organ segmentation (TotalSegmentator liver / aorta);
                 # the HU-box heuristic averages generic 40–80 HU soft tissue over a
                 # large region and badly under-reads the liver. Fall back to it only
                 # for organs the segmentation misses.
                 use_seg = cfg_inf.get("reference_organ_segmentation", True)
                 if use_seg:
-                    ref_masks = self._segment_reference_organs(
-                        preprocessed["ct_nifti_path"], suv_arr.shape, working_dir
-                    )
+                    if structure_labels is not None:
+                        ref_masks = self._masks_from_labels(
+                            structure_labels, structure_names, ("liver", "aorta")
+                        )
+                    elif seg_ct_path:
+                        ref_masks = self._segment_reference_organs(
+                            seg_ct_path, suv_arr.shape, working_dir,
+                            preprocessed["suv_nifti_path"],
+                        )
+                    else:
+                        ref_masks = {}
                     liver_stats = _suv_stats_from_mask(suv_arr, ref_masks.get("liver"))
                     aorta_stats = _suv_stats_from_mask(suv_arr, ref_masks.get("aorta"))
                     if liver_stats:
@@ -1441,29 +1638,13 @@ class Pipeline(BasePipeline):
             else:
                 threshold = suv_thresh_abs  # fixed absolute SUV cutoff
 
-        # DL tier precedence: AutoPET3 (isolated subprocess) → SwinUNETR
-        # (in-process) → generic nnU-Net (in-process) → PERCIST threshold.
+        # Lesion detection: SwinUNETR (in-process, only when custom_pet_weights_path
+        # is configured) → PERCIST 1.0 SUV threshold. PERCIST is the default
+        # detector and the sole fallback.
         inference_method: str | None = None
         raw_mask = None
 
-        autopet3_cfg = self._cfg.get("model", {}).get("autopet3", {})
-        if autopet3_cfg.get("enabled", False) and autopet3_cfg.get("model_dir"):
-            try:
-                logger.info("autopet3_inference_start")
-                m = self._run_autopet3(suv_arr, ct_arr, affine, working_dir)
-                if m is not None and m.shape == suv_arr.shape:
-                    raw_mask = m
-                    inference_method = "autopet3"
-                    logger.info("autopet3_inference_complete", raw_lesion_voxels=int(raw_mask.sum()))
-                elif m is not None:
-                    logger.warning(
-                        "autopet3_shape_mismatch",
-                        got=tuple(m.shape), expected=tuple(suv_arr.shape),
-                    )
-            except Exception as exc:
-                logger.warning("autopet3_failed_falling_back", error=str(exc))
-
-        if raw_mask is None and self._model is not None:
+        if self._model is not None:
             try:
                 logger.info(
                     "dl_lesion_inference_start",
@@ -1483,20 +1664,7 @@ class Pipeline(BasePipeline):
                 )
                 raw_mask = (suv_arr >= threshold).astype(np.int32)
                 inference_method = "threshold_fallback"
-        elif raw_mask is None and self._nnunet_predictor is not None:
-            try:
-                logger.info("nnunet_inference_start", model_version=self._model_version)
-                raw_mask = self._run_nnunet_inference(suv_arr, ct_arr, voxel_spacing)
-                inference_method = "nnunet"
-                # generic in-process nnU-Net glue (channel order / spacing
-                # orientation) requires on-site validation; surface that.
-                preprocessed.setdefault("qa_flags", []).append("dl_nnunet_unvalidated")
-                logger.info("nnunet_inference_complete", raw_lesion_voxels=int(raw_mask.sum()))
-            except Exception as exc:
-                logger.warning("nnunet_failed_falling_back_to_threshold", error=str(exc))
-                raw_mask = (suv_arr >= threshold).astype(np.int32)
-                inference_method = "threshold_fallback"
-        elif raw_mask is None:
+        else:
             logger.info(
                 "suv_threshold",
                 liver_mean=round(liver_mean, 3),
@@ -1523,12 +1691,28 @@ class Pipeline(BasePipeline):
             and preprocessed.get("ct_nifti_path")
         ):
             try:
-                result = self._run_physiologic_organ_exclusion(
-                    preprocessed["ct_nifti_path"], suv_arr.shape, working_dir, supp_cfg
-                )
-                if result is not None:
-                    excl_mask, excluded_organs = result
-                    suppression_method = "totalsegmentator"
+                organs = list(supp_cfg.get("exclude_organs", []) or [])
+                if structure_labels is not None and organs:
+                    # Derive the exclusion mask from the shared multilabel map
+                    # (no extra segmentation pass).
+                    masks = self._masks_from_labels(structure_labels, structure_names, organs)
+                    if masks:
+                        excl_mask = np.zeros(suv_arr.shape, dtype=bool)
+                        for m in masks.values():
+                            excl_mask |= m
+                        dilate = int(supp_cfg.get("dilate_voxels", 0))
+                        if dilate > 0:
+                            excl_mask = ndimage.binary_dilation(excl_mask, iterations=dilate)
+                        excluded_organs = list(masks.keys())
+                        suppression_method = "totalsegmentator"
+                elif seg_ct_path:
+                    result = self._run_physiologic_organ_exclusion(
+                        seg_ct_path, suv_arr.shape, working_dir, supp_cfg,
+                        preprocessed["suv_nifti_path"],
+                    )
+                    if result is not None:
+                        excl_mask, excluded_organs = result
+                        suppression_method = "totalsegmentator"
             except Exception as exc:
                 logger.warning("physiologic_organ_exclusion_failed", error=str(exc))
                 excl_mask = None
@@ -1541,7 +1725,15 @@ class Pipeline(BasePipeline):
         # CT concordance: a true tumour has a soft-tissue correlate on CT;
         # physiologic uptake in hollow organs (bowel gas) does not.
         conc_cfg = cfg_inf.get("ct_concordance", {})
-        conc_enabled = bool(conc_cfg.get("enabled", True)) and ct_arr is not None
+        # Requires the CT to share the SUV grid (it is indexed by the SUV-grid lesion
+        # mask below). A mismatched grid — e.g. a CT that came through a different
+        # conversion path and did not resample onto the PET grid — would otherwise
+        # raise an IndexError and fail the whole run; skip concordance instead.
+        conc_enabled = (
+            bool(conc_cfg.get("enabled", True))
+            and ct_arr is not None
+            and ct_arr.shape == suv_arr.shape
+        )
         # Safety guard: if the CT is degenerate (e.g. failed PET/CT
         # co-registration → effectively all air), concordance cannot discriminate
         # and would wrongly reject EVERY focus (including a true tumour). Disable
@@ -1561,6 +1753,16 @@ class Pipeline(BasePipeline):
 
         min_vol_ml = cfg_inf.get("min_lesion_volume_ml", 1.2)
         sphere_r_mm = cfg_inf.get("suv_peak_sphere_radius_mm", 6.204)
+
+        # Minimum fraction of a focus that must lie within a single segmented organ
+        # before the focus is named after that organ. Tumour tissue is not itself
+        # segmented (TotalSegmentator labels only normal anatomy), so a mass sitting
+        # in unlabeled space that merely clips an organ edge would otherwise be
+        # mislabeled by that minority overlap. Below this coverage the focus is left
+        # unnamed and reported by region ("soft-tissue site").
+        min_organ_coverage = float(
+            cfg_inf.get("structure_labeling", {}).get("min_organ_coverage", 0.5)
+        )
 
         # (B) Oversized-focus sanity bound. A single connected component bigger
         # than this absolute volume — or this fraction of the whole imaged volume
@@ -1610,6 +1812,31 @@ class Pipeline(BasePipeline):
             tlg = suv_mean * vol_ml  # g (since SUV is dimensionless and vol in mL ≈ g)
             centroid = ndimage.center_of_mass(comp_mask)
 
+            # Anatomical structure the focus occupies (majority-vote over the
+            # component's voxels in the TotalSegmentator multilabel map). Flags
+            # foci in normally-physiologic/excretory structures.
+            #
+            # Only name the focus after an organ that covers at least
+            # ``min_organ_coverage`` of the WHOLE focus. A tumour mass sits mostly
+            # in unlabeled voxels (tumour is not a segmented organ) and may only
+            # clip an organ edge; naming it after that minority overlap is
+            # misleading (e.g. a retroperitoneal mass tagged "iliopsoas" from an
+            # ~11 % psoas clip). Below the threshold the focus stays unnamed and the
+            # report describes it by region.
+            structure = None
+            physiologic = False
+            if structure_labels is not None:
+                comp_labels = structure_labels[comp_mask]
+                comp_struct_vals = comp_labels[comp_labels > 0]
+                if comp_struct_vals.size > 0:
+                    vals, counts = np.unique(comp_struct_vals, return_counts=True)
+                    top_idx = int(np.argmax(counts))
+                    top_id = int(vals[top_idx])
+                    top_coverage = float(counts[top_idx]) / float(comp_mask.sum())
+                    if top_coverage >= min_organ_coverage:
+                        structure = structure_names.get(top_id)
+                        physiologic = structure in _PHYSIOLOGIC_STRUCTURES
+
             # CT density (HU) over the focus core — the anatomical (CT) correlate
             # of the metabolic focus. Soft tissue ~30–60 HU; fat negative;
             # bone/calcium high. Sampled on the ORIGINAL diagnostic CT (median over
@@ -1624,6 +1851,29 @@ class Pipeline(BasePipeline):
                 if comp_ct.size > 0:
                     ct_mean_hu = round(float(np.mean(comp_ct)), 1)
 
+            # Plausibility veto: don't report a focus as arising from bone when its
+            # own CT density is clearly soft tissue. Cortical/trabecular bone reads
+            # ~150+ HU; a coarse (--fast, 3 mm) segmentation's boundary can bleed a
+            # bone label into adjacent soft tissue at bone/soft-tissue interfaces
+            # (seen in production: a 60 HU chest-wall mass labelled "sternum", a
+            # -30 HU neck mass labelled "skull"). Below threshold, drop the name
+            # rather than report an anatomically impossible bone lesion.
+            if structure and _is_bone_structure(structure) and ct_mean_hu is not None and ct_mean_hu < 150.0:
+                structure = None
+                physiologic = False
+
+            # Lesion size: prefer an anatomic CT-based measurement (PET-seeded,
+            # bounded region-grow on the original CT); fall back to the metabolic
+            # extent on the SUV grid when the CT boundary is not trustworthy.
+            ct_meas_cfg = cfg_inf.get("ct_lesion_measurement", {})
+            size = None
+            if orig_ct_img is not None and ct_meas_cfg.get("enabled", True):
+                size = _measure_lesion_ct(orig_ct_img, comp_mask, affine, vol_ml, ct_meas_cfg)
+            if size is None:
+                size = _dims_from_mask(comp_mask, voxel_spacing)
+                if size is not None:
+                    size["source"] = "metabolic"
+
             lesions.append({
                 "id": len(lesions) + 1,
                 "suv_max": round(suv_max, 2),
@@ -1637,6 +1887,13 @@ class Pipeline(BasePipeline):
                 "anatomical_region": _estimate_anatomical_region(
                     [round(c, 1) for c in centroid], suv_arr.shape
                 ),
+                "structure": structure,
+                "physiologic_uptake": physiologic,
+                "dimensions_cm": size["dimensions_cm"] if size else None,
+                "long_diameter_cm": size["long_diameter_cm"] if size else None,
+                "short_diameter_cm": size["short_diameter_cm"] if size else None,
+                "ct_volume_ml": size.get("volume_ml") if size else None,
+                "size_source": size["source"] if size else None,
                 "centroid_voxel": [round(c, 1) for c in centroid],
             })
 
@@ -1950,18 +2207,11 @@ class Pipeline(BasePipeline):
             )
 
         method_label = {
-            "autopet3": "AutoPET3 (Team LesionTracer) nnU-Net deep-learning segmentation",
             "swin_unetr": "SwinUNETR deep-learning segmentation",
-            "nnunet": "nnU-Net deep-learning segmentation",
             "threshold_fallback": "PERCIST SUV-threshold (DL fallback)",
             "threshold": "PERCIST SUV-threshold",
         }.get(inference_method, inference_method)
         parts.append(f"Detection method: {method_label}.")
-        if inference_method == "nnunet":
-            parts.append(
-                "nnU-Net output is pending on-site validation "
-                "(channel order / spacing orientation) — verify before clinical use."
-            )
 
         if rejected_oversize > 0:
             parts.append(

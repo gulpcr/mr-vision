@@ -23,11 +23,19 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
     task_reject_on_worker_lost=True,
     task_default_queue="mri_inference",
+    # All maintenance tasks route to "mri_inference" — the only queue any worker
+    # in this deployment actually consumes (backend/Dockerfile's worker target
+    # runs `celery worker ... -Q mri_inference` with no separate "celery"-queue
+    # worker). Routing them to the default "celery" queue silently orphaned them:
+    # Beat published run_stale_job_cleanup/run_retention_cleanup/
+    # run_critical_alert_escalation on schedule, but nothing ever consumed that
+    # queue, so they never ran — e.g. a job stuck since 2026-06-18 was never
+    # cleaned up despite the 30-minute staleness check existing and working fine.
     task_routes={
         "app.infrastructure.queue.tasks.run_usecase_pipeline": {"queue": "mri_inference"},
-        "app.infrastructure.queue.tasks.run_retention_cleanup": {"queue": "celery"},
-        "app.infrastructure.queue.tasks.run_critical_alert_escalation": {"queue": "celery"},
-        "app.infrastructure.queue.tasks.run_stale_job_cleanup": {"queue": "celery"},
+        "app.infrastructure.queue.tasks.run_retention_cleanup": {"queue": "mri_inference"},
+        "app.infrastructure.queue.tasks.run_critical_alert_escalation": {"queue": "mri_inference"},
+        "app.infrastructure.queue.tasks.run_stale_job_cleanup": {"queue": "mri_inference"},
         "app.infrastructure.queue.tasks.process_batch_item": {"queue": "mri_inference"},
     },
     broker_connection_retry_on_startup=True,

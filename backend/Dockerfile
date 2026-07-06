@@ -81,8 +81,13 @@ ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
 ENV NVIDIA_VISIBLE_DEVICES=all
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
+# Ensures nvidia-smi's GPU index order always matches CUDA's, which
+# select-healthy-gpu.sh relies on when it narrows CUDA_VISIBLE_DEVICES.
+ENV CUDA_DEVICE_ORDER=PCI_BUS_ID
 
 # --- GPU worker target ---
 FROM gpu-base AS worker
+RUN chmod +x docker/select-healthy-gpu.sh
+ENTRYPOINT ["docker/select-healthy-gpu.sh"]
 CMD ["celery", "-A", "app.infrastructure.queue.celery_app:celery_app", "worker", \
      "--loglevel=info", "--concurrency=2", "-Q", "mri_inference"]

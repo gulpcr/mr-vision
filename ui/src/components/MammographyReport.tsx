@@ -16,10 +16,22 @@ const FOOTER_ADDRESS =
 
 type FormState = Record<string, string>;
 
+// Structured per-breast finding slots (label + select options). "" = unset.
+const SLOTS: { key: string; label: string; options: [string, string][] }[] = [
+  { key: "density", label: "Breast density", options: [["a", "a — fatty"], ["b", "b — scattered"], ["c", "c — heterogeneously dense"], ["d", "d — extremely dense"]] },
+  { key: "mass", label: "Mass", options: [["none", "None"], ["present", "Present"]] },
+  { key: "calcification", label: "Clustered microcalcification", options: [["none", "None"], ["present", "Present"]] },
+  { key: "skin_thickening", label: "Skin thickening", options: [["none", "None"], ["present", "Present"]] },
+  { key: "nipple_retraction", label: "Nipple retraction", options: [["none", "None"], ["present", "Present"]] },
+  { key: "architectural_distortion", label: "Architectural distortion", options: [["none", "None"], ["present", "Present"]] },
+  { key: "axillary_nodes", label: "Axillary nodes", options: [["normal", "Normal"], ["abnormal", "Abnormal"]] },
+];
+const SLOT_FIELDS = SLOTS.flatMap((s) => [`${s.key}_right`, `${s.key}_left`]);
+
 const FIELDS = [
   "laterality", "file_no", "status", "contact", "procedure", "clinical_features",
   "right_breast_findings", "left_breast_findings", "opinion",
-  "birads_right", "birads_left", "reviewing_doctor", "reporting_doctor",
+  "birads_right", "birads_left", ...SLOT_FIELDS, "reviewing_doctor", "reporting_doctor",
 ];
 
 function fmtAge(raw: string | null): string {
@@ -69,6 +81,14 @@ export function MammographyReport({ study, result }: { study: Study; result: Res
       birads_left: summary.birads_left != null ? String(summary.birads_left) : "",
       file_no: "", status: "", contact: "", reviewing_doctor: "", reporting_doctor: "",
     };
+    // Structured slots pre-filled from result.summary.findings.{right,left}.{slot}.
+    const findings: any = summary.findings || {};
+    for (const side of ["right", "left"] as const) {
+      const sideSlots = findings[side] || {};
+      for (const s of SLOTS) {
+        aiDefaults[`${s.key}_${side}`] = sideSlots[s.key] != null ? String(sideSlots[s.key]) : "";
+      }
+    }
     api.mammography
       .getReport(study.study_instance_uid)
       .then((saved: MammographyReportData) => {
@@ -124,6 +144,12 @@ export function MammographyReport({ study, result }: { study: Study; result: Res
   const laterality = (form.laterality || "bilateral").toLowerCase();
   const showRight = laterality !== "left";
   const showLeft = laterality !== "right";
+
+  // AI confidence surfaced from the result: which model slots were low-confidence,
+  // and their scores — so an always-output best guess is never mistaken for a sure call.
+  const aiFindings: any = (result?.summary as any)?.findings || {};
+  const lowConf = (side: string) => new Set<string>(aiFindings?.[side]?.low_confidence || []);
+  const confVal = (side: string, key: string): number | undefined => aiFindings?.[side]?.confidence?.[key];
   const title = laterality === "right" ? "RIGHT MAMMOGRAPHY"
     : laterality === "left" ? "LEFT MAMMOGRAPHY" : "BILATERAL MAMMOGRAPHY";
 
@@ -200,6 +226,54 @@ export function MammographyReport({ study, result }: { study: Study; result: Res
         <textarea className={areaCls} value={form.clinical_features || ""} onChange={(e) => set("clinical_features", e.target.value)} />
 
         <Head>Findings:</Head>
+
+        {/* Structured per-breast checklist (AI-prefilled; radiologist confirms).
+            AI slots always output a best guess; low-confidence ones are flagged. */}
+        <div className="border border-gray-200 rounded-lg overflow-hidden mb-3">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="text-left px-3 py-2 font-semibold text-gray-600">Finding</th>
+                {showRight && <th className="text-left px-3 py-2 font-semibold text-gray-600 w-48">Right</th>}
+                {showLeft && <th className="text-left px-3 py-2 font-semibold text-gray-600 w-48">Left</th>}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {SLOTS.map((s) => (
+                <tr key={s.key}>
+                  <td className="px-3 py-1.5 text-gray-700">{s.label}</td>
+                  {showRight && (
+                    <td className="px-3 py-1.5">
+                      <select className={inputCls} value={form[`${s.key}_right`] || ""} onChange={(e) => set(`${s.key}_right`, e.target.value)}>
+                        <option value="">—</option>
+                        {s.options.map(([v, lbl]) => <option key={v} value={v}>{lbl}</option>)}
+                      </select>
+                      {lowConf("right").has(s.key) && (
+                        <p className="text-[10px] text-amber-600 mt-0.5">
+                          AI low confidence{confVal("right", s.key) != null ? ` (${Number(confVal("right", s.key)).toFixed(2)})` : ""} — verify
+                        </p>
+                      )}
+                    </td>
+                  )}
+                  {showLeft && (
+                    <td className="px-3 py-1.5">
+                      <select className={inputCls} value={form[`${s.key}_left`] || ""} onChange={(e) => set(`${s.key}_left`, e.target.value)}>
+                        <option value="">—</option>
+                        {s.options.map(([v, lbl]) => <option key={v} value={v}>{lbl}</option>)}
+                      </select>
+                      {lowConf("left").has(s.key) && (
+                        <p className="text-[10px] text-amber-600 mt-0.5">
+                          AI low confidence{confVal("left", s.key) != null ? ` (${Number(confVal("left", s.key)).toFixed(2)})` : ""} — verify
+                        </p>
+                      )}
+                    </td>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
         {showRight && (
           <>
             <p className="font-bold italic text-sm mt-2 mb-1">RIGHT BREAST:</p>

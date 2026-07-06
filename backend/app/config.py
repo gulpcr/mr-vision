@@ -145,6 +145,11 @@ class Settings(BaseSettings):
     longitudinal_enabled: bool = False
     longitudinal_max_prior_studies: int = 5
 
+    # PET-CT AI-authored report findings (Gemini reads MIP/fused images + computed
+    # lesion data and writes SCAN FINDINGS/CONCLUSIONS; falls back to the deterministic
+    # template on failure or when disabled)
+    petct_ai_report_enabled: bool = False
+
     # PET-CT Molecular Imaging report layout (renders the formal departmental
     # FDG PET-CT report for the pet_ct / pet_ct_brain use cases).
     report_institution_name: str = "DEPARTMENT OF MOLECULAR IMAGING"
@@ -178,6 +183,19 @@ class Settings(BaseSettings):
     mammography_procedure_default: str = (
         "Digital mammography of both breasts performed in routine CC and MLO views."
     )
+
+    # Mammography structured findings — Mammo-CLIP zero-shot classifier (density,
+    # mass presence, calcification presence). Gated + weights-path like GMIC; when
+    # disabled or weights are absent the pipeline degrades gracefully and leaves the
+    # model-fillable slots unset for the radiologist. NOTE: Mammo-CLIP is licensed
+    # CC BY-NC-SA (non-commercial) — do not enable in a commercial deployment without
+    # replacing it (e.g. ianpan/mammoscreen, Apache-2.0).
+    mammography_clip_enabled: bool = False
+    mammography_clip_weights_path: str = "/model_cache/mammo_clip"
+    # Lesion localization detector (quadrant/margins). Deferred — needs fine-tuning
+    # on VinDr-Mammo; scaffold only, off by default.
+    mammography_detector_enabled: bool = False
+    mammography_detector_weights_path: str = "/model_cache/mammo_detector"
 
     # MRI narrative report layout (formal radiology report for the MRI use cases:
     # brain/spine/chest/abdomen). Defaults match the departmental brain MRI template;

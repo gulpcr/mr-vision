@@ -23,6 +23,16 @@ const REPORT_SECTIONS: [string, string][] = [
   ["BONES / BONE MARROW", "No FDG-avid / non-avid skeletal lesion is noted in this region."],
 ];
 
+// Maps each report heading onto the fixed key PetCtNarrativeService's Gemini prompt
+// returns (backend/app/application/pet_ct_narrative_service.py) — mirrors
+// pdf_generator._REPORT_SECTION_TO_AI_KEY so this view and the PDF agree.
+const REPORT_SECTION_TO_AI_KEY: Record<string, string> = {
+  "HEAD & NECK": "head_neck",
+  THORAX: "thorax",
+  "ABDOMEN / PELVIS": "abdomen_pelvis",
+  "BONES / BONE MARROW": "bones_marrow",
+};
+
 const REPORT_INSTITUTION = "DEPARTMENT OF MOLECULAR IMAGING";
 const REPORT_SIGNATORIES = ["Dr. Salman Habib", "Dr. Saifullah Sethar"];
 
@@ -51,15 +61,89 @@ function fmtReportDate(raw: string | null): string {
   return `${dd}/${mm}/${d.getFullYear()}`;
 }
 
-function lesionSentence(l: any): string {
-  const region = l.anatomical_region || "the region";
-  let s = `FDG-avid lesion in ${region}`;
-  if (typeof l.suv_max === "number") s += ` with SUVmax ${l.suv_max.toFixed(1)}`;
-  const paren: string[] = [];
-  if (typeof l.volume_ml === "number") paren.push(`metabolic volume ${l.volume_ml.toFixed(1)} mL`);
-  if (typeof l.ct_mean_hu === "number") paren.push(`CT density ${l.ct_mean_hu.toFixed(0)} HU`);
-  if (paren.length) s += ` (${paren.join(", ")})`;
-  return s + ".";
+// TotalSegmentator label → human-readable structure (mirrors pdf_generator.py).
+function prettifyStructure(name: string | null | undefined): string {
+  if (!name) return "soft-tissue site";
+  let n = name;
+  let side = "";
+  for (const suf of ["_left", "_right"]) {
+    if (n.endsWith(suf)) { side = suf.slice(1) + " "; n = n.slice(0, -suf.length); break; }
+  }
+  if (n.startsWith("vertebrae_")) return `${side}${n.split("_")[1]} vertebra`.trim();
+  return `${side}${n.replace(/_/g, " ")}`.trim();
+}
+
+// TotalSegmentator skeletal-muscle labels. A muscle is not a reportable organ,
+// so muscle foci are named by region ("soft-tissue site"), not by muscle name.
+// Mirrors pdf_generator._MUSCLE_BASENAMES / _is_muscle_structure.
+const MUSCLE_BASENAMES = new Set([
+  "iliopsoas", "gluteus_maximus", "gluteus_medius", "gluteus_minimus",
+  "autochthon",
+]);
+
+function isMuscleStructure(name: string | null | undefined): boolean {
+  if (!name) return false;
+  let base = name;
+  for (const suf of ["_left", "_right"]) {
+    if (base.endsWith(suf)) { base = base.slice(0, -suf.length); break; }
+  }
+  return MUSCLE_BASENAMES.has(base);
+}
+
+// One sentence per anatomical structure (dominant SUVmax, focus count, size),
+// instead of one sentence per focus. Physiologic/excretory foci summarised
+// separately. Mirrors pdf_generator._aggregate_section_findings.
+function aggregateSectionFindings(secLesions: any[]): string {
+  const disease = secLesions.filter((l) => !l.physiologic_uptake);
+  const physiologic = secLesions.filter((l) => l.physiologic_uptake);
+
+  const groups: Record<string, any[]> = {};
+  for (const l of disease) {
+    const struct = isMuscleStructure(l.structure) ? "" : (l.structure || "");
+    (groups[struct] ||= []).push(l);
+  }
+
+  const peak = (foci: any[]) => Math.max(...foci.map((x) => (typeof x.suv_max === "number" ? x.suv_max : 0)));
+  const keys = Object.keys(groups).sort((a, b) => peak(groups[b]) - peak(groups[a]));
+
+  const sizeStr = (l: any): string => {
+    const d = l?.dimensions_cm;
+    if (!Array.isArray(d) || d.length < 1) return "";
+    const src = l.size_source === "ct" ? "CT" : "PET extent";
+    return `${d.map((x: number) => x.toFixed(1)).join(" × ")} cm (${src})`;
+  };
+
+  const parts: string[] = [];
+  for (const key of keys) {
+    const foci = groups[key];
+    const label = key ? prettifyStructure(key) : "soft-tissue site";
+    const lead = label.charAt(0).toUpperCase() + label.slice(1);
+    const suvs = foci.map((x) => x.suv_max).filter((v) => typeof v === "number");
+    const vols = foci.map((x) => x.volume_ml).filter((v) => typeof v === "number");
+    const dominant = foci.reduce((a, b) => ((b.suv_max || 0) > (a.suv_max || 0) ? b : a), foci[0]);
+    const size = sizeStr(dominant);
+    let s: string;
+    if (foci.length === 1) {
+      s = `${lead}: FDG-avid focus`;
+      if (suvs.length) s += ` with SUVmax ${Math.max(...suvs).toFixed(1)}`;
+      if (size) s += `, ${size}`;
+      if (vols.length) s += ` (metabolic volume ${(vols[0] * 1000).toFixed(0)} mm³)`;
+    } else {
+      s = `${lead}: ${foci.length} FDG-avid foci`;
+      if (suvs.length) s += `, most avid SUVmax ${Math.max(...suvs).toFixed(1)}`;
+      if (size) s += ` (${size})`;
+      if (vols.length) s += `, largest ${(Math.max(...vols) * 1000).toFixed(0)} mm³`;
+    }
+    parts.push(s + ".");
+  }
+  if (physiologic.length) {
+    const sites = Array.from(new Set(physiologic.map((l) => prettifyStructure(l.structure)))).sort();
+    parts.push(
+      `Note: ${physiologic.length} focus/foci localise to ${sites.join(", ")} — ` +
+      "pattern of physiologic / excretory uptake, not reported as disease."
+    );
+  }
+  return parts.length ? parts.join(" ") : "No FDG-avid lesion is seen in this region.";
 }
 
 function buildConclusions(summary: any, lesions: any[]): string[] {
@@ -73,7 +157,7 @@ function buildConclusions(summary: any, lesions: any[]): string[] {
       bullets.push(`Tumor-to-liver ratio (SUVmax/liver SUVmean): ${summary.tumor_to_liver_ratio.toFixed(2)}.`);
     if (summary?.percist_score) bullets.push(`PERCIST status: ${summary.percist_score}.`);
     if (typeof summary?.mtv_total_ml === "number" && typeof summary?.tlg_total === "number")
-      bullets.push(`Total metabolic tumour volume ${summary.mtv_total_ml.toFixed(1)} mL; total lesion glycolysis ${summary.tlg_total.toFixed(1)}.`);
+      bullets.push(`Total metabolic tumour volume ${(summary.mtv_total_ml * 1000).toFixed(0)} mm³; total lesion glycolysis ${summary.tlg_total.toFixed(1)}.`);
   } else {
     bullets.push("No FDG-avid lesion suggestive of metabolically active disease was detected.");
   }
@@ -139,6 +223,14 @@ export function MolecularReport({ study, result }: MolecularReportProps) {
     const sec = REGION_TO_SECTION[l.anatomical_region] || "ABDOMEN / PELVIS";
     (grouped[sec] ||= []).push(l);
   }
+
+  // ai_report (Result.summary.ai_report) holds Gemini's image-read findings,
+  // generated once during the pipeline from the MIP/fused PNGs + this same lesion
+  // list (see tasks.py / pet_ct_narrative_service.py). Falls back per-section to
+  // the deterministic aggregator when absent — mirrors pdf_generator.py exactly.
+  const aiReport = summary.ai_report && typeof summary.ai_report === "object" ? summary.ai_report : null;
+  const aiScanFindings: Record<string, string> = aiReport?.scan_findings || {};
+  const aiConclusions: string[] | null = Array.isArray(aiReport?.conclusions) ? aiReport.conclusions : null;
 
   const lowConfidence = summary.confidence === "low";
   const confidenceReasons: string[] = Array.isArray(summary.confidence_reasons)
@@ -233,8 +325,12 @@ export function MolecularReport({ study, result }: MolecularReportProps) {
 
         <p className="font-bold mt-3 mb-1">SCAN FINDINGS:</p>
         {REPORT_SECTIONS.map(([name, fallback]) => {
-          const secLesions = grouped[name] || [];
-          const text = secLesions.length > 0 ? secLesions.map(lesionSentence).join(" ") : fallback;
+          const aiText = aiScanFindings[REPORT_SECTION_TO_AI_KEY[name]];
+          let text = aiText;
+          if (!text) {
+            const secLesions = grouped[name] || [];
+            text = secLesions.length > 0 ? aggregateSectionFindings(secLesions) : fallback;
+          }
           return (
             <p key={name} className="mb-2 text-justify">
               <span className="font-bold italic">{name}:</span> {text}
@@ -244,10 +340,55 @@ export function MolecularReport({ study, result }: MolecularReportProps) {
 
         <p className="font-bold mt-3 mb-1">CONCLUSIONS:</p>
         <ul className="list-disc pl-8 mb-4 space-y-1">
-          {buildConclusions(summary, lesions).map((b, i) => (
+          {(aiConclusions || buildConclusions(summary, lesions)).map((b, i) => (
             <li key={i}>{b}</li>
           ))}
         </ul>
+
+        {aiReport?.disclaimer && (
+          <p className="mb-4 italic text-gray-700">{aiReport.disclaimer}</p>
+        )}
+
+        {/* Appendix: raw AI-detected foci — printed regardless of whether ai_report
+            is present, so the (AI-based, not ground-truth) detections stay
+            auditable against the prose above. Mirrors pdf_generator.py. */}
+        {lesions.length > 0 && (
+          <>
+            <p className="font-bold mt-3 mb-1">APPENDIX: AI-DETECTED FOCI (for radiologist cross-reference)</p>
+            <table className="w-full text-xs border border-gray-400 mb-4">
+              <thead>
+                <tr className="bg-gray-100">
+                  <th className="border border-gray-400 px-2 py-1 text-left">#</th>
+                  <th className="border border-gray-400 px-2 py-1 text-left">Region</th>
+                  <th className="border border-gray-400 px-2 py-1 text-left">Structure</th>
+                  <th className="border border-gray-400 px-2 py-1 text-left">SUVmax</th>
+                  <th className="border border-gray-400 px-2 py-1 text-left">Vol (mL)</th>
+                  <th className="border border-gray-400 px-2 py-1 text-left">CT (HU)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...lesions]
+                  .sort((a, b) => (a.id ?? 0) - (b.id ?? 0))
+                  .map((le, i) => (
+                    <tr key={i}>
+                      <td className="border border-gray-400 px-2 py-1">{le.id ?? ""}</td>
+                      <td className="border border-gray-400 px-2 py-1">{le.anatomical_region || "—"}</td>
+                      <td className="border border-gray-400 px-2 py-1">{prettifyStructure(le.structure)}</td>
+                      <td className="border border-gray-400 px-2 py-1">
+                        {typeof le.suv_max === "number" ? le.suv_max.toFixed(1) : "—"}
+                      </td>
+                      <td className="border border-gray-400 px-2 py-1">
+                        {typeof le.volume_ml === "number" ? le.volume_ml.toFixed(1) : "—"}
+                      </td>
+                      <td className="border border-gray-400 px-2 py-1">
+                        {typeof le.ct_mean_hu === "number" ? le.ct_mean_hu.toFixed(0) : "—"}
+                      </td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          </>
+        )}
 
         <div className="flex justify-between mt-10 font-bold">
           <span>{REPORT_SIGNATORIES[0]}</span>

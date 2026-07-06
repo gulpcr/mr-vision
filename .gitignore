@@ -27,6 +27,7 @@ docker-compose.override.yml
 backend/app/usecases/*/model/weights/*.pt
 backend/app/usecases/*/model/weights/*.pth
 backend/app/usecases/*/model/weights/*.onnx
+backend/scripts/mammo_finetune/runs/
 
 # Node
 node_modules/
@@ -51,3 +52,6 @@ minio_data/
 #  Dataset
 DICOMS/
 ./DICOMS/*
+backend/scripts/mammo_finetune/data/*
+
+

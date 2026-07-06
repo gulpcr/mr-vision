@@ -66,6 +66,14 @@ dependencies = [
     "shapely>=2.0",
     "pandas>=2.0",
     "tqdm>=4.66",
+    # Mammo-CLIP (external/Mammo-CLIP) — zero-shot structured mammography findings.
+    # EfficientNet-B5 image encoder (timm) + BERT-family text encoder (transformers).
+    # Only loaded when MAMMOGRAPHY_CLIP_ENABLED=true and weights are staged; torch is
+    # installed via the Dockerfile (CPU/CUDA variant).
+    "timm>=0.9",
+    "transformers>=4.40",
+    "einops>=0.7",
+    "omegaconf>=2.3",
 ]
 
 [project.optional-dependencies]

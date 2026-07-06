@@ -2,6 +2,21 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "Mammography Result",
   "type": "object",
+  "$defs": {
+    "breast_findings": {
+      "type": "object",
+      "properties": {
+        "density": { "type": ["string", "null"], "enum": ["a", "b", "c", "d", null] },
+        "mass": { "type": ["string", "null"], "enum": ["none", "present", null] },
+        "calcification": { "type": ["string", "null"], "enum": ["none", "present", null] },
+        "skin_thickening": { "type": ["string", "null"], "enum": ["none", "present", null] },
+        "nipple_retraction": { "type": ["string", "null"], "enum": ["none", "present", null] },
+        "architectural_distortion": { "type": ["string", "null"], "enum": ["none", "present", null] },
+        "axillary_nodes": { "type": ["string", "null"], "enum": ["normal", "abnormal", null] },
+        "source": { "type": "object", "additionalProperties": { "type": "string" } }
+      }
+    }
+  },
   "required": [
     "summary",
     "measurements",
@@ -22,6 +37,14 @@
         "malignancy_probability_right": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
         "density_left": { "type": ["string", "null"] },
         "density_right": { "type": ["string", "null"] },
+        "findings": {
+          "type": "object",
+          "description": "Structured per-breast finding slots (pre-filled from Mammo-CLIP + defaults, radiologist-editable).",
+          "properties": {
+            "right": { "$ref": "#/$defs/breast_findings" },
+            "left": { "$ref": "#/$defs/breast_findings" }
+          }
+        },
         "right_breast_findings": { "type": "string" },
         "left_breast_findings": { "type": "string" },
         "opinion": { "type": "string" },

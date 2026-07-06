@@ -36,18 +36,36 @@ logger = structlog.get_logger(__name__)
 USECASE_DIR = Path(__file__).parent
 CONFIG_PATH = USECASE_DIR / "model" / "inference_config.yaml"
 
+# Checked in this order — FLAIR before T2 so "T2 FLAIR" is not mis-tagged as T2.
+# A T1 match with a contrast marker (see CONTRAST_PATTERNS) is promoted to T1CE.
 SEQUENCE_PATTERNS = {
-    "T1": [
-        r"(?i)\bt1\b", r"(?i)mprage", r"(?i)bravo", r"(?i)t1w",
-        r"(?i)spgr", r"(?i)3d.*t1", r"(?i)t1.*3d",
-    ],
-    "T2": [
-        r"(?i)\bt2\b", r"(?i)t2w", r"(?i)t2.*fse", r"(?i)t2.*tse",
-    ],
     "FLAIR": [
         r"(?i)flair", r"(?i)t2.*flair", r"(?i)dark.*fluid",
     ],
+    "T1": [
+        r"(?i)\bt1\b", r"(?i)mprage", r"(?i)bravo", r"(?i)t1w", r"(?i)t1wi",
+        r"(?i)spgr", r"(?i)3d.*t1", r"(?i)t1.*3d", r"(?i)fspgr", r"(?i)vibe",
+    ],
+    "T2": [
+        r"(?i)\bt2\b", r"(?i)t2w", r"(?i)t2wi", r"(?i)t2.*fse", r"(?i)t2.*tse",
+    ],
 }
+
+# Post-contrast markers — a T1 sequence carrying one of these is treated as T1CE.
+CONTRAST_PATTERNS = [
+    r"(?i)\bc\s*\+", r"(?i)\+\s*c\b", r"(?i)post[\s_-]*contrast",
+    r"(?i)post[\s_-]*gad", r"(?i)\bgad\b", r"(?i)\bgd\b", r"(?i)\+\s*gd",
+    r"(?i)\bce\b", r"(?i)contrast",
+]
+
+# Modalities we classify (display / present-absent order).
+MODALITIES = ["T1", "T1CE", "T2", "FLAIR"]
+
+# The exact channel order the BraTS bundle expects, per its metadata.json
+# channel_def: {0: T1c, 1: T1, 2: T2, 3: FLAIR}. This MUST match the bundle or the
+# model reads each channel as the wrong modality and mis-segments. "T1CE" is our
+# label for the post-contrast (T1c) series.
+BRATS_CHANNEL_ORDER = ["T1CE", "T1", "T2", "FLAIR"]
 
 
 def _download_brats_bundle(bundle_dir: str, max_retries: int = 3) -> Path:
@@ -339,16 +357,9 @@ class Pipeline(BasePipeline):
         qa_flags = []
         qa_details = {}
 
-        if "T1" not in classified and "FLAIR" not in classified:
-            qa_flags.append("missing_sequence")
-            qa_details["missing_sequences"] = [
-                s for s in ["T1", "FLAIR"] if s not in classified
-            ]
-            logger.warning("missing_required_sequences", classified=list(classified.keys()))
-
-        # BraTS model expects 4 channels: T1, T1ce, T2, FLAIR.
-        # Download every classified sequence, then replicate the primary
-        # into any missing channels.
+        # Download every classified sequence. Absent channels are left empty (zeroed
+        # at build time) — we no longer fake a missing modality by copying another,
+        # so the model only ever sees genuine data or explicit absence.
         loop = event_loop or asyncio.get_event_loop()
         nifti_dir = os.path.join(working_dir, "nifti")
         os.makedirs(nifti_dir, exist_ok=True)
@@ -368,7 +379,8 @@ class Pipeline(BasePipeline):
             except Exception as exc:
                 logger.warning("series_download_failed", seq=seq_name, error=str(exc))
 
-        # Fallback: grab the first series if nothing classified
+        # Fallback: if nothing was recognised, treat the first series as T1 so the
+        # study still produces some output (flagged as reduced-confidence below).
         if not downloaded_niftis and series:
             fallback_path = os.path.join(nifti_dir, "FALLBACK.nii.gz")
             loop.run_until_complete(
@@ -378,15 +390,24 @@ class Pipeline(BasePipeline):
                     fallback_path,
                 )
             )
-            downloaded_niftis["FALLBACK"] = fallback_path
-            qa_flags.append("missing_sequence")
+            downloaded_niftis["T1"] = fallback_path
             qa_details["fallback_series"] = series[0].series_description
 
         if not downloaded_niftis:
             raise ValueError("No series could be downloaded for processing")
 
+        # Which of the 4 modalities we actually have vs. must zero.
+        modalities_present = [m for m in MODALITIES if m in downloaded_niftis]
+        modalities_absent = [m for m in MODALITIES if m not in downloaded_niftis]
+        if modalities_absent:
+            qa_flags.append("missing_sequence")
+            qa_details["missing_sequences"] = modalities_absent
+            logger.warning(
+                "reduced_modalities", present=modalities_present, absent=modalities_absent
+            )
+
         # QA on the first available volume
-        first_nifti = next(iter(downloaded_niftis.values()))
+        first_nifti = downloaded_niftis[modalities_present[0]]
         spacing_qa = self._check_spacing(first_nifti)
         qa_flags.extend(spacing_qa.get("flags", []))
         qa_details.update(spacing_qa.get("details", {}))
@@ -395,23 +416,14 @@ class Pipeline(BasePipeline):
         qa_flags.extend(motion_qa.get("flags", []))
         qa_details.update(motion_qa.get("details", {}))
 
-        # Determine best available sequence for each BraTS channel
-        primary_seq = next(
-            (p for p in ["T1", "FLAIR", "T2", "FALLBACK"] if p in downloaded_niftis),
-            next(iter(downloaded_niftis)),
-        )
-        channel_order = ["T1", "T1", "T2", "FLAIR"]  # T1ce ≈ T1 for non-contrast
-        channel_paths = []
-        sequences_used = []
-        for ch_name in channel_order:
-            if ch_name in downloaded_niftis:
-                channel_paths.append(downloaded_niftis[ch_name])
-                sequences_used.append(ch_name)
-            else:
-                channel_paths.append(downloaded_niftis[primary_seq])
-                sequences_used.append(f"{primary_seq}(as_{ch_name})")
+        # One entry per BraTS channel IN THE ORDER THE MODEL EXPECTS
+        # (BRATS_CHANNEL_ORDER): real path if present, else None (→ zeroed).
+        channel_paths = [downloaded_niftis.get(m) for m in BRATS_CHANNEL_ORDER]
+        sequences_used = [
+            m if downloaded_niftis.get(m) else "absent" for m in BRATS_CHANNEL_ORDER
+        ]
 
-        # Build 4-channel NIfTI
+        # Build 4-channel NIfTI (absent channels become zero volumes)
         preprocessed_dir = os.path.join(working_dir, "preprocessed")
         os.makedirs(preprocessed_dir, exist_ok=True)
         multichannel_path = os.path.join(preprocessed_dir, "input_4ch.nii.gz")
@@ -419,15 +431,17 @@ class Pipeline(BasePipeline):
 
         logger.info(
             "brain_mri_preprocess_complete",
-            sequences_used=sequences_used,
+            modalities_present=modalities_present,
+            modalities_absent=modalities_absent,
             qa_flags=qa_flags,
         )
 
         return {
             "input_path": multichannel_path,
             "original_nifti_path": first_nifti,
-            "primary_sequence": primary_seq,
             "sequences_used": sequences_used,
+            "modalities_present": modalities_present,
+            "modalities_absent": modalities_absent,
             "classified_sequences": {k: v.series_instance_uid for k, v in classified.items()},
             "qa_flags": qa_flags,
             "qa_details": qa_details,
@@ -617,6 +631,8 @@ class Pipeline(BasePipeline):
                     str(k): v for k, v in label_map.items() if int(k) != 0
                 },
                 "sequences_used": inference_output.get("sequences_used", []),
+                "modalities_present": inference_output.get("modalities_present", []),
+                "modalities_absent": inference_output.get("modalities_absent", []),
                 "inference_method": inference_output.get("inference_method", "unknown"),
                 "signal_profile": signal_profile,
                 **lesion_geometry,
@@ -759,21 +775,29 @@ class Pipeline(BasePipeline):
         brain &= head  # never extend beyond the head boundary
         return brain.astype(np.float32)
 
-    def _build_multichannel_input(self, channel_paths: list[str], output_path: str):
-        """Stack 4 NIfTI volumes into a single 4-channel NIfTI for BraTS input.
+    def _build_multichannel_input(self, channel_paths: list[str | None], output_path: str):
+        """Stack the 4 BraTS channels into a single 4-channel NIfTI.
 
-        Each channel is resampled to the same grid, skull-stripped (optional),
-        and z-score normalized.
+        ``channel_paths`` has one entry per channel (T1, T1CE, T2, FLAIR); a None
+        entry means that modality is absent and is written as an all-zero channel
+        (no faking by copying another sequence). Present channels are resampled to
+        a common grid, skull-stripped (optional), and z-score normalized.
         """
         target_spacing = self._config["preprocessing"]["target_spacing"]
         # BraTS is trained on skull-stripped brains; stripping the skull/scalp brings
         # our input in-distribution and stops the model labelling bright bone/scalp as
         # tumour. Disable via inference_config preprocessing.skull_strip: false.
         skull_strip = self._config["preprocessing"].get("skull_strip", True)
-        ref_img = sitk.ReadImage(channel_paths[0])
+        ref_path = next((p for p in channel_paths if p), None)
+        if ref_path is None:
+            raise ValueError("No present channels to build the multichannel input")
+        ref_img = sitk.ReadImage(ref_path)
 
-        channels = []
+        channels: list[np.ndarray | None] = []
         for path in channel_paths:
+            if path is None:
+                channels.append(None)  # absent — filled with zeros below
+                continue
             img = sitk.ReadImage(path)
             original_spacing = img.GetSpacing()
             original_size = img.GetSize()
@@ -805,8 +829,13 @@ class Pipeline(BasePipeline):
                     arr[~nonzero_mask] = 0
             channels.append(arr)
 
-        min_shape = np.min([ch.shape for ch in channels], axis=0)
-        cropped = [ch[tuple(slice(0, s) for s in min_shape)] for ch in channels]
+        present = [c for c in channels if c is not None]
+        min_shape = tuple(int(x) for x in np.min([c.shape for c in present], axis=0))
+        cropped = [
+            (c[tuple(slice(0, s) for s in min_shape)] if c is not None
+             else np.zeros(min_shape, dtype=np.float32))
+            for c in channels
+        ]
         stacked = np.stack(cropped, axis=-1)  # (D, H, W, 4)
 
         direction = np.array(ref_img.GetDirection()).reshape(3, 3)
@@ -817,13 +846,30 @@ class Pipeline(BasePipeline):
         affine[:3, 3] = origin
 
         nib_img = nib.Nifti1Image(stacked, affine=affine)
+        # BraTS models are trained on canonically-oriented (RAS) brains. Enforce it on
+        # the model input so anatomy is presented the way the model learned it — the
+        # config declares orientation: RAS but resampling above preserves each series'
+        # native orientation. Reorients the spatial axes only; the channel axis is kept.
+        if self._config["preprocessing"].get("orientation", "RAS").upper() == "RAS":
+            nib_img = nib.as_closest_canonical(nib_img)
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         nib.save(nib_img, output_path)
 
-        logger.info("multichannel_input_built", shape=list(stacked.shape))
+        logger.info(
+            "multichannel_input_built",
+            shape=list(nib_img.shape),
+            axcodes="".join(nib.aff2axcodes(nib_img.affine)),
+        )
 
     def _classify_sequences(self, series: list[Series]) -> dict[str, Series]:
-        classified = {}
+        """Map each series to a BraTS channel (T1 / T1CE / T2 / FLAIR).
+
+        Patterns are checked in SEQUENCE_PATTERNS order (FLAIR before T2), and a
+        T1 match carrying a contrast marker is promoted to T1CE — so a study's
+        post-contrast T1 fills the enhancing channel instead of being discarded.
+        First match per channel wins.
+        """
+        classified: dict[str, Series] = {}
         for s in series:
             desc = (s.series_description or "").strip()
             protocol = (s.protocol_name or "").strip() if hasattr(s, "protocol_name") else ""
@@ -831,14 +877,20 @@ class Pipeline(BasePipeline):
             tags = s.dicom_tags or {}
             inversion_time = tags.get("InversionTime")
 
+            matched = None
             for seq_name, patterns in SEQUENCE_PATTERNS.items():
-                if seq_name in classified:
-                    continue
-                for pat in patterns:
-                    if re.search(pat, combined):
-                        classified[seq_name] = s
-                        break
+                if any(re.search(pat, combined) for pat in patterns):
+                    matched = seq_name
+                    break
 
+            # Promote contrast-enhanced T1 to the T1CE channel.
+            if matched == "T1" and any(re.search(p, combined) for p in CONTRAST_PATTERNS):
+                matched = "T1CE"
+
+            if matched and matched not in classified:
+                classified[matched] = s
+
+            # FLAIR often identifiable by a long inversion time even if unnamed.
             if "FLAIR" not in classified and inversion_time:
                 try:
                     if float(inversion_time) > 1500:
@@ -1042,8 +1094,9 @@ class Pipeline(BasePipeline):
 
         The 4-channel input is z-score normalised (brain mean ≈ 0, std ≈ 1), so the
         mean intensity inside the lesion mask, measured in std units, gives signal
-        relative to surrounding brain parenchyma. Channels that were replicated as a
-        fallback (e.g. "T1(as_T2)") are skipped — that signal is not the real modality.
+        relative to surrounding brain parenchyma. Only genuinely-present channels
+        are described; absent (zeroed) channels are skipped. A hyperintense T1CE
+        (post-contrast) reading indicates enhancement.
         """
         if not input_path or not os.path.exists(input_path):
             return {}
@@ -1058,16 +1111,15 @@ class Pipeline(BasePipeline):
         sh = tuple(min(a, b) for a, b in zip(mask.shape, img.shape[:3]))
         m = mask[: sh[0], : sh[1], : sh[2]]
 
-        intended = ["T1", "T1ce", "T2", "FLAIR"]
+        # Channel idx → modality, matching the order the input was built in.
+        intended = BRATS_CHANNEL_ORDER
         profile: dict[str, str] = {}
         n = min(img.shape[3], len(sequences_used), len(intended))
         for idx in range(n):
             used = sequences_used[idx]
-            if "(as_" in used:  # replicated fallback — not the genuine modality
+            if used == "absent" or "(as_" in used:  # zeroed / not a genuine modality
                 continue
             modality = intended[idx]
-            if modality == "T1ce":  # duplicate of T1 channel for non-contrast input
-                continue
             chan = img[: sh[0], : sh[1], : sh[2], idx]
             vals = chan[m]
             if vals.size < 10:

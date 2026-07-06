@@ -9,49 +9,6 @@ model:
   feature_size: 48         # SwinUNETR hidden feature size (24/36/48/96)
   use_checkpoint: false    # gradient checkpointing (saves VRAM, slower training)
 
-  # ── AutoPET3 (nnU-Net v2) lesion segmentation ────────────────────────────────
-  # The AutoPET3 challenge-winning models are nnU-Net (NOT SwinUNETR), so they
-  # load through the nnU-Net predictor — NOT via custom_pet_weights_path above
-  # (a SwinUNETR loader). Point custom_pet_nnunet_dir at an nnU-Netv2 trained-
-  # model folder (the directory containing dataset.json, plans.json, and
-  # fold_*/checkpoint_final.pth). When set AND nnunetv2 is installed it takes
-  # precedence over the PERCIST threshold; on ANY failure the pipeline falls back
-  # to PERCIST so existing quantification never regresses.
-  # IMPORTANT: requires on-site validation — nnunet_channel_order and the spacing
-  # orientation must match the specific AutoPET3 export before clinical use.
-  custom_pet_nnunet_dir: null
-  nnunet_folds: [0]
-  nnunet_checkpoint: checkpoint_final.pth
-  # AutoPET input convention: channel 0000 = CT, 0001 = PET (SUV).
-  nnunet_channel_order: [ct, pet]
-
-  # ── AutoPET3 winning model (Team LesionTracer) — isolated subprocess ─────────
-  # The AutoPET3 model is a customised nnU-Net FORK (backend/external/autopet3)
-  # with a bespoke `autoPET3_Trainer` + ResEncL plans. Its checkpoint can only be
-  # loaded by THAT fork, which conflicts with the pip `nnunetv2` TotalSegmentator
-  # uses — so it is run OUT-OF-PROCESS via scripts/run_autopet3_predict.py, which
-  # prepends the fork to sys.path. This tier takes precedence over the in-process
-  # custom_pet_nnunet_dir tier above; on any failure both fall back to PERCIST.
-  #
-  # Setup: (1) download the 5-fold checkpoint (Zenodo 14007247) — see
-  # scripts/download_autopet3_weights.py — into a MODEL_FOLDER with fold_X subdirs;
-  # (2) set model_dir below and enabled: true; (3) for dependency isolation,
-  # point python_executable at a venv that has `pip install -e external/autopet3`
-  # (leave null to reuse the worker interpreter with the fork on sys.path).
-  autopet3:
-    enabled: true
-    # Download target (Zenodo 14007247 → autoPET-3-LesionTracer.zip, ~3.8 GB).
-    # May point at the parent dir; the pipeline auto-descends to the folder that
-    # actually contains fold_0 ... fold_4. When the weights are absent the tier
-    # is skipped and detection falls back to PERCIST — so enabling is safe.
-    model_dir: /model_cache/autopet3
-    fork_path: null              # defaults to <backend>/external/autopet3
-    python_executable: null      # null → current interpreter; else isolated venv python
-    folds: [0, 1, 2, 3, 4]
-    checkpoint_name: checkpoint_final.pth
-    lesion_label: 1              # output label treated as lesion (autoPET lesion task = 1)
-    timeout_sec: 3600
-
 inference:
   device: auto             # "cuda" | "cpu" | "auto" (prefer CUDA if available)
   # Sliding-window inference params (match training roi_size)
@@ -73,12 +30,12 @@ inference:
   #   "absolute"   — fixed suv_threshold_absolute (e.g. SUV 2.5) for every case.
   # Falls back to suv_threshold_absolute when no liver reference is available.
   calibrated_threshold_source: liver_mean   # "liver_mean" | "absolute"
-  calibrated_liver_factor: 1.0              # detection threshold = factor * liver SUVmean
+  calibrated_liver_factor: 1.5              # detection threshold = factor * liver SUVmean
   # Tumor-positive/negative call cutoff when calibrated_threshold_source is
   # "liver_mean": a focus is called positive when SUVmax > factor * liver SUVmean.
   # Raise above calibrated_liver_factor to make the positive call stricter than
   # detection (e.g. detect at 1.0x liver, call positive only above 1.5x liver).
-  diagnosis_liver_factor: 1.0
+  diagnosis_liver_factor: 1.5
   # Reference SUV regions (liver / aortic blood pool) via TotalSegmentator instead
   # of the HU-box heuristic, which averages generic soft tissue and under-reads the
   # liver. Falls back to the heuristic per-organ if segmentation is unavailable.
@@ -89,15 +46,78 @@ inference:
   # large fraction of the body. In that case detection switches to the
   # liver-relative PERCIST threshold and the result is flagged non-quantitative.
   uncalibrated_use_relative_threshold: true
-  min_lesion_volume_ml: 1.2
+  min_lesion_volume_ml: 2.0
   # Upper sanity bound: a single connected focus larger than max_lesion_volume_ml
   # OR larger than max_lesion_volume_fraction of the whole imaged volume is not a
   # plausible lesion — it means the suppression stages failed to break up diffuse
   # uptake (typical of uncalibrated data with no CT). Such foci are dropped and a
   # QA flag is raised rather than reported as a giant "tumour".
-  max_lesion_volume_ml: 2000.0
+  max_lesion_volume_ml: 500.0
   max_lesion_volume_fraction: 0.10
   suv_peak_sphere_radius_mm: 6.204
+
+  # Name each detected focus by the anatomical structure it occupies (reuses
+  # TotalSegmentator) so the report reads "FDG-avid focus in the liver" instead of
+  # a coarse "Upper Abdomen", and foci in physiologic/excretory structures
+  # (kidney/bladder) are flagged. Best-effort: falls back to the Z-region label
+  # when no co-registered CT is available. Adds one segmentation pass.
+  # Anatomic lesion size from the original CT: PET-seeded, bounded region-grow
+  # around each focus → longest/short diameter (cm). Falls back to the metabolic
+  # extent (SUV grid) when the CT boundary is not trustworthy (non-soft-tissue
+  # seed, leak, or the segment reaches the ROI border). An estimate, not a
+  # validated tumour segmenter — dimensions are labelled by source in the report.
+  ct_lesion_measurement:
+    enabled: true
+    roi_margin_mm: 20.0     # bounded ROI around the focus (keeps region-grow local)
+    hu_tolerance: 40.0      # grow within seed HU ± this (soft-tissue homogeneity)
+    min_seed_hu: -50.0      # skip air/lung-density foci (region-grow meaningless)
+    max_seed_hu: 150.0      # skip bone/calcium-dominant foci
+    max_roi_fill_frac: 0.6  # reject if the grown segment fills >60% of the ROI (leak)
+    max_leak_factor: 20.0   # loose backstop: reject if grown volume > 20× metabolic
+    min_seg_voxels: 8       # reject specks; a segment spanning the full ROI = leak
+
+  structure_labeling:
+    enabled: true
+    # Use TotalSegmentator's 3 mm model (--fast): ~5-10x faster than the default
+    # 1.5 mm model (which dominates pipeline runtime at ~7-8 min). The coarser masks
+    # are more than adequate here — reference-organ ROIs are eroded, the exclusion
+    # mask is dilated, and lesion naming only needs the containing structure.
+    fast: true
+    # Extra (free, Apache-2.0) TotalSegmentator tasks merged into the naming map
+    # for anatomy the `total` task lacks. Each extra task's labels are painted ONLY
+    # where `total` found background (see _segment_structures_multilabel), so only
+    # tasks covering anatomy `total` does NOT segment add value — a task that
+    # overlaps an organ `total` already labels (e.g. lung_vessels / lung_nodules,
+    # which sit inside the already-labeled lung lobes) is a no-op here and only
+    # costs one extra native-resolution segmentation pass per run. Do NOT add
+    # `body`: it would paint every unlabeled soft-tissue voxel as a generic "body"
+    # label, which is worse than the Z-region "soft-tissue site" fallback.
+    #   breasts                    — breast tissue (absent from `total`)
+    #   pleural_pericard_effusion  — pleural/pericardial fluid (background in
+    #                                `total`); malignant effusions can be FDG-avid
+    #   hip_implant                — metal implants (absent from `total`); flags
+    #                                implant-related uptake
+    #   head_glands_cavities       — parotid/submandibular glands, nasal cavity,
+    #                                naso/oro/hypopharynx, soft/hard palate (absent
+    #                                from `total`). Without this, physiologic
+    #                                salivary-gland and nasal-mucosa uptake — a
+    #                                classic false-positive source — surfaces as an
+    #                                unexplained "Brain"/"Head/Neck" Z-region focus
+    #                                with no organ name; this names it so the
+    #                                report reads "parotid_gland_left" instead.
+    # Empty list to skip. Note each task listed here adds one segmentation pass.
+    extra_tasks:
+      - breasts
+      - pleural_pericard_effusion
+      - hip_implant
+      - head_glands_cavities
+    # Minimum fraction of a focus that must lie inside one segmented organ before
+    # the focus is named after it. Tumour tissue is not itself segmented, so a mass
+    # in unlabeled space that only clips an organ edge would otherwise be mislabeled
+    # by that minority overlap (e.g. a retroperitoneal mass tagged "iliopsoas" from
+    # an ~11% psoas clip). Below this, the focus is reported by region as a
+    # "soft-tissue site" instead of a specific organ.
+    min_organ_coverage: 0.5
 
   # ── Physiologic FDG suppression (reduces false positives from normal uptake) ──
   # Anatomy-aware: segments organs on the co-registered CT with TotalSegmentator
@@ -109,7 +129,7 @@ inference:
     enabled: true
     totalseg_task: total
     totalseg_weights_dir: /model_cache/totalsegmentator
-    dilate_voxels: 1
+    dilate_voxels: 2
     # Organs whose physiologic / excretory FDG uptake is excluded from detection.
     # Conservative default (high-uptake, low primary-tumour-risk sites). Add
     # liver / spleen / stomach / small_bowel / colon if bowel or hepatic false

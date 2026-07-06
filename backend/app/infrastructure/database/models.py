@@ -477,6 +477,25 @@ class MammographyReportRecord(Base):
     # BI-RADS 0-6 per breast (stored as string; CHECK-constrained in the migration).
     birads_right = Column(String(8), nullable=True)
     birads_left = Column(String(8), nullable=True)
+    # Structured per-breast finding slots. Pre-filled from the AI result (Mammo-CLIP
+    # density + mass/calcification presence; radiologist-only slots default to their
+    # negative) and editable by the radiologist. The free-text *_breast_findings above
+    # are the narrative rendered FROM these slots. CHECK-constrained in migration 024:
+    #   density in {a,b,c,d}; presence slots in {none, present}; nodes in {normal, abnormal}.
+    density_right = Column(String(1), nullable=True)
+    density_left = Column(String(1), nullable=True)
+    mass_right = Column(String(16), nullable=True)
+    mass_left = Column(String(16), nullable=True)
+    calcification_right = Column(String(16), nullable=True)
+    calcification_left = Column(String(16), nullable=True)
+    skin_thickening_right = Column(String(16), nullable=True)
+    skin_thickening_left = Column(String(16), nullable=True)
+    nipple_retraction_right = Column(String(16), nullable=True)
+    nipple_retraction_left = Column(String(16), nullable=True)
+    architectural_distortion_right = Column(String(16), nullable=True)
+    architectural_distortion_left = Column(String(16), nullable=True)
+    axillary_nodes_right = Column(String(32), nullable=True)
+    axillary_nodes_left = Column(String(32), nullable=True)
     reviewing_doctor = Column(String(256), nullable=True)
     reporting_doctor = Column(String(256), nullable=True)
     created_by = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)

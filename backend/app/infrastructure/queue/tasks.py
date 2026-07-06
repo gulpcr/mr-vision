@@ -530,6 +530,98 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
                 except Exception as exc:
                     logger.warning("longitudinal_failed", job_id=job_id, error=str(exc))
 
+            # ── Mammography structured-findings narrative ─────────────────────
+            # Render the per-breast findings/opinion FROM the structured slots. Runs
+            # for mammography regardless of llm_enabled (deterministic template); Gemini
+            # only polishes the wording when enabled. Never invents a finding.
+            if usecase_name == "mammography":
+                try:
+                    from app.application.mammography_narrative_service import (
+                        MammographyNarrativeService,
+                    )
+
+                    narr_client = None
+                    if settings.llm_enabled and settings.gemini_api_key:
+                        from app.infrastructure.llm.gemini_client import GeminiClient
+
+                        narr_client = GeminiClient(
+                            api_key=settings.gemini_api_key,
+                            model_name=settings.gemini_model,
+                        )
+                    narr_summary = postprocessed.get("summary", {})
+                    narrative = loop.run_until_complete(
+                        MammographyNarrativeService(narr_client).generate(
+                            findings=narr_summary.get("findings", {}) or {},
+                            laterality=narr_summary.get("laterality", "bilateral"),
+                            birads_right=narr_summary.get("birads_right"),
+                            birads_left=narr_summary.get("birads_left"),
+                        )
+                    )
+                    postprocessed.setdefault("summary", {})
+                    for key, value in narrative.items():
+                        if value is not None:
+                            postprocessed["summary"][key] = value
+                    logger.info("mammography_narrative_stored", job_id=job_id)
+                except Exception as exc:
+                    logger.warning("mammography_narrative_failed", job_id=job_id, error=str(exc))
+
+            # ── PET-CT AI-authored report findings ────────────────────────────
+            # Gemini reads the MIP/fused PNGs (still on local disk at this point — the
+            # artifact-upload loop below hasn't run yet) together with the computed
+            # lesion list and writes SCAN FINDINGS/CONCLUSIONS for the PDF report.
+            # Generated once here and cached in summary["ai_report"] so every PDF
+            # download reuses identical wording rather than re-querying Gemini.
+            if usecase_name == "pet_ct" and settings.petct_ai_report_enabled and settings.gemini_api_key:
+                try:
+                    _update_job_status(
+                        session, job_id, JobStatus.POSTPROCESSING, progress=0.84,
+                        message="Generating AI radiology findings",
+                    )
+                    from app.application.pet_ct_narrative_service import PetCtNarrativeService
+                    from app.infrastructure.llm.gemini_client import GeminiClient
+
+                    _NARRATIVE_IMAGE_NAMES = {
+                        "mip_axial.png", "mip_coronal.png", "mip_sagittal.png",
+                        "fused_axial.png", "fused_coronal.png", "fused_sagittal.png",
+                    }
+                    images: dict[str, bytes] = {}
+                    for artifact in postprocessed.get("artifacts", []):
+                        if artifact.get("name") in _NARRATIVE_IMAGE_NAMES:
+                            with open(artifact["local_path"], "rb") as f:
+                                images[artifact["name"]] = f.read()
+
+                    # Same referring context a radiologist would have on hand — most
+                    # studies in this pipeline have neither field filled in, so the
+                    # prompt is designed to reason soundly without it (see
+                    # pet_ct_narrative_service.py's primary-tumor inference instruction).
+                    from app.infrastructure.database.models import OrderRecord
+
+                    order = (
+                        session.query(OrderRecord)
+                        .filter(OrderRecord.study_instance_uid == study_instance_uid)
+                        .first()
+                    )
+
+                    narr_client = GeminiClient(
+                        api_key=settings.gemini_api_key,
+                        model_name=settings.gemini_model,
+                    )
+                    ai_report = loop.run_until_complete(
+                        PetCtNarrativeService(narr_client).generate(
+                            summary=postprocessed.get("summary", {}),
+                            measurements=postprocessed.get("measurements", {}),
+                            images=images,
+                            clinical_indication=order.indication if order else None,
+                            clinical_history=order.clinical_history if order else None,
+                        )
+                    )
+                    if ai_report:
+                        postprocessed.setdefault("summary", {})
+                        postprocessed["summary"]["ai_report"] = ai_report
+                        logger.info("petct_ai_report_stored", job_id=job_id, images_sent=len(images))
+                except Exception as exc:
+                    logger.warning("petct_ai_report_failed", job_id=job_id, error=str(exc))
+
             _update_job_status(
                 session, job_id, JobStatus.POSTPROCESSING, progress=0.85,
                 message="Storing artifacts",
