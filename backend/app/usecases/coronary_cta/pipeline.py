@@ -257,6 +257,193 @@ def _generate_calcium_overlay_pngs(
     return artifacts
 
 
+def _generate_stenosis_crop_pngs(
+    ccta_hu: np.ndarray,
+    segments: list[dict],
+    voxel_spacing_mm: tuple[float, float, float],
+    output_dir: str,
+    cfg: dict,
+) -> list[dict]:
+    """Render a tight axial crop of the contrast CCTA at each of the top-N
+    worst-stenosis vessels' minimal-lumen-diameter point (``min_diameter_voxel``
+    from ``_vessel_stenosis``). ``segments`` is already sorted worst-first by
+    ``_grade_lumen_mask``. Windowed for contrast-enhanced lumen (wider/brighter
+    than the non-contrast calcium window used by ``_generate_calcium_overlay_pngs``).
+    """
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        logger.warning("matplotlib_not_available_skipping_stenosis_crop")
+        return []
+
+    os.makedirs(output_dir, exist_ok=True)
+    wc = cfg.get("hu_window_center_cta", 300)
+    ww = cfg.get("hu_window_width_cta", 800)
+    vmin, vmax = wc - ww / 2.0, wc + ww / 2.0
+    half_width_mm = float(cfg.get("stenosis_crop_half_width_mm", 40.0))
+    top_n = int(cfg.get("stenosis_crop_top_n_vessels", 3))
+
+    sx, sy, _sz = voxel_spacing_mm
+    half_w_vox = max(4, int(round(half_width_mm / max(sx, 0.1))))
+    half_h_vox = max(4, int(round(half_width_mm / max(sy, 0.1))))
+    shape = ccta_hu.shape
+
+    candidates = [s for s in segments if s.get("min_diameter_voxel")][:top_n]
+
+    artifacts: list[dict] = []
+    for rank, seg in enumerate(candidates):
+        try:
+            cx, cy, cz = seg["min_diameter_voxel"]
+            x0, x1 = max(0, cx - half_w_vox), min(shape[0], cx + half_w_vox)
+            y0, y1 = max(0, cy - half_h_vox), min(shape[1], cy + half_h_vox)
+            z = int(np.clip(cz, 0, shape[2] - 1))
+            crop = ccta_hu[x0:x1, y0:y1, z].T
+            fig, ax = plt.subplots(figsize=(5, 5), facecolor="black")
+            ax.imshow(crop, cmap="gray", vmin=vmin, vmax=vmax, origin="lower")
+            ax.axis("off")
+            label = seg.get("name", f"Vessel {rank + 1}")
+            pct = seg.get("stenosis_pct")
+            title = f"{label} - {pct:.0f}% stenosis" if pct is not None else label
+            ax.set_title(title, color="white", fontsize=9, pad=4)
+            png_path = os.path.join(output_dir, f"stenosis_crop_{rank}.png")
+            fig.savefig(png_path, dpi=120, bbox_inches="tight", facecolor="black")
+            plt.close(fig)
+            artifacts.append({
+                "name": f"stenosis_crop_{rank}.png",
+                "artifact_type": "stenosis_crop_png",
+                "local_path": png_path,
+                "content_type": "image/png",
+            })
+        except Exception as exc:
+            logger.error("stenosis_crop_failed", rank=rank, error=str(exc))
+            try:
+                plt.close("all")
+            except Exception:
+                pass
+    return artifacts
+
+
+def _classify_plaque(
+    hu_arr: np.ndarray,
+    vessel_mask: np.ndarray,
+    center_voxel: tuple[int, int, int],
+    voxel_spacing_mm: tuple[float, float, float],
+    cfg: dict,
+) -> str | None:
+    """Deterministic HU-threshold plaque-composition heuristic (calcified vs.
+    non-calcified/soft), sampled from the vessel-wall shell (dilated lumen minus
+    the lumen itself) near ``center_voxel`` on the contrast CCTA.
+
+    NOT a learned classifier — no validated open-source plaque-characterization
+    model exists to drop in here; this mirrors Agatston's own HU-thresholding
+    philosophy instead. Contrast-opacified lumen commonly reads ~300-450 HU,
+    overlapping naive calcification cutoffs, hence the wide indeterminate band
+    between ``soft_plaque_max_hu`` and ``calcified_plaque_min_hu`` rather than a
+    single threshold. Returns "calcified", "non_calcified", "mixed",
+    "indeterminate", or None when no wall-shell voxels are found nearby.
+    """
+    dilate_mm = float(cfg.get("wall_dilate_mm", 1.5))
+    radius_mm = float(cfg.get("sample_radius_mm", 5.0))
+    soft_max = float(cfg.get("soft_plaque_max_hu", 150.0))
+    calc_min = float(cfg.get("calcified_plaque_min_hu", 350.0))
+
+    sx, sy, sz = voxel_spacing_mm
+    dilate_iters = max(1, int(round(dilate_mm / max(min(sx, sy), 0.1))))
+    dilated = ndimage.binary_dilation(vessel_mask, iterations=dilate_iters)
+    wall_shell = dilated & ~vessel_mask
+
+    cx, cy, cz = center_voxel
+    rx = max(1, int(round(radius_mm / max(sx, 0.1))))
+    ry = max(1, int(round(radius_mm / max(sy, 0.1))))
+    rz = max(1, int(round(radius_mm / max(sz, 0.1))))
+    shape = hu_arr.shape
+    x0, x1 = max(0, cx - rx), min(shape[0], cx + rx + 1)
+    y0, y1 = max(0, cy - ry), min(shape[1], cy + ry + 1)
+    z0, z1 = max(0, cz - rz), min(shape[2], cz + rz + 1)
+
+    local_shell = wall_shell[x0:x1, y0:y1, z0:z1]
+    if not local_shell.any():
+        return None
+    local_hu = hu_arr[x0:x1, y0:y1, z0:z1][local_shell]
+
+    has_calcified = bool(np.any(local_hu >= calc_min))
+    has_soft = bool(np.any(local_hu <= soft_max))
+    if has_calcified and has_soft:
+        return "mixed"
+    if has_calcified:
+        return "calcified"
+    if has_soft:
+        return "non_calcified"
+    return "indeterminate"
+
+
+def _assign_vessel_territory(
+    vessel_mask: np.ndarray,
+    centerline_length_mm: float,
+    chambers: dict[str, np.ndarray],
+    voxel_spacing_mm: tuple[float, float, float],
+    cfg: dict,
+) -> tuple[str, float]:
+    """Geometric-only vessel-territory heuristic (LM / LAD / LCx / RCA).
+
+    NOT a learned or centerline-registered coronary-tree labeller — see the
+    ``vessel_territory`` config block's docstring in inference_config.yaml. A
+    vessel running along the boundary between two adjacent cardiac chambers is
+    assumed to belong to the territory that groove conventionally carries
+    (interventricular groove -> LAD, left AV groove -> LCx, right AV groove ->
+    RCA); a short, ostium-adjacent left-sided vessel is called LM. Returns the
+    highest-scoring label with its confidence (groove-voxel vote fraction), or
+    ("unassigned", score) when no candidate clears ``min_confidence``.
+    """
+    groove_mm = float(cfg.get("groove_proximity_mm", 6.0))
+    ostium_mm = float(cfg.get("ostium_proximity_mm", 15.0))
+    lm_max_length_mm = float(cfg.get("lm_max_length_mm", 25.0))
+    min_confidence = float(cfg.get("min_confidence", 0.55))
+
+    in_plane_spacing = max(float(np.mean(voxel_spacing_mm)), 0.1)
+    groove_iters = max(1, int(round(groove_mm / in_plane_spacing)))
+    ostium_iters = max(1, int(round(ostium_mm / in_plane_spacing)))
+
+    lv, rv = chambers["lv"], chambers["rv"]
+    la, ra = chambers["la"], chambers["ra"]
+    aorta = chambers["aorta"]
+
+    def _groove(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+        a_d = ndimage.binary_dilation(a, iterations=groove_iters)
+        b_d = ndimage.binary_dilation(b, iterations=groove_iters)
+        return a_d & b_d
+
+    iv_groove = _groove(lv, rv)         # anterior interventricular groove -> LAD
+    left_av_groove = _groove(la, lv)    # left atrioventricular groove -> LCx
+    right_av_groove = _groove(ra, rv)   # right atrioventricular groove -> RCA
+    ostial_zone = ndimage.binary_dilation(aorta, iterations=ostium_iters)
+
+    n_voxels = int(vessel_mask.sum())
+    if n_voxels == 0:
+        return "unassigned", 0.0
+
+    scores = {
+        "LAD": float((vessel_mask & iv_groove).sum()) / n_voxels,
+        "LCx": float((vessel_mask & left_av_groove).sum()) / n_voxels,
+        "RCA": float((vessel_mask & right_av_groove).sum()) / n_voxels,
+    }
+    ostial_fraction = float((vessel_mask & ostial_zone).sum()) / n_voxels
+    left_score = scores["LAD"] + scores["LCx"]
+    if (
+        ostial_fraction >= min_confidence
+        and centerline_length_mm <= lm_max_length_mm
+        and left_score > scores["RCA"]
+    ):
+        scores["LM"] = ostial_fraction
+
+    label, score = max(scores.items(), key=lambda kv: kv[1])
+    if score < min_confidence:
+        return "unassigned", round(score, 2)
+    return label, round(score, 2)
+
+
 # ── Pipeline ──────────────────────────────────────────────────────────────────
 
 class Pipeline(BasePipeline):
@@ -389,6 +576,8 @@ class Pipeline(BasePipeline):
         vessel_mask: np.ndarray,
         voxel_spacing_mm: tuple[float, float, float],
         scfg: dict,
+        hu_arr: np.ndarray | None = None,
+        plaque_cfg: dict | None = None,
     ) -> dict[str, Any] | None:
         """Quantify diameter stenosis for a single connected lumen component.
 
@@ -437,8 +626,9 @@ class Pipeline(BasePipeline):
         if coords.shape[0] < min_vox:
             return None
 
-        diameters = 2.0 * dt[coords[:, 0], coords[:, 1], coords[:, 2]]
-        diameters = diameters[diameters > 0]
+        diameters_raw = 2.0 * dt[coords[:, 0], coords[:, 1], coords[:, 2]]
+        valid_mask = diameters_raw > 0
+        diameters = diameters_raw[valid_mask]
         if diameters.size < min_vox:
             return None
 
@@ -448,6 +638,23 @@ class Pipeline(BasePipeline):
         d_min = float(np.percentile(diameters, min_pct))
         stenosis_pct = max(0.0, min(100.0, (d_ref - d_min) / d_ref * 100.0))
 
+        # Voxel whose local diameter is closest to the reported minimal lumen
+        # diameter (not the single noisiest dip) — anchors the per-vessel
+        # stenosis crop image at a representative narrowing.
+        valid_coords = coords[valid_mask]
+        min_voxel_idx = int(np.argmin(np.abs(diameters - d_min)))
+        min_diameter_voxel = tuple(int(c) for c in valid_coords[min_voxel_idx])
+
+        plaque_type: str | None = None
+        if hu_arr is not None and plaque_cfg and plaque_cfg.get("enabled", True):
+            try:
+                plaque_type = _classify_plaque(
+                    hu_arr, vessel_mask, min_diameter_voxel, voxel_spacing_mm, plaque_cfg
+                )
+            except Exception as exc:
+                logger.warning("plaque_classification_failed", error=str(exc))
+                plaque_type = None
+
         length_mm = float(coords.shape[0]) * float(np.mean(voxel_spacing_mm))
         return {
             "stenosis_pct": round(stenosis_pct, 1),
@@ -455,10 +662,15 @@ class Pipeline(BasePipeline):
             "reference_diameter_mm": round(d_ref, 2),
             "min_lumen_diameter_mm": round(d_min, 2),
             "centerline_length_mm": round(length_mm, 1),
+            "min_diameter_voxel": min_diameter_voxel,
+            "plaque_type": plaque_type,
         }
 
     def _run_lumen_segmentation(
-        self, ccta_hu: np.ndarray, voxel_spacing_mm: tuple[float, float, float]
+        self,
+        ccta_hu: np.ndarray,
+        voxel_spacing_mm: tuple[float, float, float],
+        chambers: dict[str, np.ndarray] | None = None,
     ) -> dict[str, Any]:
         """Learned coronary lumen segmentation → centerline → per-vessel stenosis.
 
@@ -477,10 +689,16 @@ class Pipeline(BasePipeline):
         if self._model is None:
             raise NotImplementedError("no coronary lumen-segmentation model loaded")
         lumen_mask = self._run_lumen_inference(ccta_hu)
-        return self._grade_lumen_mask(lumen_mask, voxel_spacing_mm)
+        return self._grade_lumen_mask(
+            lumen_mask, voxel_spacing_mm, ccta_hu=ccta_hu, chambers=chambers
+        )
 
     def _grade_lumen_mask(
-        self, lumen_mask: np.ndarray, voxel_spacing_mm: tuple[float, float, float]
+        self,
+        lumen_mask: np.ndarray,
+        voxel_spacing_mm: tuple[float, float, float],
+        ccta_hu: np.ndarray | None = None,
+        chambers: dict[str, np.ndarray] | None = None,
     ) -> dict[str, Any]:
         """Geometric per-vessel stenosis grading on a binary coronary lumen mask.
 
@@ -489,8 +707,15 @@ class Pipeline(BasePipeline):
         (_run_coronary_lumen_totalseg). Splits the lumen into connected vessel
         trees and, per vessel, skeletonises + distance-transforms to estimate a
         diameter-stenosis percentage (see _vessel_stenosis). Vessels are reported
-        as geometric branches, NOT SCCT 18-segment anatomical labels. Returns
-        ``segments`` (sorted worst-first) and ``max_stenosis_pct``.
+        as geometric branches, NOT SCCT 18-segment anatomical labels. When
+        ``ccta_hu`` is given, also attaches a best-effort HU-based plaque-type
+        heuristic (_classify_plaque); when ``chambers`` is given (vessel_territory
+        enabled and TotalSegmentator's heartchambers_highres succeeded), also
+        attaches a best-effort LM/LAD/LCx/RCA territory guess
+        (_assign_vessel_territory) instead of leaving every vessel "unassigned".
+        Both are unvalidated heuristics layered on top of the geometric grading,
+        never a precondition for it. Returns ``segments`` (sorted worst-first)
+        and ``max_stenosis_pct``.
         """
         from scipy import ndimage as _ndi
 
@@ -499,6 +724,8 @@ class Pipeline(BasePipeline):
             return {"segments": [], "max_stenosis_pct": 0.0}
 
         scfg = self._cfg.get("stenosis", {})
+        plaque_cfg = self._cfg.get("plaque_classification", {})
+        territory_cfg = self._cfg.get("vessel_territory", {})
         # Voxel volume for the per-vessel size gate.
         voxel_vol_mm3 = float(np.prod(voxel_spacing_mm))
         min_vessel_mm3 = float(scfg.get("min_vessel_volume_mm3", 50.0))
@@ -509,11 +736,31 @@ class Pipeline(BasePipeline):
             comp = labeled == cid
             if float(comp.sum()) * voxel_vol_mm3 < min_vessel_mm3:
                 continue
-            graded = self._vessel_stenosis(comp, voxel_spacing_mm, scfg)
+            graded = self._vessel_stenosis(
+                comp, voxel_spacing_mm, scfg, hu_arr=ccta_hu, plaque_cfg=plaque_cfg
+            )
             if graded is None:
                 continue
             graded["name"] = f"Vessel {len(segments) + 1} (geometric)"
-            graded["vessel"] = "unassigned"
+            if chambers is not None:
+                try:
+                    territory, confidence = _assign_vessel_territory(
+                        comp, graded["centerline_length_mm"], chambers, voxel_spacing_mm,
+                        territory_cfg,
+                    )
+                except Exception as exc:
+                    logger.warning("vessel_territory_assignment_failed", error=str(exc))
+                    territory, confidence = "unassigned", None
+            else:
+                territory, confidence = "unassigned", None
+            # Confidence is only meaningful alongside an actual assignment —
+            # _assign_vessel_territory returns its (sub-threshold) score even
+            # when it falls back to "unassigned"; drop it here so "unassigned"
+            # always means "no territory info", not "low-confidence guess".
+            if territory == "unassigned":
+                confidence = None
+            graded["vessel"] = territory
+            graded["vessel_confidence"] = confidence
             segments.append(graded)
 
         segments.sort(key=lambda s: s["stenosis_pct"], reverse=True)
@@ -599,6 +846,66 @@ class Pipeline(BasePipeline):
             return None
         logger.info("coronary_lumen_totalseg_complete", lumen_voxels=int(mask.sum()))
         return mask.astype(np.uint8)
+
+    # ── Vessel territory (TotalSegmentator heart chambers) ────────────────────
+
+    def _run_heart_chambers_totalseg(
+        self,
+        ccta_nifti_path: str,
+        hu_shape: tuple[int, int, int],
+        working_dir: str,
+        cfg: dict,
+    ) -> dict[str, np.ndarray] | None:
+        """Chamber + aorta masks for vessel-territory assignment (see the
+        module-level ``_assign_vessel_territory``).
+
+        This is a SEPARATE TotalSegmentator call from ``_run_heart_roi_totalseg``
+        — the Agatston heart-ROI step only needs one combined `heart` blob from
+        the `total` task, whereas territory assignment needs the individual
+        chambers, which requires the dedicated ``heartchambers_highres`` task.
+        Returns None on any failure (task error, missing/mismatched chamber
+        file, empty mask) so callers leave every vessel "unassigned" exactly as
+        they did before this feature existed — this can only add labels, never
+        regress the geometric-only stenosis grading.
+        """
+        from totalsegmentator.python_api import totalsegmentator as ts_run
+        import torch
+
+        task = cfg.get("chamber_task", "heartchambers_highres")
+        device = "gpu" if torch.cuda.is_available() else "cpu"
+        ts_out = os.path.join(working_dir, "ccta_chambers_seg")
+        os.makedirs(ts_out, exist_ok=True)
+
+        logger.info("vessel_territory_totalseg_start", task=task, device=device)
+        ts_run(
+            input=Path(ccta_nifti_path),
+            output=Path(ts_out),
+            task=task,
+            device=device,
+            quiet=True,
+        )
+
+        labels = cfg.get("chamber_labels", {})
+        chambers: dict[str, np.ndarray] = {}
+        for key, filename in labels.items():
+            path = os.path.join(ts_out, f"{filename}.nii.gz")
+            if not os.path.exists(path):
+                logger.warning("vessel_territory_chamber_missing", key=key, path=path)
+                return None
+            mask = nib.load(path).get_fdata() > 0.5
+            if mask.shape != tuple(hu_shape):
+                logger.warning(
+                    "vessel_territory_chamber_shape_mismatch",
+                    key=key, mask_shape=tuple(mask.shape), hu_shape=tuple(hu_shape),
+                )
+                return None
+            if not mask.any():
+                logger.warning("vessel_territory_chamber_empty", key=key)
+                return None
+            chambers[key] = mask
+
+        logger.info("vessel_territory_totalseg_complete", chambers=list(chambers.keys()))
+        return chambers
 
     # ── Cardiac ROI (TotalSegmentator heart mask) ─────────────────────────────
 
@@ -879,14 +1186,38 @@ class Pipeline(BasePipeline):
         segments: list[dict[str, Any]] = []
         max_stenosis_pct: float | None = None
         inference_method = "calcium_only"
+        ccta_hu: np.ndarray | None = None
+        ccta_affine = None
+        ccta_spacing: tuple[float, float, float] = (1.0, 1.0, 1.0)
 
         lumen_cfg = self._cfg.get("coronary_lumen", {})
+        territory_cfg = self._cfg.get("vessel_territory", {})
         ccta_path = preprocessed.get("ccta_nifti_path")
         _stenosis_note = (
             "Per-vessel stenosis is a geometric diameter estimate "
             "(skeleton + distance transform) on the coronary lumen mask; "
-            "vessels are NOT mapped to SCCT 18-segment anatomy."
+            "vessels are NOT mapped to SCCT 18-segment anatomy unless a "
+            "vessel_territory assignment was made (heuristic, unvalidated)."
         )
+
+        # Vessel-territory chamber masks (optional, disabled by default — see
+        # inference_config.yaml). Computed once and shared by whichever lumen
+        # source below actually runs. Any failure leaves `chambers` None, which
+        # makes _grade_lumen_mask leave every vessel "unassigned" exactly as
+        # before this feature existed.
+        chambers: dict[str, np.ndarray] | None = None
+        if territory_cfg.get("enabled", False) and ccta_path:
+            try:
+                ccta_shape_probe = nib.load(ccta_path).shape
+                chambers = self._run_heart_chambers_totalseg(
+                    ccta_path, ccta_shape_probe, working_dir, territory_cfg
+                )
+                if chambers is None:
+                    qa_flags.append("vessel_territory_unavailable")
+            except Exception as exc:
+                logger.warning("vessel_territory_totalseg_failed", error=str(exc))
+                qa_flags.append("vessel_territory_unavailable")
+                chambers = None
 
         if self._model is not None and ccta_path:
             try:
@@ -894,7 +1225,7 @@ class Pipeline(BasePipeline):
                 ccta_hu = ccta_img.get_fdata().astype(np.float32)
                 ccta_affine = ccta_img.affine
                 ccta_spacing = tuple(abs(float(ccta_affine[i, i])) for i in range(3))
-                dl_out = self._run_lumen_segmentation(ccta_hu, ccta_spacing)
+                dl_out = self._run_lumen_segmentation(ccta_hu, ccta_spacing, chambers=chambers)
                 segments = dl_out.get("segments", [])
                 max_stenosis_pct = dl_out.get("max_stenosis_pct")
                 inference_method = "dl_stenosis"
@@ -907,13 +1238,16 @@ class Pipeline(BasePipeline):
         elif lumen_cfg.get("use_totalseg_coronary", False) and ccta_path:
             try:
                 ccta_img = nib.load(ccta_path)
+                ccta_hu = ccta_img.get_fdata().astype(np.float32)
                 ccta_affine = ccta_img.affine
                 ccta_spacing = tuple(abs(float(ccta_affine[i, i])) for i in range(3))
                 lumen_mask = self._run_coronary_lumen_totalseg(
                     ccta_path, ccta_img.shape, ccta_spacing, working_dir
                 )
                 if lumen_mask is not None:
-                    graded = self._grade_lumen_mask(lumen_mask, ccta_spacing)
+                    graded = self._grade_lumen_mask(
+                        lumen_mask, ccta_spacing, ccta_hu=ccta_hu, chambers=chambers
+                    )
                     segments = graded.get("segments", [])
                     max_stenosis_pct = graded.get("max_stenosis_pct")
                     inference_method = "totalseg_coronary_stenosis"
@@ -926,12 +1260,20 @@ class Pipeline(BasePipeline):
                 logger.warning("totalseg_coronary_failed_using_calcium_only", error=str(exc))
                 qa_flags.append("coronary_lumen_unavailable")
 
+        if segments and self._cfg.get("plaque_classification", {}).get("enabled", True):
+            qa_flags.append("plaque_type_heuristic_hu_based")
+        if segments and chambers is not None:
+            qa_flags.append("vessel_territory_heuristic_unvalidated")
+
         return {
             "agatston": {k: v for k, v in agatston.items() if k != "calcium_mask"},
             "calcium_mask": agatston.get("calcium_mask"),
             "hu_array": hu_arr,
             "affine": affine,
             "voxel_spacing_mm": voxel_spacing,
+            "ccta_hu_array": ccta_hu,
+            "ccta_affine": ccta_affine,
+            "ccta_voxel_spacing_mm": ccta_spacing,
             "segments": segments,
             "max_stenosis_pct": max_stenosis_pct,
             "inference_method": inference_method,
@@ -954,6 +1296,8 @@ class Pipeline(BasePipeline):
         hu_arr: np.ndarray | None = inference_output.get("hu_array")
         affine = inference_output.get("affine")
         voxel_spacing = inference_output["voxel_spacing_mm"]
+        ccta_hu: np.ndarray | None = inference_output.get("ccta_hu_array")
+        ccta_voxel_spacing = inference_output.get("ccta_voxel_spacing_mm", (1.0, 1.0, 1.0))
         segments: list[dict] = inference_output.get("segments", [])
         max_stenosis_pct = inference_output.get("max_stenosis_pct")
         inference_method = inference_output.get("inference_method", "calcium_only")
@@ -1005,6 +1349,19 @@ class Pipeline(BasePipeline):
             artifacts.extend(
                 _generate_calcium_overlay_pngs(
                     hu_arr, calcium_mask, artifacts_dir, self._cfg.get("postprocessing", {})
+                )
+            )
+
+        # Per-vessel stenosis crop PNGs (contrast CCTA)
+        if (
+            ccta_hu is not None
+            and segments
+            and self._cfg.get("postprocessing", {}).get("generate_stenosis_crops", True)
+        ):
+            artifacts.extend(
+                _generate_stenosis_crop_pngs(
+                    ccta_hu, segments, ccta_voxel_spacing, artifacts_dir,
+                    self._cfg.get("postprocessing", {}),
                 )
             )
 

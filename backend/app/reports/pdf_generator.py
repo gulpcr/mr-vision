@@ -595,42 +595,9 @@ class PDFReportGenerator:
 
         story.append(Paragraph("Findings:", head))
 
-        # Compact structured findings table (per-breast checklist). Values come from
-        # the saved report's flat slot fields; blank when unset.
-        def _slot(name: str, side: str) -> str:
-            val = r.get(f"{name}_{side}")
-            return str(val).capitalize() if val not in (None, "") else "—"
-
-        slot_rows = [
-            ("Breast density (a-d)", "density"),
-            ("Mass", "mass"),
-            ("Clustered microcalcification", "calcification"),
-            ("Skin thickening", "skin_thickening"),
-            ("Nipple retraction", "nipple_retraction"),
-            ("Architectural distortion", "architectural_distortion"),
-            ("Axillary nodes", "axillary_nodes"),
-        ]
-        header_row = ["Finding"] + ([" Right"] if show_right else []) + ([" Left"] if show_left else [])
-        struct_data = [[Paragraph(f"<b>{c}</b>", cell) for c in header_row]]
-        for label, key in slot_rows:
-            row = [Paragraph(label, cell)]
-            if show_right:
-                row.append(Paragraph(_slot(key, "right"), cell))
-            if show_left:
-                row.append(Paragraph(_slot(key, "left"), cell))
-            struct_data.append(row)
-        n_cols = len(header_row)
-        col_w = [7 * cm] + [(10 * cm) / max(1, n_cols - 1)] * (n_cols - 1)
-        struct_tbl = Table(struct_data, colWidths=col_w)
-        struct_tbl.setStyle(TableStyle([
-            ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#333333")),
-            ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#cccccc")),
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f0f0f0")),
-            ("TOPPADDING", (0, 0), (-1, -1), 2), ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-        ]))
-        story.append(struct_tbl)
-        story.append(Spacer(1, 6))
-
+        # Narrative report (matches the departmental AECH-KIRAN layout): per-breast
+        # findings prose, then the opinion. The fine-tuned model's structured slots feed
+        # Gemini as grounding evidence but are intentionally NOT rendered as a table here.
         if show_right:
             story.append(Paragraph("RIGHT BREAST:", ParagraphStyle(
                 "rb", parent=head, fontSize=9.5, spaceBefore=4)))

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import tempfile
 import traceback
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import Any
 
@@ -36,6 +37,32 @@ def _get_sync_session() -> Session:
     engine = create_engine(settings.database_url, pool_pre_ping=True)
     factory = sessionmaker(bind=engine)
     return factory()
+
+
+def _run_async_beat_task(coro_factory: Callable[[], Awaitable[Any]]) -> Any:
+    """Run an async Celery-beat body in a dedicated event loop, then drain the
+    shared async engine's connection pool.
+
+    The module-level async engine (session.py) pools connections, and an asyncpg
+    connection is bound to the event loop that opened it. Every Celery task runs
+    in a fresh loop (asyncio.new_event_loop()), so a pooled connection reused by
+    the next task raises "attached to a different loop" / "Event loop is closed".
+    Disposing the engine after each task drains the pool so the next invocation
+    opens a fresh connection on its own loop.
+    """
+    import asyncio
+
+    from app.infrastructure.database.session import engine
+
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro_factory())
+    finally:
+        try:
+            loop.run_until_complete(engine.dispose())
+        except Exception:
+            pass
+        loop.close()
 
 
 def _update_job_status(
@@ -530,40 +557,105 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
                 except Exception as exc:
                     logger.warning("longitudinal_failed", job_id=job_id, error=str(exc))
 
-            # ── Mammography structured-findings narrative ─────────────────────
-            # Render the per-breast findings/opinion FROM the structured slots. Runs
-            # for mammography regardless of llm_enabled (deterministic template); Gemini
-            # only polishes the wording when enabled. Never invents a finding.
+            # ── Mammography report authoring ──────────────────────────────────
+            # Preferred: Gemini reads the rendered views TOGETHER with the fine-tuned
+            # model's per-breast finding probabilities + clinical context and authors the
+            # per-breast findings / opinion / BI-RADS as a radiologist would (inferring
+            # from the images, grounded by the model). Gated by mammography_ai_report_enabled.
+            # Falls back to the deterministic MammographyNarrativeService (which only
+            # rephrases the structured slots) on disablement, no images, or any failure.
             if usecase_name == "mammography":
-                try:
-                    from app.application.mammography_narrative_service import (
-                        MammographyNarrativeService,
-                    )
-
-                    narr_client = None
-                    if settings.llm_enabled and settings.gemini_api_key:
+                narr_summary = postprocessed.get("summary", {})
+                ai_report = None
+                if settings.mammography_ai_report_enabled and settings.gemini_api_key:
+                    try:
+                        _update_job_status(
+                            session, job_id, JobStatus.POSTPROCESSING, progress=0.84,
+                            message="Generating AI mammography report",
+                        )
+                        from app.application.mammography_radiologist_service import (
+                            MammographyRadiologistService,
+                        )
                         from app.infrastructure.llm.gemini_client import GeminiClient
+                        from app.infrastructure.database.models import OrderRecord
 
-                        narr_client = GeminiClient(
-                            api_key=settings.gemini_api_key,
-                            model_name=settings.gemini_model,
+                        images: list[bytes] = []
+                        for artifact in postprocessed.get("artifacts", []):
+                            if artifact.get("artifact_type") == "mammo_png":
+                                with open(artifact["local_path"], "rb") as f:
+                                    images.append(f.read())
+
+                        order = (
+                            session.query(OrderRecord)
+                            .filter(OrderRecord.study_instance_uid == study_instance_uid)
+                            .first()
                         )
-                    narr_summary = postprocessed.get("summary", {})
-                    narrative = loop.run_until_complete(
-                        MammographyNarrativeService(narr_client).generate(
-                            findings=narr_summary.get("findings", {}) or {},
-                            laterality=narr_summary.get("laterality", "bilateral"),
-                            birads_right=narr_summary.get("birads_right"),
-                            birads_left=narr_summary.get("birads_left"),
+                        study_rec_mammo = (
+                            session.query(StudyRecord)
+                            .filter(StudyRecord.study_instance_uid == study_instance_uid)
+                            .first()
                         )
-                    )
-                    postprocessed.setdefault("summary", {})
-                    for key, value in narrative.items():
-                        if value is not None:
-                            postprocessed["summary"][key] = value
-                    logger.info("mammography_narrative_stored", job_id=job_id)
-                except Exception as exc:
-                    logger.warning("mammography_narrative_failed", job_id=job_id, error=str(exc))
+                        rad_client = GeminiClient(
+                            api_key=settings.gemini_api_key, model_name=settings.gemini_model
+                        )
+                        ai_report = loop.run_until_complete(
+                            MammographyRadiologistService(rad_client).generate(
+                                findings=narr_summary.get("findings", {}) or {},
+                                laterality=narr_summary.get("laterality", "bilateral"),
+                                images=images,
+                                clinical_indication=order.indication if order else None,
+                                clinical_history=order.clinical_history if order else None,
+                                qa_flags=postprocessed.get("qa_flags", []),
+                                patient_age=getattr(study_rec_mammo, "patient_age", None) if study_rec_mammo else None,
+                                patient_sex=getattr(study_rec_mammo, "patient_sex", None) if study_rec_mammo else None,
+                            )
+                        )
+                        if ai_report:
+                            postprocessed.setdefault("summary", {})
+                            for key in (
+                                "clinical_features", "right_breast_findings",
+                                "left_breast_findings", "opinion", "birads_right", "birads_left",
+                            ):
+                                if ai_report.get(key) is not None:
+                                    postprocessed["summary"][key] = ai_report[key]
+                            postprocessed["summary"]["ai_report_disclaimer"] = ai_report.get("disclaimer")
+                            logger.info(
+                                "mammography_ai_report_stored", job_id=job_id, images_sent=len(images)
+                            )
+                    except Exception as exc:
+                        logger.warning("mammography_ai_report_failed", job_id=job_id, error=str(exc))
+                        ai_report = None
+
+                # Deterministic fallback (rephrases the structured slots only).
+                if not ai_report:
+                    try:
+                        from app.application.mammography_narrative_service import (
+                            MammographyNarrativeService,
+                        )
+
+                        narr_client = None
+                        if settings.llm_enabled and settings.gemini_api_key:
+                            from app.infrastructure.llm.gemini_client import GeminiClient
+
+                            narr_client = GeminiClient(
+                                api_key=settings.gemini_api_key,
+                                model_name=settings.gemini_model,
+                            )
+                        narrative = loop.run_until_complete(
+                            MammographyNarrativeService(narr_client).generate(
+                                findings=narr_summary.get("findings", {}) or {},
+                                laterality=narr_summary.get("laterality", "bilateral"),
+                                birads_right=narr_summary.get("birads_right"),
+                                birads_left=narr_summary.get("birads_left"),
+                            )
+                        )
+                        postprocessed.setdefault("summary", {})
+                        for key, value in narrative.items():
+                            if value is not None:
+                                postprocessed["summary"][key] = value
+                        logger.info("mammography_narrative_stored", job_id=job_id)
+                    except Exception as exc:
+                        logger.warning("mammography_narrative_failed", job_id=job_id, error=str(exc))
 
             # ── PET-CT AI-authored report findings ────────────────────────────
             # Gemini reads the MIP/fused PNGs (still on local disk at this point — the
@@ -621,6 +713,67 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
                         logger.info("petct_ai_report_stored", job_id=job_id, images_sent=len(images))
                 except Exception as exc:
                     logger.warning("petct_ai_report_failed", job_id=job_id, error=str(exc))
+
+            # ── Coronary CTA AI-authored report narrative ─────────────────────
+            # Gemini reads the calcium-overlay PNGs (still on local disk — the artifact
+            # upload loop below hasn't run yet) together with the deterministic
+            # Agatston/stenosis findings and writes a synthesized narrative report.
+            # Falls back silently to the deterministic diagnosis/processing_notes already
+            # set by postprocess() on any failure, disablement, or a malformed/ungrounded
+            # response — see coronary_cta_narrative_service.py.
+            if (
+                usecase_name == "coronary_cta"
+                and settings.coronary_cta_ai_report_enabled
+                and settings.gemini_api_key
+            ):
+                try:
+                    _update_job_status(
+                        session, job_id, JobStatus.POSTPROCESSING, progress=0.84,
+                        message="Generating AI radiology findings",
+                    )
+                    from app.application.coronary_cta_narrative_service import (
+                        CoronaryCtaNarrativeService,
+                    )
+                    from app.infrastructure.llm.gemini_client import GeminiClient
+
+                    images: dict[str, bytes] = {}
+                    for artifact in postprocessed.get("artifacts", []):
+                        if artifact.get("artifact_type") in ("overlay_png", "stenosis_crop_png"):
+                            with open(artifact["local_path"], "rb") as f:
+                                images[artifact["name"]] = f.read()
+
+                    from app.infrastructure.database.models import OrderRecord
+
+                    order = (
+                        session.query(OrderRecord)
+                        .filter(OrderRecord.study_instance_uid == study_instance_uid)
+                        .first()
+                    )
+
+                    narr_client = GeminiClient(
+                        api_key=settings.gemini_api_key,
+                        model_name=settings.gemini_model,
+                    )
+                    ai_report = loop.run_until_complete(
+                        CoronaryCtaNarrativeService(narr_client).generate(
+                            summary=postprocessed.get("summary", {}),
+                            measurements=postprocessed.get("measurements", {}),
+                            images=images,
+                            qa_flags=postprocessed.get("qa_flags", []),
+                            clinical_indication=order.indication if order else None,
+                            clinical_history=order.clinical_history if order else None,
+                        )
+                    )
+                    if ai_report:
+                        postprocessed.setdefault("summary", {})
+                        postprocessed["summary"]["ai_report"] = ai_report
+                        logger.info(
+                            "coronary_cta_ai_report_stored",
+                            job_id=job_id,
+                            images_sent=len(images),
+                        )
+                except Exception as exc:
+                    logger.warning("coronary_cta_ai_report_failed", job_id=job_id, error=str(exc))
 
             _update_job_status(
                 session, job_id, JobStatus.POSTPROCESSING, progress=0.85,
@@ -826,7 +979,6 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
 )
 def run_retention_cleanup():
     """Celery Beat task: apply data retention policies (F15)."""
-    import asyncio
     from app.infrastructure.database.session import async_session_factory
 
     async def _run():
@@ -844,11 +996,7 @@ def run_retention_cleanup():
                 logger.error("retention_cleanup_failed", error=str(e))
                 raise
 
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(_run())
-    finally:
-        loop.close()
+    return _run_async_beat_task(_run)
 
 
 @celery_app.task(
@@ -857,12 +1005,10 @@ def run_retention_cleanup():
 )
 def run_critical_alert_escalation():
     """Celery Beat task: escalate unacknowledged CRITICAL alerts past threshold."""
-    import asyncio
     from app.infrastructure.database.session import async_session_factory
 
     async def _run():
         from app.application.alerting_service import AlertingService
-        from app.config import get_settings
 
         threshold_minutes = 30
         async with async_session_factory() as session:
@@ -878,11 +1024,7 @@ def run_critical_alert_escalation():
                 logger.error("critical_alert_escalation_failed", error=str(e))
                 raise
 
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(_run())
-    finally:
-        loop.close()
+    return _run_async_beat_task(_run)
 
 
 @celery_app.task(

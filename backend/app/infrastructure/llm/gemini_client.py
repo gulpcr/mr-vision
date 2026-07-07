@@ -33,6 +33,16 @@ _REPORT_GENERATION_CONFIG = {
     "response_mime_type": "application/json",
 }
 
+# No response_mime_type here, deliberately — forcing "application/json" makes the SDK
+# constrain generation to valid JSON syntax, which is incompatible with asking the model
+# for free-form Markdown prose. Slightly higher temperature than the structured configs
+# above: this path is used for autonomous clinical narrative writing, not strict
+# transcription, so some latitude in phrasing/style is intended, not a defect.
+_MARKDOWN_REPORT_GENERATION_CONFIG = {
+    "temperature": 0.3,
+    "max_output_tokens": 8192,
+}
+
 
 def _extract_text_from_parts(response: object) -> str:
     """Fallback: walk response.candidates[0].content.parts filtering out thought parts."""
@@ -137,5 +147,29 @@ class GeminiClient:
             text = response.text.strip()
         except Exception as exc:
             logger.warning("gemini_images_response_error", error=str(exc))
+            text = _extract_text_from_parts(response)
+        return text
+
+    async def generate_markdown_from_images(self, prompt: str, images: list[bytes]) -> str:
+        """Like ``generate_from_images``, but does NOT force JSON output — used when the
+        caller wants free-form Markdown prose (e.g. an autonomously-written clinical
+        narrative) rather than a structured object. See
+        ``_MARKDOWN_REPORT_GENERATION_CONFIG``.
+        """
+        if not self._ready or self._model is None:
+            return ""
+        from PIL import Image as _PIL_Image
+
+        pil_imgs = [_PIL_Image.open(io.BytesIO(b)) for b in images]
+
+        response = await asyncio.to_thread(
+            self._model.generate_content,
+            [prompt, *pil_imgs],
+            generation_config=_MARKDOWN_REPORT_GENERATION_CONFIG,
+        )
+        try:
+            text = response.text.strip()
+        except Exception as exc:
+            logger.warning("gemini_markdown_response_error", error=str(exc))
             text = _extract_text_from_parts(response)
         return text

@@ -46,6 +46,20 @@ mammo_clip:
   # always_output is true).
   min_confidence: 0.55
 
+# Fine-tuned Mammo-CLIP B5 multi-label classifier (VinDr-Mammo) — fills ALL SEVEN structured
+# finding slots per breast with trained probabilities. Gated by Settings.mammography_finetuned_enabled
+# + weights at Settings.mammography_finetuned_weights_path (best_all.pt from
+# backend/scripts/mammo_finetune/). Supersedes the zero-shot slots when available.
+mammo_clip_finetuned:
+  # Presence threshold on the per-breast (max-over-views) probability.
+  presence_threshold: 0.5
+  # Calls whose confidence (P(present) if present, else 1-P) is below this are flagged
+  # low-confidence for the UI/report (surfaced, never suppressed — radiologist confirms).
+  min_confidence: 0.6
+  # The rare findings (distortion/skin/nipple/lymph) were trained on very few positives
+  # (VinDr: 37-119) — always flag them for radiologist confirmation regardless of score.
+  always_confirm: ["architectural_distortion", "skin_thickening", "nipple_retraction", "axillary_nodes"]
+
 # Mammo-CLIP RetinaNet detectors (Mass + Suspicious Calcification) — LOCALIZED detection
 # on the Mammo-CLIP B5 backbone (released `Mammo-CLIP-Detection` checkpoints, VinDr-trained).
 # Gated by Settings.mammography_detector_enabled + weights at

@@ -31,13 +31,18 @@
           "type": "array",
           "items": {
             "type": "object",
-            "required": ["segment", "stenosis_pct"],
+            "required": ["name", "stenosis_pct", "grade"],
             "properties": {
-              "segment":      { "type": "string" },
-              "vessel":       { "type": "string" },
-              "stenosis_pct": { "type": "number", "minimum": 0, "maximum": 100 },
-              "plaque_type":  { "type": "string" },
-              "min_lumen_area_mm2": { "type": "number" }
+              "name":                  { "type": "string", "description": "Geometric branch label, e.g. 'Vessel 1 (geometric)' — NOT an SCCT 18-segment name." },
+              "vessel":                { "type": "string", "enum": ["LM", "LAD", "LCx", "RCA", "unassigned"], "description": "Territory guess from an unvalidated geometric heuristic (vessel_territory config); 'unassigned' when disabled or below confidence." },
+              "vessel_confidence":     { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+              "stenosis_pct":          { "type": "number", "minimum": 0, "maximum": 100 },
+              "grade":                 { "type": "string", "enum": ["none", "minimal", "mild", "moderate", "severe", "occluded"] },
+              "reference_diameter_mm": { "type": "number" },
+              "min_lumen_diameter_mm": { "type": "number" },
+              "centerline_length_mm":  { "type": "number" },
+              "plaque_type":           { "type": ["string", "null"], "enum": ["calcified", "non_calcified", "mixed", "indeterminate", null], "description": "HU-threshold heuristic, not a learned classifier; null when disabled or no wall-shell HU data nearby." },
+              "min_diameter_voxel":    { "type": "array", "items": { "type": "integer" }, "minItems": 3, "maxItems": 3 }
             }
           }
         },

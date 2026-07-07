@@ -33,14 +33,18 @@
     },
     {
       "id": "segment_table",
-      "title": "Per-Segment Stenosis (SCCT 18-Segment)",
+      "title": "Per-Vessel Stenosis (Geometric Branches)",
       "type": "table",
       "data_path": "measurements.segments",
       "columns": [
-        { "key": "segment",      "label": "Segment",       "format": "text" },
-        { "key": "vessel",       "label": "Vessel",        "format": "text" },
-        { "key": "stenosis_pct", "label": "Stenosis (%)",  "format": "number", "precision": 0 },
-        { "key": "plaque_type",  "label": "Plaque",        "format": "text" }
+        { "key": "name",                  "label": "Vessel",           "format": "text" },
+        { "key": "vessel",                "label": "Territory (heuristic)", "format": "text" },
+        { "key": "vessel_confidence",     "label": "Territory Confidence",  "format": "number", "precision": 2 },
+        { "key": "stenosis_pct",          "label": "Stenosis (%)",     "format": "number", "precision": 0 },
+        { "key": "grade",                 "label": "Grade",            "format": "text" },
+        { "key": "plaque_type",           "label": "Plaque (heuristic)", "format": "text" },
+        { "key": "reference_diameter_mm", "label": "Reference Diameter", "unit": "mm", "format": "number", "precision": 1 },
+        { "key": "min_lumen_diameter_mm", "label": "Min Lumen Diameter", "unit": "mm", "format": "number", "precision": 1 }
       ]
     },
     {
@@ -50,12 +54,17 @@
       "flags_path": "qa_flags",
       "details_path": "qa_details",
       "severity_map": {
-        "no_calcium_series":          "warning",
-        "no_ccta_series":             "warning",
-        "calcium_roi_approximate":         "warning",
-        "calcium_slice_thickness_abnormal":"warning",
-        "insufficient_coverage":      "error",
-        "contrast_in_calcium_series": "warning"
+        "no_calcium_series":                    "warning",
+        "no_ccta_series":                       "warning",
+        "calcium_roi_approximate":              "warning",
+        "calcium_slice_thickness_abnormal":     "warning",
+        "insufficient_coverage":                "error",
+        "contrast_in_calcium_series":           "warning",
+        "stenosis_segment_labels_approximate":  "info",
+        "coronary_lumen_unavailable":           "warning",
+        "vessel_territory_unavailable":         "info",
+        "vessel_territory_heuristic_unvalidated": "warning",
+        "plaque_type_heuristic_hu_based":       "info"
       }
     },
     {
@@ -66,6 +75,12 @@
       "colormap": {
         "1": { "label": "Coronary Calcium", "color": "#FF4444" }
       }
+    },
+    {
+      "id": "stenosis_crops",
+      "title": "Stenosis Findings (Contrast CCTA)",
+      "type": "overlay",
+      "artifact_filter": "stenosis_crop_png"
     },
     {
       "id": "model_info",

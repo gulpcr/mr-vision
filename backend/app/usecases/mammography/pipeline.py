@@ -120,6 +120,19 @@ class Pipeline(BasePipeline):
                 logger.warning("mammo_detector_load_failed", error=str(exc))
                 self._detector = None
 
+        # Fine-tuned Mammo-CLIP B5 multi-label classifier — fills all 7 structured slots per
+        # breast with trained probabilities; supersedes the zero-shot/detector slots when
+        # available. Gated by Settings; never blocks the pipeline.
+        self._cfg_ft = self._config.get("mammo_clip_finetuned", {})
+        self._finetuned = None
+        ft_path = settings.mammography_finetuned_weights_path
+        if settings.mammography_finetuned_enabled and ft_path and Path(ft_path).exists():
+            try:
+                self._load_mammo_clip_finetuned(ft_path, settings.mammography_clip_weights_path)
+            except Exception as exc:  # never block; falls back to zero-shot/defaults
+                logger.warning("mammo_finetuned_load_failed", error=str(exc))
+                self._finetuned = None
+
     # ── Model loading (real model goes here once weights are downloaded) ────────
 
     # GMIC input size and per-model top-t% (from the NYU GMIC release).
@@ -397,6 +410,132 @@ class Pipeline(BasePipeline):
                 out[side] = slots
         return out
 
+    # ── Fine-tuned Mammo-CLIP B5 multi-label classifier (all 7 slots) ────────────
+
+    # binary head name -> report slot name
+    _FT_SLOT_MAP = {
+        "mass": "mass",
+        "calc": "calcification",
+        "distortion": "architectural_distortion",
+        "skin_thickening": "skin_thickening",
+        "nipple_retraction": "nipple_retraction",
+        "lymph_node": "axillary_nodes",
+    }
+
+    def _load_mammo_clip_finetuned(self, ft_path: str, released_dir: str) -> None:
+        """Load the VinDr fine-tuned multi-label classifier via the vendored adapter.
+        Needs the RELEASED B5 checkpoint (in `released_dir`) to rebuild the encoder."""
+        import sys
+
+        import torch
+
+        clip_root = Path(__file__).resolve().parents[3] / "external" / "Mammo-CLIP"
+        if not (clip_root / "breastclip").exists():
+            raise FileNotFoundError(f"Mammo-CLIP not vendored at {clip_root}")
+        if str(clip_root) not in sys.path:
+            sys.path.insert(0, str(clip_root))
+
+        # Locate the released B5 .tar (same resolution as _load_mammo_clip).
+        ckpt_name = self._cfg_clip.get("checkpoint_name", "")
+        released = Path(released_dir) / ckpt_name if ckpt_name else None
+        if released is None or not released.exists():
+            tars = sorted(Path(released_dir).glob("*.tar")) if released_dir else []
+            released = tars[0] if tars else None
+        if released is None or not released.exists():
+            raise FileNotFoundError(f"Released B5 checkpoint not found under {released_dir}")
+
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+        import mammo_clip_finetuned_adapter
+
+        self._finetuned = mammo_clip_finetuned_adapter.load_model(
+            str(ft_path), device, released_ckpt_path=str(released)
+        )
+        logger.info("mammo_finetuned_loaded", weights=Path(ft_path).name, device=str(device))
+
+    def _run_mammo_clip_finetuned(self, view_pngs: dict[str, str]) -> dict[str, dict]:
+        """Per-breast aggregated finding probabilities from the fine-tuned model.
+        Presence probability = max over that breast's views (most-suspicious view drives
+        presence); density = mean of the per-view softmax vectors. Returns
+        {"R": {mass, calc, distortion, skin_thickening, nipple_retraction, lymph_node,
+               density:[4]}, "L": {...}} for imaged breasts only."""
+        from PIL import Image
+
+        binary = list(self._FT_SLOT_MAP.keys())
+        per_side: dict[str, dict[str, list]] = {
+            "R": {k: [] for k in binary} | {"density": []},
+            "L": {k: [] for k in binary} | {"density": []},
+        }
+        for view_code, png_path in view_pngs.items():
+            side = view_code.split("_")[0]
+            if side not in per_side:
+                continue
+            try:
+                pil = Image.open(png_path)
+                pred = self._finetuned.predict(pil)
+            except Exception as exc:
+                logger.warning("mammo_finetuned_infer_failed", view=view_code, error=str(exc))
+                continue
+            for k in binary:
+                per_side[side][k].append(float(pred[k]))
+            per_side[side]["density"].append(pred["density"])
+
+        out: dict[str, dict] = {}
+        for side, data in per_side.items():
+            if not data["density"]:
+                continue  # side not imaged
+            agg: dict[str, Any] = {k: (max(data[k]) if data[k] else None) for k in binary}
+            agg["density"] = np.mean(np.asarray(data["density"], dtype=float), axis=0).tolist()
+            out[side] = agg
+        return out
+
+    def _build_breast_slots_finetuned(self, ft_probs: dict | None) -> dict[str, Any]:
+        """Full 7-slot set for one breast from the fine-tuned model's probabilities.
+        Every slot carries its confidence; rare findings (and any call below min_confidence)
+        are flagged low-confidence for radiologist confirmation — surfaced, never silently
+        authoritative."""
+        ft_probs = ft_probs or {}
+        thr = float(self._cfg_ft.get("presence_threshold", 0.5))
+        min_conf = float(self._cfg_ft.get("min_confidence", 0.6))
+        always_confirm = set(self._cfg_ft.get("always_confirm", []) or [])
+
+        slots: dict[str, Any] = {
+            "density": None, "mass": "none", "calcification": "none",
+            "skin_thickening": "none", "nipple_retraction": "none",
+            "architectural_distortion": "none", "axillary_nodes": "normal",
+        }
+        confidence: dict[str, float] = {}
+        low: list[str] = []
+        source: dict[str, str] = {}
+
+        for head, slot in self._FT_SLOT_MAP.items():
+            p = ft_probs.get(head)
+            if p is None:
+                continue
+            present = p >= thr
+            conf = p if present else 1.0 - p
+            if slot == "axillary_nodes":
+                slots[slot] = "abnormal" if present else "normal"
+            else:
+                slots[slot] = "present" if present else "none"
+            confidence[slot] = round(float(conf), 3)
+            source[slot] = "mammo_clip_finetuned"
+            if conf < min_conf or slot in always_confirm:
+                low.append(slot)
+
+        density_vec = ft_probs.get("density")
+        if density_vec:
+            idx = int(np.argmax(density_vec))
+            slots["density"] = ["a", "b", "c", "d"][idx]
+            confidence["density"] = round(float(density_vec[idx]), 3)
+            source["density"] = "mammo_clip_finetuned"
+
+        slots["source"] = source
+        slots["confidence"] = confidence
+        slots["low_confidence"] = low
+        slots["location"] = {}
+        return slots
+
     # ── Mammo-CLIP RetinaNet detectors (Mass + Calcification, localized) ─────────
 
     def _load_detector(self, weights_dir: str) -> None:
@@ -614,9 +753,21 @@ class Pipeline(BasePipeline):
             except Exception as exc:
                 logger.warning("mammo_detector_run_failed", error=str(exc))
 
+        # Fine-tuned multi-label classifier (all 7 slots) — supersedes zero-shot/detector
+        # for the structured slots when it ran. Empty when disabled/failed.
+        finetuned_findings: dict[str, dict] = {}
+        finetuned_ran = False
+        if self._finetuned is not None:
+            try:
+                finetuned_findings = self._run_mammo_clip_finetuned(view_pngs)
+                finetuned_ran = True
+            except Exception as exc:
+                logger.warning("mammo_finetuned_run_failed", error=str(exc))
+
         clip_out = {
             "clip_findings": clip_findings, "clip_ran": clip_ran,
             "detector_findings": detector_findings, "detector_ran": detector_ran,
+            "finetuned_findings": finetuned_findings, "finetuned_ran": finetuned_ran,
         }
 
         if self._model is not None:
@@ -703,10 +854,21 @@ class Pipeline(BasePipeline):
         clip_ran = bool(inference_output.get("clip_ran"))
         detector_findings: dict[str, dict] = inference_output.get("detector_findings", {}) or {}
         detector_ran = bool(inference_output.get("detector_ran"))
-        findings_struct = {
-            "right": self._build_breast_slots(clip_findings.get("R"), detector_findings.get("R")) if present_r else None,
-            "left": self._build_breast_slots(clip_findings.get("L"), detector_findings.get("L")) if present_l else None,
-        }
+        finetuned_findings: dict[str, dict] = inference_output.get("finetuned_findings", {}) or {}
+        finetuned_ran = bool(inference_output.get("finetuned_ran"))
+
+        # The fine-tuned classifier fills all 7 slots, so it supersedes the zero-shot +
+        # detector path for the structured findings when it ran.
+        if finetuned_ran:
+            findings_struct = {
+                "right": self._build_breast_slots_finetuned(finetuned_findings.get("R")) if present_r else None,
+                "left": self._build_breast_slots_finetuned(finetuned_findings.get("L")) if present_l else None,
+            }
+        else:
+            findings_struct = {
+                "right": self._build_breast_slots(clip_findings.get("R"), detector_findings.get("R")) if present_r else None,
+                "left": self._build_breast_slots(clip_findings.get("L"), detector_findings.get("L")) if present_l else None,
+            }
         density_r = (findings_struct["right"] or {}).get("density") if present_r else None
         density_l = (findings_struct["left"] or {}).get("density") if present_l else None
 
@@ -716,8 +878,15 @@ class Pipeline(BasePipeline):
             qa_flags.append("placeholder_no_model")
         if self._clip is not None and not clip_ran:
             qa_flags.append("mammo_clip_unavailable")
+        if self._finetuned is not None and not finetuned_ran:
+            qa_flags.append("mammo_finetuned_unavailable")
 
-        inference_method = method + ("+mammo_clip" if clip_ran else "") + ("+detector" if detector_ran else "")
+        inference_method = (
+            method
+            + ("+mammo_clip_finetuned" if finetuned_ran else "")
+            + ("+mammo_clip" if clip_ran and not finetuned_ran else "")
+            + ("+detector" if detector_ran and not finetuned_ran else "")
+        )
 
         notes = (
             "NON-DIAGNOSTIC placeholder — no mammography model weights installed. "
@@ -725,7 +894,12 @@ class Pipeline(BasePipeline):
             if is_placeholder
             else "AI-assisted mammography analysis."
         )
-        if clip_ran:
+        if finetuned_ran:
+            notes += (
+                " Structured slots pre-filled by the fine-tuned Mammo-CLIP classifier "
+                "(VinDr-trained, non-diagnostic; rare findings flagged for radiologist confirmation)."
+            )
+        elif clip_ran:
             notes += " Structured slots pre-filled by Mammo-CLIP (zero-shot, non-diagnostic)."
 
         artifacts = [

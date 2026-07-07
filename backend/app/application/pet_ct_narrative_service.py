@@ -70,6 +70,10 @@ focal uptake pattern, overall image quality, laterality) — this is expected of
 above. Any quantitative claim must trace back to the evidence provided.
 - Explain physiologic vs. pathologic uptake reasoning where relevant (e.g. renal/bladder \
 excretion, brown fat, bowel activity) rather than reporting every focus as disease.
+- Do NOT describe or report the brain. Physiologic cerebral FDG uptake is normal, expected in \
+every study, and is excluded from detection upstream — it must never appear in the findings. Do \
+not mention brain parenchyma, cerebral/brain uptake, or any brain lesion in the head_neck \
+paragraph or anywhere else, even to call it normal.
 - For every region, identify the single largest and/or most FDG-avid unnamed or ambiguously \
 labeled mass and explicitly assess whether it could be a primary tumor arising from a specific \
 organ — based on its own shape and location alone, independent of whether clinical history is \
@@ -85,8 +89,8 @@ radiologist would when correlating against labeled cross-sectional anatomy — r
 describing the region only in coarse terms. Only name a subdivision actually relevant to the \
 images/evidence; do not pad with anatomy that has nothing to report:
     head_neck: oral cavity, tongue, nasopharynx, oropharynx, hypopharynx/larynx, thyroid bed, \
-parotid and submandibular glands, cervical lymph node levels (I-VI), skull base, calvarium, brain \
-parenchyma.
+parotid and submandibular glands, cervical lymph node levels (I-VI), skull base, calvarium \
+(the brain parenchyma is excluded — do not mention it; see above).
     thorax: lung lobes (upper/middle/lower, right/left), mediastinal compartments (anterior/ \
 middle/posterior), hila, pleura, chest wall, axillae, breast tissue if imaged.
     abdomen_pelvis: liver, spleen, pancreas, adrenal glands, kidneys, stomach, small bowel, colon, \

@@ -460,7 +460,9 @@ class AlertingService:
         if not record:
             return None
         record.status = "acknowledged"
-        record.acknowledged_at = datetime.now(timezone.utc)
+        # acknowledged_at is a naive TIMESTAMP column; store naive UTC so asyncpg
+        # can bind it (see escalate_overdue_alerts for the full rationale).
+        record.acknowledged_at = datetime.now(timezone.utc).replace(tzinfo=None)
         record.acknowledged_by = acknowledged_by
         await self._session.flush()
         return self._alert_to_dict(record)
@@ -504,7 +506,13 @@ class AlertingService:
         from app.infrastructure.database.models import CriticalAlertRecord
         from datetime import datetime, timezone, timedelta
 
-        cutoff = datetime.now(timezone.utc) - timedelta(minutes=threshold_minutes)
+        # created_at / escalated_at are naive TIMESTAMP columns (stored as UTC
+        # via func.now()). asyncpg refuses to bind a tz-aware datetime to them
+        # ("can't subtract offset-naive and offset-aware datetimes"), so compare
+        # and write with naive UTC to match the column type.
+        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(
+            minutes=threshold_minutes
+        )
         stmt = select(CriticalAlertRecord).where(
             CriticalAlertRecord.status == "pending",
             CriticalAlertRecord.severity == "CRITICAL",
@@ -512,7 +520,7 @@ class AlertingService:
         )
         result = await self._session.execute(stmt)
         records = result.scalars().all()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
         for record in records:
             record.status = "escalated"
             record.escalated_at = now

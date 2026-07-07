@@ -1718,6 +1718,18 @@ class Pipeline(BasePipeline):
                 excl_mask = None
         if excl_mask is None:
             excl_mask = _build_physiological_exclusion_mask(suv_arr.shape, cfg_post)
+        # Always-on geometric brain backstop. Physiologic cerebral FDG uptake is the most
+        # intense in the body; at the coarse (--fast, 3 mm) segmentation resolution the
+        # TotalSegmentator brain mask can undersegment at its margins, letting residual
+        # cortical uptake survive as a spurious "brain" focus (it also never earns an organ
+        # name, so it slips through both suppression and naming). Cap the superior brain_frac
+        # of the volume unconditionally — regardless of which suppression path ran — so
+        # brain uptake is never reported as a lesion. Whole-body FDG-PET only; disable via
+        # physiologic_suppression.brain_geometric_backstop for dedicated head/neck studies.
+        if supp_cfg.get("brain_geometric_backstop", True) and suv_arr.ndim == 3:
+            brain_frac = float(cfg_post.get("exclude_brain_top_frac", 0.12))
+            brain_z = int(suv_arr.shape[2] * (1 - brain_frac))
+            excl_mask[:, :, brain_z:] = True
         raw_mask[excl_mask] = 0
         labeled, n_components = ndimage.label(raw_mask)
         lesion_mask = raw_mask

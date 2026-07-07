@@ -127,6 +127,12 @@ inference:
   # trusted to discriminate physiologic uptake on its own.
   physiologic_suppression:
     enabled: true
+    # Always cap the superior brain_frac (postprocessing.exclude_brain_top_frac) of the
+    # volume regardless of which suppression path ran. At --fast resolution the
+    # TotalSegmentator brain mask can undersegment at the margins, letting residual
+    # cerebral FDG uptake survive as a spurious "brain" lesion. Whole-body FDG-PET only;
+    # set false for dedicated head/neck acquisitions where the vertex is diagnostic.
+    brain_geometric_backstop: true
     totalseg_task: total
     totalseg_weights_dir: /model_cache/totalsegmentator
     dilate_voxels: 2

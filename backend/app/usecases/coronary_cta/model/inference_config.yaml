@@ -37,6 +37,23 @@ stenosis:
   minimal_percentile: 5              # minimal lumen diameter (D_min)
   endpoint_prune_iterations: 3       # trim tapering skeleton tips (false minima)
 
+# ── Plaque composition heuristic (calcified vs. non-calcified/soft) ──────────
+# NOT a learned classifier — no validated open-source plaque-characterization
+# model exists to drop in. This is a deterministic HU heuristic sampled from the
+# vessel-wall shell (dilated lumen minus lumen itself) around each vessel's
+# minimal-lumen-diameter point, same philosophy as Agatston's HU thresholding.
+# Contrast-opacified CCTA lumen commonly reads ~300-450 HU, which overlaps
+# naive calcification thresholds — hence the wide "indeterminate" band between
+# soft_plaque_max_hu and calcified_plaque_min_hu rather than a single cutoff.
+# Always flagged via the plaque_type_heuristic_hu_based QA flag; not
+# diagnostic-grade.
+plaque_classification:
+  enabled: true
+  wall_dilate_mm: 1.5           # lumen dilation defining the sampled wall shell
+  sample_radius_mm: 5.0         # neighbourhood around the min-diameter point to sample
+  soft_plaque_max_hu: 150.0     # peak wall HU at/below this -> non-calcified/soft
+  calcified_plaque_min_hu: 350.0  # peak wall HU at/above this -> calcified
+
 # ── Coronary lumen source for stenosis grading ────────────────────────────────
 # When no learned SwinUNETR model is configured (model.custom_ccta_weights_path
 # is null), derive the coronary lumen from TotalSegmentator's `coronary_arteries`
@@ -54,6 +71,34 @@ coronary_lumen:
   # `totalseg_set_license` CLI) to enable it; leave null otherwise. Without a
   # required license the task fails and the pipeline degrades to calcium-only.
   totalseg_license_number: null
+
+# ── Vessel territory assignment (LM / LAD / LCx / RCA) ────────────────────────
+# Geometric-only anatomical labelling: runs a SECOND TotalSegmentator call
+# (`heartchambers_highres`) on the CCTA to get chamber + aorta masks, then scores
+# each graded vessel component against groove-proximity / ostial-proximity rules
+# (see pipeline._assign_vessel_territory). NOT a learned/registered coronary-tree
+# labeller — it is an unvalidated heuristic layered on top of the geometric
+# stenosis grader, defaults to DISABLED, and must be validated against local
+# ground truth before enabling in a clinical workflow. On any failure (task
+# error, missing/mismatched chamber files) or a below-threshold confidence
+# score, the vessel is left "unassigned" exactly as before — this can only add
+# labels, never regress the existing geometric-only behaviour.
+vessel_territory:
+  enabled: false
+  chamber_task: heartchambers_highres
+  # Expected TotalSegmentator output filenames (without .nii.gz) for this task.
+  # If your installed TotalSegmentator version names these classes differently,
+  # update here rather than in code.
+  chamber_labels:
+    lv: heart_ventricle_left
+    rv: heart_ventricle_right
+    la: heart_atrium_left
+    ra: heart_atrium_right
+    aorta: aorta
+  groove_proximity_mm: 6.0      # max distance from an inter-chamber groove to count as "on" it
+  ostium_proximity_mm: 15.0     # max distance from the aorta mask to treat a vessel as ostial
+  lm_max_length_mm: 25.0        # left main is short; longer left-sided vessels are LAD/LCx instead
+  min_confidence: 0.55          # required groove-vote fraction to assign a label; else "unassigned"
 
 # ── Coronary artery calcium (Agatston) scoring ────────────────────────────────
 # Agatston is defined on the NON-CONTRAST gated series. HU >= 130 within the
@@ -98,6 +143,15 @@ postprocessing:
   hu_window_center: 300        # display window for calcium overlay PNGs
   hu_window_width: 1500
   overlay_top_n_slices: 3      # render the N slices with the most calcium
+
+  # Per-vessel stenosis crop PNGs (contrast CCTA), one per graded vessel, cropped
+  # tightly around its minimal-lumen-diameter point and windowed for
+  # contrast-enhanced lumen rather than the non-contrast calcium window above.
+  generate_stenosis_crops: true
+  stenosis_crop_top_n_vessels: 3
+  stenosis_crop_half_width_mm: 40.0
+  hu_window_center_cta: 300
+  hu_window_width_cta: 800
 
 quality_checks:
   min_slices: 30

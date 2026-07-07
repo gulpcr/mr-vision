@@ -87,6 +87,15 @@ async def upsert_report(
     request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
 ):
+    # When AI-authored reports are enabled the mammography report is read-only:
+    # the definitive report is written by Gemini from the images + model findings and
+    # must not be edited (see MAMMOGRAPHY_AI_REPORT_ENABLED). Reject edits explicitly.
+    from app.config import get_settings
+
+    if get_settings().mammography_ai_report_enabled:
+        raise HTTPException(
+            403, "Mammography report is AI-authored and read-only (MAMMOGRAPHY_AI_REPORT_ENABLED)."
+        )
     try:
         report = await MammographyService(session).upsert_report(
             study_uid,
@@ -110,13 +119,53 @@ async def download_report_pdf(
     study_uid: str,
     session: Annotated[AsyncSession, Depends(get_session)],
 ):
-    """Render the saved mammography report to PDF."""
-    from app.infrastructure.database.models import StudyRecord
+    """Render the mammography report to PDF.
+
+    When AI-authored reports are enabled, the report is the read-only AI report from the
+    latest pipeline result (Gemini-written, non-diagnostic). Otherwise fall back to the
+    saved radiologist report record."""
+    from app.config import get_settings
+    from app.infrastructure.database.models import ResultRecord, StudyRecord
     from app.reports.pdf_generator import PDFReportGenerator, build_petct_patient_info
 
-    report = await MammographyService(session).get_report(study_uid)
+    settings = get_settings()
+    report: dict | None = None
+
+    if settings.mammography_ai_report_enabled:
+        latest = (
+            await session.execute(
+                select(ResultRecord)
+                .where(
+                    ResultRecord.study_instance_uid == study_uid,
+                    ResultRecord.usecase_name == "mammography",
+                    ResultRecord.is_latest == True,  # noqa: E712
+                )
+            )
+        ).scalar_one_or_none()
+        summary = (latest.summary if latest else None) or {}
+        if summary.get("right_breast_findings") or summary.get("left_breast_findings"):
+            lat = (summary.get("laterality") or "bilateral").lower()
+            scope = {"right": "of the right breast ", "left": "of the left breast "}.get(lat, "of both breasts ")
+            report = {
+                "laterality": lat,
+                "procedure": f"Digital mammography {scope}performed in routine CC and MLO views.",
+                "clinical_features": summary.get("clinical_features"),
+                "right_breast_findings": summary.get("right_breast_findings"),
+                "left_breast_findings": summary.get("left_breast_findings"),
+                "opinion": summary.get("opinion"),
+                "birads_right": summary.get("birads_right"),
+                "birads_left": summary.get("birads_left"),
+                # AI-authored: no human signatory; attribute to the model.
+                "reviewing_doctor": "AI-generated (Gemini)",
+                "reporting_doctor": summary.get("ai_report_disclaimer")
+                or "AI-generated — non-diagnostic, requires radiologist verification",
+            }
+
     if report is None:
-        raise HTTPException(404, "No mammography report saved for this study")
+        # Fall back to the saved radiologist report record (edit mode / no AI report yet).
+        report = await MammographyService(session).get_report(study_uid)
+    if report is None:
+        raise HTTPException(404, "No mammography report available for this study")
 
     study_rec = (
         await session.execute(

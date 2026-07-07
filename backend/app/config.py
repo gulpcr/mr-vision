@@ -150,6 +150,12 @@ class Settings(BaseSettings):
     # template on failure or when disabled)
     petct_ai_report_enabled: bool = False
 
+    # Coronary CTA AI-authored report narrative (Gemini reads calcium-overlay images +
+    # the deterministic Agatston/stenosis findings and writes a synthesized narrative;
+    # falls back to the deterministic diagnosis/processing_notes already set by
+    # postprocess() on failure, disablement, or a malformed/ungrounded response)
+    coronary_cta_ai_report_enabled: bool = False
+
     # PET-CT Molecular Imaging report layout (renders the formal departmental
     # FDG PET-CT report for the pet_ct / pet_ct_brain use cases).
     report_institution_name: str = "DEPARTMENT OF MOLECULAR IMAGING"
@@ -196,6 +202,19 @@ class Settings(BaseSettings):
     # on VinDr-Mammo; scaffold only, off by default.
     mammography_detector_enabled: bool = False
     mammography_detector_weights_path: str = "/model_cache/mammo_detector"
+    # Fine-tuned Mammo-CLIP B5 multi-label classifier (VinDr-Mammo): fills ALL seven
+    # structured finding slots per breast — mass, calcification, architectural distortion,
+    # skin thickening, nipple retraction, axillary lymph node, density (a-d) — with trained
+    # probabilities (see backend/scripts/mammo_finetune/). Supersedes the zero-shot slots.
+    # Needs the RELEASED B5 checkpoint too (mammography_clip_weights_path) to rebuild the
+    # backbone architecture. CC BY-NC-SA (non-commercial) — same license caveat as above.
+    mammography_finetuned_enabled: bool = False
+    mammography_finetuned_weights_path: str = "/model_cache/mammo_clip_finetuned/best_all.pt"
+    # AI-authored mammography report: Gemini reads the rendered views + the model's per-breast
+    # finding probabilities and writes the per-breast findings / opinion / BI-RADS as a
+    # radiologist would (mirrors petct_ai_report_enabled). Falls back to the deterministic
+    # MammographyNarrativeService when disabled/failed. Requires gemini_api_key.
+    mammography_ai_report_enabled: bool = False
 
     # MRI narrative report layout (formal radiology report for the MRI use cases:
     # brain/spine/chest/abdomen). Defaults match the departmental brain MRI template;
