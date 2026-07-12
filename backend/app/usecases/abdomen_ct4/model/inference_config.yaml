@@ -1,0 +1,48 @@
+# abdomen_ct4 configuration. There is no learned model file here — the two models are
+# served by the local Ollama daemon (same as ct2/ct3), addressed by tag below. These
+# knobs govern how the ordered volume is rendered and how the engine batches it.
+preprocessing:
+  # Fraction of the volume trimmed off each end before rendering (extreme top/bottom
+  # slices are usually partial anatomy / table artifact).
+  edge_trim_fraction: 0.05
+  # Skip near-empty (air/table) slices: keep a slice only if at least this fraction of
+  # pixels are tissue (HU > -500).
+  min_foreground_fraction: 0.05
+  # Hard cap on slices rendered/triaged per study (bounds Stage 1 model calls). At
+  # batch_size 40 / overlap 5 this is ceil((N-5)/35) blocks. 120 → ~4 blocks; raise for
+  # finer coverage at higher cost. If the foreground count exceeds this, an evenly-
+  # strided subset of this size is used (logged).
+  max_scan_slices: 120
+  # Long-edge output size for each rendered PNG (px); 0 keeps native resolution.
+  out_size: 768
+  # Representative slices always registered as artifacts (shown even when the engine is
+  # disabled or flags nothing).
+  preview_count: 6
+  # Single soft-tissue / portal-venous HU window used for every slice: organs, masses,
+  # fluid, bowel, nodes, vessels. (Pan-abdominal screening — no per-organ windowing.)
+  window: {level: 40.0, width: 400.0}
+
+scan:
+  # Stage 1 (multi-image triage) runs the 4B multimodal model in HUGGINGFACE, not Ollama
+  # — its model path/device are Settings (abdomen_ct4_hf_triage_model / _device) because
+  # they are infrastructure/deployment concerns. Only Stage 2 uses an Ollama tag:
+  #   report_model: Stage 2, 27B TEXT — synthesizes the unified report (falls back to
+  #   MEDGEMMA_MODEL in the hook if empty). This host already has this tag.
+  report_model: "medgemma:27b"
+
+  # Token-Aware Volumetric Batching for Stage 1. Slices per triage call and slices shared
+  # between consecutive blocks (block stride = batch_size - overlap).
+  # SENSITIVITY NOTE: the 4B model under-attends when a single prompt packs ~40 images —
+  # it tends to return a blanket "NORMAL" (false negatives). Smaller blocks make it look
+  # at each slice properly, at the cost of more inference calls per study. 8/2 is a
+  # sensitivity-first default (~7s/block → ~15 blocks over 120 slices ≈ ~2 min/study).
+  # Raise toward 40 only if you have verified it does not miss pathology on your data.
+  batch_size: 8
+  overlap: 2
+  # Absolute-index gap up to which two abnormal spans are still merged into one pathology
+  # zone. 0 = merge only overlapping/adjacent spans.
+  merge_gap: 0
+
+quality_checks:
+  # Warn when the primary series has too few slices to screen meaningfully.
+  min_slices: 10

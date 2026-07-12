@@ -451,6 +451,10 @@ class PDFReportGenerator:
                 return self._generate_mri_narrative_report(
                     study_uid, usecase_name, result, patient_info or {}, narrative
                 )
+            if usecase_name in ("abdomen_ct", "abdomen_ct2", "abdomen_ct3", "abdomen_ct4"):
+                return self._generate_abdomenct_report(
+                    study_uid, usecase_name, result, patient_info or {}
+                )
             return self._generate_with_reportlab(
                 study_uid, usecase_name, result, patient_info, narrative
             )
@@ -776,6 +780,150 @@ class PDFReportGenerator:
             story.append(Paragraph(doctor_title, sig))
         if doctor_quals:
             story.append(Paragraph(doctor_quals, sig))
+
+        story.append(Spacer(1, 1.0 * cm))
+        story.append(Paragraph(
+            "Note: This is a computer generated document and does not require any signature.",
+            footer_note,
+        ))
+
+        doc.build(story)
+        buf.seek(0)
+        return buf.read()
+
+    def _generate_abdomenct_report(
+        self,
+        study_uid: str,
+        usecase_name: str,
+        result: dict[str, Any],
+        patient_info: dict[str, Any],
+    ) -> bytes:
+        """Render the Abdomen CT report: CLINICAL FEATURES / FINDINGS / CONCLUSIONS.
+
+        FINDINGS / CONCLUSIONS are the CONSOLIDATED MedGemma report authored in the
+        pipeline (summary.ai_report), which groups the per-slice flags into
+        non-redundant prose. Clinical features come from patient onboarding (merged
+        into patient_info by the caller). NON-DIAGNOSTIC assistive output.
+        """
+        import re as _re
+
+        from reportlab.lib import colors
+        from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+        from reportlab.lib.units import cm
+        from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+        from app.config import get_settings
+
+        settings = get_settings()
+        summary = result.get("summary", {}) or {}
+        ai_report = summary.get("ai_report", {}) or {}
+
+        def g(key: str, default: str = "") -> str:
+            val = patient_info.get(key)
+            return str(val) if val not in (None, "") else default
+
+        clinical_features = g("clinical_history") or g("indication") or "No clinical history provided."
+        findings_text = str(ai_report.get("findings", "") or "").strip()
+        if not findings_text:
+            flags = summary.get("anomaly_findings") or []
+            findings_text = "; ".join(
+                _re.sub(r"^\s*\[[^\]]*\]\s*", "", str(f.get("finding", ""))).strip()
+                for f in flags if f.get("finding")
+            ) or "No focal abnormality was flagged on the reviewed axial levels."
+        conclusions = str(ai_report.get("impression", "") or "").strip() or "—"
+        disclaimer = str(ai_report.get("disclaimer", "") or "").strip()
+        # Split findings prose into paragraphs on blank lines.
+        findings_lines = [p.strip() for p in _re.split(r"\n\s*\n", findings_text) if p.strip()] or [findings_text]
+
+        prn = g("patient_id", "—")
+        buf = io.BytesIO()
+        doc = SimpleDocTemplate(
+            buf, pagesize=A4,
+            leftMargin=2.2 * cm, rightMargin=2.2 * cm,
+            topMargin=1.8 * cm, bottomMargin=2.0 * cm,
+            title=f"Abdomen CT Report — {prn}",
+        )
+
+        styles = getSampleStyleSheet()
+        cell = ParagraphStyle("cell", parent=styles["Normal"], fontSize=10, leading=14)
+        sec_head = ParagraphStyle(
+            "sechead", parent=styles["Normal"], fontSize=10.5,
+            fontName="Helvetica-Bold", spaceBefore=12, spaceAfter=4,
+        )
+        body = ParagraphStyle(
+            "body", parent=styles["Normal"], fontSize=10, leading=15,
+            alignment=TA_JUSTIFY, spaceAfter=8,
+        )
+        sig = ParagraphStyle(
+            "sig", parent=styles["Normal"], fontSize=10,
+            fontName="Helvetica-BoldOblique", leading=14,
+        )
+        footer_note = ParagraphStyle(
+            "footernote", parent=styles["Normal"], fontSize=8.5,
+            fontName="Helvetica-BoldOblique", alignment=TA_CENTER,
+            textColor=colors.HexColor("#444444"),
+        )
+
+        def section(label: str, paras: list[str]) -> list[Any]:
+            els: list[Any] = [Paragraph(f"<u>{label}:</u>", sec_head)]
+            clean = [p.strip() for p in paras if p and p.strip()] or ["—"]
+            for p in clean:
+                els.append(Paragraph(p, body))
+            return els
+
+        story: list[Any] = []
+        info_data = [
+            [Paragraph(f"<b>PATIENT</b> : {g('patient_name', '—')}", cell),
+             Paragraph(f"<b>MR</b> : {prn}", cell)],
+            [Paragraph(f"<b>DATE</b> : {g('study_date', '—')}", cell),
+             Paragraph(f"<b>AGE</b> : {g('patient_age', '—')}", cell)],
+            [Paragraph(f"<b>GENDER</b> : {g('patient_sex', '—')}", cell),
+             Paragraph(f"<b>REF</b> : {g('referring_physician', '')}", cell)],
+        ]
+        info_table = Table(info_data, colWidths=[9.6 * cm, 7.0 * cm])
+        info_table.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("TOPPADDING", (0, 0), (-1, -1), 1),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ]))
+        story.append(info_table)
+
+        _status_text, _is_signed = _reading_status_line(patient_info)
+        story.append(Paragraph(
+            _status_text,
+            ParagraphStyle(
+                "ReportStatus", alignment=TA_CENTER, fontName="Helvetica-Bold", fontSize=9,
+                spaceBefore=6, spaceAfter=2,
+                textColor=colors.HexColor("#067647") if _is_signed else colors.HexColor("#b54708"),
+            ),
+        ))
+        story.append(Spacer(1, 0.3 * cm))
+
+        story.append(Paragraph("<u>EXAMINATION:&nbsp; CT SCAN OF THE ABDOMEN AND PELVIS:</u>", sec_head))
+        story.append(Paragraph(
+            "<b><u>TECHNIQUE:</u></b> AI-assisted review of axial CT images of the abdomen and "
+            "pelvis in a soft-tissue window.", body,
+        ))
+        story.extend(section("CLINICAL FEATURES", [clinical_features]))
+        story.extend(section("FINDINGS", findings_lines))
+        story.extend(section("CONCLUSIONS", [conclusions]))
+        if disclaimer:
+            story.append(Paragraph(
+                f"<i>{disclaimer}</i>",
+                ParagraphStyle("disc", parent=body, fontSize=8.5,
+                               textColor=colors.HexColor("#666666"), spaceBefore=6),
+            ))
+
+        story.append(Spacer(1, 1.6 * cm))
+        story.append(Paragraph("_______________________________", cell))
+        story.append(Paragraph(settings.mri_report_signatory_name, sig))
+        if settings.mri_report_signatory_title:
+            story.append(Paragraph(settings.mri_report_signatory_title, sig))
+        if settings.mri_report_signatory_qualifications:
+            story.append(Paragraph(settings.mri_report_signatory_qualifications, sig))
 
         story.append(Spacer(1, 1.0 * cm))
         story.append(Paragraph(

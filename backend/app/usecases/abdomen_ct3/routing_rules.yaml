@@ -1,0 +1,25 @@
+# abdomen_ct3 is MANUAL-ONLY: the rule below is disabled so auto-classification never
+# selects it. The full-volume MedGemma scan is expensive (many model calls per study),
+# so it is opt-in — run it explicitly by passing
+# usecase_names=["abdomen_ct3"] to POST /api/studies/{uid}/jobs (the orchestrator
+# bypasses routing for explicit use-case names).
+#
+# To enable auto-routing, flip `enabled: true` — the rule is already scoped to CT +
+# abdomen/pelvis so it will only match relevant studies.
+rules:
+  - modality: CT
+    body_parts:
+      - ABDOMEN
+      - PELVIS
+    study_description_patterns:
+      - "(?i)abdomen"
+      - "(?i)abdo"
+      - "(?i)\\bpelvis\\b"
+      - "(?i)\\bkub\\b"
+      - "(?i)liver"
+    series_description_patterns:
+      - "(?i)abdomen"
+      - "(?i)portal"
+      - "(?i)venous"
+    priority: 5
+    enabled: false

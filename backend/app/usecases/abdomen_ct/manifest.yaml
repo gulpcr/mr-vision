@@ -1,0 +1,20 @@
+name: abdomen_ct
+version: "1.0.0"
+description: >
+  Abdomen CT screening read by a local MedGemma vision-language model. It performs
+  NO segmentation and NO measurement: it picks the primary CT series and selects a
+  set of axial levels — when abdomen_ct_anomaly_enabled, a MONAI VQVAE+Transformer
+  (trained normal-only) scores every slice and the MOST ANOMALOUS levels are chosen;
+  otherwise levels are sampled EVENLY across the volume. Either way the RAW slices
+  are rendered in fixed HU windows (soft-tissue / liver / bone) and handed to
+  MedGemma, which identifies the anatomy and authors a free-text radiological report.
+  The VQVAE is a slice SELECTOR only — its reconstruction is never shown to MedGemma.
+  Requires medgemma_enabled (local Ollama). NON-DIAGNOSTIC assistive output — only
+  the selected slices are reviewed; full-volume radiologist review remains required.
+supported_body_parts:
+  - ABDOMEN
+  - PELVIS
+required_sequences:
+  - CT
+model_type: MedGemma (local VLM free-text report) + optional VQVAE/Transformer anomaly slice selection
+enabled: true

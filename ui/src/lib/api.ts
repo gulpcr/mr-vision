@@ -679,6 +679,14 @@ export const api = {
       `${API_BASE}/reports/${studyUid}/${usecase}/pdf`,
     downloadPdfBlob: (studyUid: string, usecase: string) =>
       fetchBlob(`/reports/${studyUid}/${usecase}/pdf`),
+    consolidatedReport: (studyUid: string, usecase: string) =>
+      fetchAPI<{
+        findings: string;
+        conclusions: string;
+        model: string | null;
+        grounded: boolean;
+        flagged_count: number;
+      }>(`/reports/${studyUid}/${usecase}/consolidated-report`),
     getSrUrl: (studyUid: string, usecase: string) =>
       `${API_BASE}/reports/${studyUid}/${usecase}/dicom-sr`,
     getFhirUrl: (studyUid: string, usecase: string) =>
@@ -759,6 +767,23 @@ export const api = {
     meta: (studyUid: string, usecase: string) =>
       fetchAPI<FusedMeta>(`/fused/${studyUid}/${usecase}/meta`),
   },
+  medgemmaDebug: {
+    // Reconstruct the exact MedGemma inputs (prompt + all images) for a study and,
+    // when run=true, re-run the local model and return raw + parsed output.
+    get: (
+      usecase: string,
+      studyUid: string,
+      opts?: { run?: boolean; sendAll?: boolean; includeImages?: boolean }
+    ) => {
+      const p = new URLSearchParams();
+      p.set("run", String(opts?.run ?? false));
+      if (opts?.sendAll) p.set("send_all", "true");
+      if (opts?.includeImages) p.set("include_images", "true");
+      return fetchAPI<MedGemmaDebug>(
+        `/debug/medgemma/${usecase}/${encodeURIComponent(studyUid)}?${p.toString()}`
+      );
+    },
+  },
 };
 
 export interface FusedMeta {
@@ -766,6 +791,47 @@ export interface FusedMeta {
   defaults: Record<"axial" | "coronal" | "sagittal", number>;
   has_ct: boolean;
   has_lesions: boolean;
+}
+
+export interface MedGemmaDebugImage {
+  name: string;
+  artifact_type: string | null;
+  bytes: number;
+  sha256: string;
+  sent_to_model: boolean;
+  base64?: string;
+}
+
+export interface MedGemmaDebug {
+  usecase: string;
+  study_uid: string;
+  result_version: number | null;
+  stored_ai_report_provider: string | null;
+  medgemma: {
+    enabled: boolean;
+    base_url: string;
+    model: string;
+    force_json: boolean;
+    ready?: boolean;
+  };
+  inputs: {
+    prompt: string;
+    prompt_chars: number;
+    n_images_total: number;
+    n_images_sent: number;
+    send_all: boolean;
+    sent_image_names: string[];
+    images: MedGemmaDebugImage[];
+  };
+  output: {
+    raw: string;
+    raw_chars: number;
+    parsed: unknown;
+    parsed_ok: boolean;
+    parse_error: string | null;
+    elapsed_s: number;
+  } | null;
+  note?: string;
 }
 
 export function getFusedUrl(

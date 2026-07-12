@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
-import { api, Study, Job, Result, CptSuggestion, ProtocolCheckResult, ComparisonData } from "@/lib/api";
+import { api, Study, Job, Result, CptSuggestion, ProtocolCheckResult, ComparisonData, MedGemmaDebug } from "@/lib/api";
 import { StatusBadge } from "@/components/StatusBadge";
 import { ReportView } from "@/components/ReportView";
 import { FusedViewer } from "@/components/FusedViewer";
@@ -11,7 +11,7 @@ import { formatDate, formatPatientName } from "@/lib/format";
 import Link from "next/link";
 import {
   ArrowLeft, ExternalLink, ArrowLeftRight, FileDown, Share2, AlertTriangle,
-  CheckCircle, DollarSign, Stethoscope, ChevronDown, ChevronUp, Link2, X, TrendingUp, FileText
+  CheckCircle, DollarSign, Stethoscope, ChevronDown, ChevronUp, Link2, X, TrendingUp, FileText, Bug
 } from "lucide-react";
 
 // ── Sequence type detector ────────────────────────────────────────────────────
@@ -81,6 +81,12 @@ export default function StudyPage() {
   const [shareLink, setShareLink] = useState<string | null>(null);
   const [shareCopied, setShareCopied] = useState(false);
 
+  // MedGemma debug panel
+  const [mgDebug, setMgDebug] = useState<MedGemmaDebug | null>(null);
+  const [mgLoading, setMgLoading] = useState(false);
+  const [mgRunning, setMgRunning] = useState(false);
+  const [mgOpen, setMgOpen] = useState(false);
+
   const [pdfLoading, setPdfLoading] = useState(false);
 
   const [readingBusy, setReadingBusy] = useState(false);
@@ -122,13 +128,25 @@ export default function StudyPage() {
     return () => clearInterval(interval);
   }, [uid]);
 
+  // Track the selected use case's result across the 10 s poll. Keyed on `results`
+  // so a freshly-arrived result is picked up — but deliberately does NOT reset the
+  // feature panels (that lives in the effect below), or every poll would close an
+  // open CPT / Protocol / Prior / MedGemma panel mid-view.
+  useEffect(() => {
+    if (!selectedUsecase) {
+      setSelectedResult(null);
+      return;
+    }
+    const r = results.find((res) => res.usecase_name === selectedUsecase);
+    setSelectedResult(r || null);
+  }, [selectedUsecase, results]);
+
+  // Per-use-case setup + panel reset. Keyed ONLY on the use case (and uid), NOT on
+  // `results`, so it fires when the user switches use case — not on every poll.
   useEffect(() => {
     if (!selectedUsecase) return;
     api.usecases.getUiSchema(selectedUsecase).then(setUiSchema).catch(() => setUiSchema(null));
-    const r = results.find((res) => res.usecase_name === selectedUsecase);
-    setSelectedResult(r || null);
     api.results.listVersions(uid, selectedUsecase).then((d) => setVersions(d.results)).catch(() => setVersions([]));
-    // Reset feature panels when use case changes
     setCptSuggestions(null);
     setCptOpen(false);
     setProtocolCheck(null);
@@ -136,7 +154,9 @@ export default function StudyPage() {
     setPriorComparison(null);
     setPriorOpen(false);
     setShareLink(null);
-  }, [selectedUsecase, results, uid]);
+    setMgDebug(null);
+    setMgOpen(false);
+  }, [selectedUsecase, uid]);
 
   const loadCptSuggestions = useCallback(async () => {
     if (!selectedUsecase || cptLoading) return;
@@ -179,6 +199,46 @@ export default function StudyPage() {
       setPriorLoading(false);
     }
   }, [uid, selectedUsecase, priorLoading]);
+
+  // Fetch MedGemma inputs (prompt + all images) without calling the model — fast.
+  const loadMedgemmaDebug = useCallback(async () => {
+    if (!selectedUsecase || mgLoading) return;
+    setMgLoading(true);
+    try {
+      const data = await api.medgemmaDebug.get(selectedUsecase, uid, {
+        run: false,
+        includeImages: true,
+      });
+      setMgDebug(data);
+      setMgOpen(true);
+    } catch (e: any) {
+      alert("MedGemma debug not available: " + e.message);
+    } finally {
+      setMgLoading(false);
+    }
+  }, [uid, selectedUsecase, mgLoading]);
+
+  // Re-run the local model. sendAll=true feeds every image (incl. Stage-3 crops).
+  const runMedgemma = useCallback(
+    async (sendAll: boolean) => {
+      if (!selectedUsecase || mgRunning) return;
+      setMgRunning(true);
+      try {
+        const data = await api.medgemmaDebug.get(selectedUsecase, uid, {
+          run: true,
+          sendAll,
+          includeImages: true,
+        });
+        setMgDebug(data);
+        setMgOpen(true);
+      } catch (e: any) {
+        alert("MedGemma run failed: " + e.message);
+      } finally {
+        setMgRunning(false);
+      }
+    },
+    [uid, selectedUsecase, mgRunning]
+  );
 
   const handleDownloadPdf = useCallback(async () => {
     if (!selectedResult || pdfLoading) return;
@@ -557,6 +617,17 @@ export default function StudyPage() {
                       <FileText className="w-4 h-4" /> PET-CT Report
                     </Link>
                   )}
+                  {selectedResult.usecase_name === "pet_ct" && (
+                    <button
+                      onClick={loadMedgemmaDebug}
+                      disabled={mgLoading}
+                      title="Inspect the exact prompt, images, and raw output sent to the local MedGemma model"
+                      className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-fuchsia-700 border border-fuchsia-200 rounded-lg hover:bg-fuchsia-50 transition-colors disabled:opacity-50"
+                    >
+                      <Bug className="w-4 h-4" />
+                      {mgLoading ? "Loading..." : "MedGemma Debug"}
+                    </button>
+                  )}
                   {selectedResult.usecase_name === "mammography" && (
                     <Link
                       href={`/study/${uid}/mammography`}
@@ -571,6 +642,14 @@ export default function StudyPage() {
                       className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-teal-700 border border-teal-200 rounded-lg hover:bg-teal-50 transition-colors"
                     >
                       <FileText className="w-4 h-4" /> MRI Report
+                    </Link>
+                  )}
+                  {["abdomen_ct", "abdomen_ct2", "abdomen_ct3", "abdomen_ct4"].includes(selectedResult.usecase_name) && (
+                    <Link
+                      href={`/study/${uid}/abdomen?usecase=${selectedResult.usecase_name}`}
+                      className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-cyan-700 border border-cyan-200 rounded-lg hover:bg-cyan-50 transition-colors"
+                    >
+                      <FileText className="w-4 h-4" /> Abdomen CT Report
                     </Link>
                   )}
                   <button
@@ -785,6 +864,131 @@ export default function StudyPage() {
               {priorOpen && (
                 <div className="p-4">
                   <ComparePanel data={priorComparison} />
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* MedGemma Debug Panel */}
+          {mgDebug && (
+            <div className="mb-4 bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+              <button
+                onClick={() => setMgOpen(!mgOpen)}
+                className="w-full flex items-center justify-between px-4 py-3 border-b border-gray-100 text-left hover:bg-gray-50 transition-colors"
+              >
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Bug className="w-4 h-4 text-fuchsia-600" />
+                  <span className="text-sm font-semibold text-gray-900">MedGemma Debug</span>
+                  <span className="text-xs bg-fuchsia-100 text-fuchsia-700 px-2 py-0.5 rounded-full font-medium">
+                    {mgDebug.medgemma.model}
+                  </span>
+                  <span className="text-xs text-gray-400">
+                    {mgDebug.inputs.n_images_sent}/{mgDebug.inputs.n_images_total} images sent
+                  </span>
+                  {mgDebug.medgemma.ready === false && (
+                    <span className="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded-full font-medium">
+                      Ollama unreachable
+                    </span>
+                  )}
+                </div>
+                {mgOpen ? <ChevronUp className="w-4 h-4 text-gray-400" /> : <ChevronDown className="w-4 h-4 text-gray-400" />}
+              </button>
+              {mgOpen && (
+                <div className="p-4 space-y-4">
+                  {/* Config + run controls */}
+                  <div className="flex items-center gap-x-3 gap-y-1 flex-wrap text-xs text-gray-500">
+                    <span>base_url: <span className="font-mono text-gray-700">{mgDebug.medgemma.base_url}</span></span>
+                    <span>&middot; enabled: {String(mgDebug.medgemma.enabled)}</span>
+                    {mgDebug.stored_ai_report_provider && (
+                      <span>&middot; stored report by: <span className="font-mono text-gray-700">{mgDebug.stored_ai_report_provider}</span></span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      onClick={() => runMedgemma(false)}
+                      disabled={mgRunning}
+                      className="px-3 py-1.5 text-xs font-medium text-white bg-fuchsia-600 hover:bg-fuchsia-700 rounded-lg disabled:opacity-50"
+                    >
+                      {mgRunning ? "Running…" : "Run model (6 images)"}
+                    </button>
+                    <button
+                      onClick={() => runMedgemma(true)}
+                      disabled={mgRunning}
+                      className="px-3 py-1.5 text-xs font-medium text-fuchsia-700 border border-fuchsia-200 hover:bg-fuchsia-50 rounded-lg disabled:opacity-50"
+                    >
+                      {mgRunning ? "Running…" : "Run send_all (every image)"}
+                    </button>
+                    <span className="text-xs text-gray-400">≈ 20–30 s per run</span>
+                  </div>
+
+                  {mgDebug.note && (
+                    <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">{mgDebug.note}</p>
+                  )}
+
+                  {/* Images (inputs) */}
+                  <div>
+                    <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
+                      Images ({mgDebug.inputs.images.length}) — <span className="text-green-600">sent</span> vs generated-but-not-sent
+                    </p>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+                      {mgDebug.inputs.images.map((im) => (
+                        <div key={im.name} className="border border-gray-100 rounded-lg overflow-hidden">
+                          {im.base64 ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              src={`data:image/png;base64,${im.base64}`}
+                              alt={im.name}
+                              className="w-full h-32 object-contain bg-black"
+                            />
+                          ) : (
+                            <div className="w-full h-32 bg-gray-100 flex items-center justify-center text-xs text-gray-400">
+                              no preview
+                            </div>
+                          )}
+                          <div className="p-1.5">
+                            <div className="flex items-center justify-between gap-1">
+                              <span className="text-[11px] font-medium text-gray-700 truncate" title={im.name}>{im.name}</span>
+                              {im.sent_to_model ? (
+                                <span className="text-[9px] font-bold uppercase bg-green-100 text-green-700 px-1 py-0.5 rounded shrink-0">sent</span>
+                              ) : (
+                                <span className="text-[9px] font-bold uppercase bg-gray-100 text-gray-400 px-1 py-0.5 rounded shrink-0">not sent</span>
+                              )}
+                            </div>
+                            <span className="text-[10px] text-gray-400">
+                              {(im.bytes / 1024).toFixed(0)} KB · {im.artifact_type}
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Prompt (input) */}
+                  <div>
+                    <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
+                      Prompt ({mgDebug.inputs.prompt_chars} chars)
+                    </p>
+                    <pre className="text-[11px] whitespace-pre-wrap bg-gray-50 border border-gray-100 rounded p-3 max-h-80 overflow-auto text-gray-700">
+                      {mgDebug.inputs.prompt}
+                    </pre>
+                  </div>
+
+                  {/* Output */}
+                  {mgDebug.output && (
+                    <div>
+                      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
+                        Raw output · {mgDebug.output.elapsed_s}s ·{" "}
+                        {mgDebug.output.parsed_ok ? (
+                          <span className="text-green-600">parsed ✓</span>
+                        ) : (
+                          <span className="text-red-600">parse failed{mgDebug.output.parse_error ? ` (${mgDebug.output.parse_error})` : ""}</span>
+                        )}
+                      </p>
+                      <pre className="text-[11px] whitespace-pre-wrap bg-gray-900 text-green-200 rounded p-3 max-h-80 overflow-auto">
+                        {mgDebug.output.raw}
+                      </pre>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

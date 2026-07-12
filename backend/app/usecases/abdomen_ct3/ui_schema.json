@@ -1,0 +1,39 @@
+{
+  "title": "Abdomen CT (v2) — MedGemma Two-Pass AI Report",
+  "description": "Whole-volume MedGemma scan flags abnormal levels, then MedGemma reports on the flagged slices",
+  "sections": [
+    {
+      "id": "summary",
+      "title": "Summary",
+      "type": "key_value",
+      "data_path": "summary",
+      "fields": [
+        { "key": "modality", "label": "Modality", "format": "text" },
+        { "key": "series_description", "label": "Series", "format": "text" },
+        { "key": "candidate_slices", "label": "Slices Scanned", "format": "text" },
+        { "key": "anomaly_slices", "label": "Flagged Levels (z)", "format": "array" },
+        { "key": "hu_windows", "label": "HU Windows", "format": "array" },
+        { "key": "ai_report_provider", "label": "Report Author", "format": "text" },
+        { "key": "processing_notes", "label": "Notes", "format": "text" }
+      ]
+    },
+    {
+      "id": "flagged_slices",
+      "title": "Flagged Slices",
+      "type": "image",
+      "artifact_filter": "abdomen_ct2_slice_png"
+    },
+    {
+      "id": "qa",
+      "title": "Quality Assurance",
+      "type": "qa_panel",
+      "flags_path": "qa_flags",
+      "details_path": "qa_details",
+      "severity_map": {
+        "insufficient_slices": "warning",
+        "no_slices_rendered": "error",
+        "not_a_volume": "warning"
+      }
+    }
+  ]
+}

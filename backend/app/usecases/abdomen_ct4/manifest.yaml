@@ -1,0 +1,23 @@
+name: abdomen_ct4
+version: "1.0.0"
+description: >
+  Pan-abdominal CT screening by a LOCAL two-stage, two-model multi-agent engine, with
+  NO organ segmentation and NO measurement. The ordered diagnostic volume is rendered
+  slice-by-slice. Stage 1 (MedGemma 1.5 4B, multimodal) triages overlapping 40-slice
+  blocks (5-slice overlap) and flags any block carrying pathology; a coordination layer
+  maps the flags to absolute slice positions and interval-merges them into consolidated
+  pathology zones. Stage 2 (MedGemma 27B, text-only) walks the zones with a running
+  clinical history and synthesizes a single unified radiological report. Sensitivity-first:
+  a malformed Stage 1 reply is treated as ABNORMAL so parsing failures never drop
+  pathology. Runs on the local Ollama daemon (gated by medgemma_enabled, same as
+  abdomen_ct2/ct3) — no new weights: reuses the 4B multimodal and 27B MedGemma tags this
+  host already has. Differs from abdomen_ct2 (one model, two passes over the whole volume)
+  by using two distinct models in a triage→report cascade. NON-DIAGNOSTIC assistive
+  output — full-volume radiologist review remains required.
+supported_body_parts:
+  - ABDOMEN
+  - PELVIS
+required_sequences:
+  - CT
+model_type: MedGemma two-model multi-agent (4B multimodal triage + 27B text-only report)
+enabled: true

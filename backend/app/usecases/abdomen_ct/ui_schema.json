@@ -1,0 +1,38 @@
+{
+  "title": "Abdomen CT — AI Report",
+  "description": "Abdomen CT read by a local MedGemma model from soft-tissue-windowed slices sampled across the volume",
+  "sections": [
+    {
+      "id": "summary",
+      "title": "Summary",
+      "type": "key_value",
+      "data_path": "summary",
+      "fields": [
+        { "key": "modality", "label": "Modality", "format": "text" },
+        { "key": "series_description", "label": "Series", "format": "text" },
+        { "key": "slices_rendered", "label": "Levels Sampled (z)", "format": "array" },
+        { "key": "hu_windows", "label": "HU Windows", "format": "array" },
+        { "key": "ai_report_provider", "label": "Report Author", "format": "text" },
+        { "key": "processing_notes", "label": "Notes", "format": "text" }
+      ]
+    },
+    {
+      "id": "slices",
+      "title": "Sampled Slices",
+      "type": "image",
+      "artifact_filter": "abdomen_ct_slice_png"
+    },
+    {
+      "id": "qa",
+      "title": "Quality Assurance",
+      "type": "qa_panel",
+      "flags_path": "qa_flags",
+      "details_path": "qa_details",
+      "severity_map": {
+        "insufficient_slices": "warning",
+        "no_slices_rendered": "error",
+        "not_a_volume": "warning"
+      }
+    }
+  ]
+}

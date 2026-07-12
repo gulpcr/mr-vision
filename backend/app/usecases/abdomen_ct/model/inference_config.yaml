@@ -1,0 +1,81 @@
+# abdomen_ct configuration. There is no learned model — the knobs are how many
+# anatomical levels to sample, how to space them, and which HU windows to render
+# each level in for MedGemma.
+preprocessing:
+  # Number of axial LEVELS to send to MedGemma — the anomaly selector's top-K (or the
+  # even-sampling count in fallback). Coverage is by fraction of depth, NOT fixed
+  # indices, so it is consistent whether the series is thin-slice (400+) or thick (60).
+  slice_count: 20
+  # Fraction of the volume to trim off each end before sampling (the extreme
+  # top/bottom slices are usually partial anatomy / table artifact).
+  edge_trim_fraction: 0.08
+
+  # HU windows rendered PER LEVEL. Each (level × window) is one PNG sent to MedGemma.
+  # TOTAL images = slice_count × len(windows); all are sent to the model, so this list
+  # IS the token/latency budget. Single soft-tissue window here — to also catch
+  # bone/liver-specific findings, add {name: liver, level: 40, width: 150} and/or
+  # {name: bone, level: 400, width: 1800} back (multiplies the image count).
+  #   soft-tissue / portal-venous (L40 W400): the abdomen workhorse (organs, masses, fluid, nodes)
+  windows:
+    - {name: soft-tissue, level: 40.0, width: 400.0}
+
+  # Long-edge output size for the rendered PNG (px); 0 keeps native resolution.
+  out_size: 1024
+
+quality_checks:
+  # Warn when the primary series has too few slices to sample meaningfully.
+  min_slices: 10
+
+# ── Anomaly-guided slice selection (MONAI VQVAE + autoregressive Transformer) ────
+# Trained normal-only on abdomen CT; used ONLY to choose WHICH axial slices are the
+# most anomalous. Those raw slices are then re-rendered in the HU windows above and
+# sent to MedGemma — the VQVAE reconstruction is never shown to the model. Also
+# gated by settings.abdomen_ct_anomaly_enabled; if this or the flag is off, or the
+# weights are missing, or anything errors, the pipeline falls back to the even-
+# sampling above (fully non-blocking). The number of slices selected == slice_count.
+anomaly:
+  enabled: true
+  vqvae_weights: model/vqvae_last.pt          # relative to the use-case dir
+  transformer_weights: model/transformer_last.pt
+  device: auto                                # auto → cuda if available else cpu
+
+  # Input the networks were TRAINED on. input_size / 2^(len num_channels) must equal
+  # the transformer latent grid: 128 / 2^3 = 16 → 16*16 = 256 = max_seq_len.
+  input_size: 128
+  # Intensity normalization used in training (ScaleIntensityRange). MUST match the
+  # training loader exactly — anomaly scoring is meaningless otherwise.
+  hu_min: -150.0
+  hu_max: 250.0
+  # Flatten order for the 16×16 latent grid fed to the transformer (must match
+  # training): raster_scan | s_curve | random | hilbert.
+  ordering: raster_scan
+
+  # VQVAE architecture — recovered from vqvae_last.pt state-dict shapes.
+  vqvae:
+    num_channels: [128, 256, 256]           # 3 stride-2 downsamples ⇒ ÷8 spatial
+    num_res_channels: [128, 256, 256]
+    num_res_layers: 2
+    num_embeddings: 256                      # codebook size
+    embedding_dim: 64
+
+  # DecoderOnlyTransformer architecture — recovered from transformer_last.pt, EXCEPT
+  # attn_layers_heads, which is NOT encoded in the weights. Set it to the value used
+  # in training; a wrong head count loads cleanly but silently corrupts the scores.
+  transformer:
+    num_tokens: 257                          # 256 codebook + 1 BOS
+    max_seq_len: 256                         # = latent 16*16
+    attn_layers_dim: 256
+    attn_layers_depth: 16
+    attn_layers_heads: 8                     # ⚠ set to TRAINING value (weights can't tell us)
+
+  selection:
+    # Cap forward passes for very thick series: if candidate slices exceed this,
+    # score an evenly-strided subset (logged), then pick the top-K among them.
+    max_scored_slices: 400
+    # Non-max suppression: minimum gap (in slices) between two selected levels, so
+    # the K sent to MedGemma are spread across regions, not K views of one lesion.
+    min_slice_separation: 5
+    # Skip near-empty (air/table) slices so they can't dominate the anomaly ranking.
+    min_foreground_fraction: 0.02
+    # Slices scored per forward batch (VRAM/latency knob).
+    batch_size: 16

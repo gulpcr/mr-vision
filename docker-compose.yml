@@ -60,6 +60,12 @@ services:
     environment:
       - PYTHONPATH=/app
       - DATABASE_URL=postgresql://${POSTGRES_USER:-mri_admin}:${POSTGRES_PASSWORD}@postgres:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-mri_platform}
+      # The /api/debug/medgemma endpoints call Ollama from the BACKEND container,
+      # so it needs the same host.docker.internal override as the worker (localhost
+      # inside the container is the container itself). See worker service.
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./backend:/app
     command: >
@@ -98,6 +104,25 @@ services:
       - TOTALSEG_WEIGHTS_PATH=/model_cache/totalsegmentator
       - MONAI_HOME=/model_cache/monai
       - NVIDIA_VISIBLE_DEVICES=all
+      # MedGemma runs on a LOCAL Ollama daemon on the host. Inside the container
+      # "localhost" is the container itself, so the worker must reach the host via
+      # host.docker.internal (verified: localhost → connection refused,
+      # host.docker.internal → 200). Overridable via OLLAMA_BASE_URL in .env.
+      # NB: the Ollama daemon must listen on 0.0.0.0 (OLLAMA_HOST=0.0.0.0:11434),
+      # not just 127.0.0.1, or the container connection is refused.
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      # abdomen_ct4 Stage 1 loads the 4B MedGemma vision model from HuggingFace. MedGemma
+      # is a GATED repo, so transformers/huggingface_hub need HF_TOKEN to download it
+      # (put HF_TOKEN=hf_... in .env; resolved here, also passed via env_file). Not needed
+      # once the weights are cached or when ABDOMEN_CT4_HF_TRIAGE_MODEL points at a local dir.
+      - HF_TOKEN=${HF_TOKEN:-}
+      # Persist the HF download (~9 GB) in the model_cache named volume so it survives
+      # container recreation instead of re-downloading every `docker compose up`.
+      - HF_HOME=/model_cache/huggingface
+    # Linux (non-Docker-Desktop) hosts do not provide host.docker.internal by
+    # default; this maps it to the host gateway. Harmless on Docker Desktop.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./backend:/app
       # SpineNet code now lives in the build context (backend/external/spinenet).

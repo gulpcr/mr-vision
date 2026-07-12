@@ -1,0 +1,55 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Abdomen CT MedGemma Report Result",
+  "type": "object",
+  "required": ["summary", "measurements", "qa_flags", "model_version", "artifacts"],
+  "properties": {
+    "summary": {
+      "type": "object",
+      "properties": {
+        "modality": { "type": ["string", "null"] },
+        "series_description": { "type": ["string", "null"] },
+        "study_description": { "type": ["string", "null"] },
+        "slices_rendered": { "type": "array", "items": { "type": "integer" } },
+        "image_dimensions": { "type": "array", "items": { "type": "integer" } },
+        "hu_windows": { "type": "array", "items": { "type": "string" } },
+        "quantitative": { "type": "boolean" },
+        "inference_method": { "type": "string" },
+        "processing_notes": { "type": "string" },
+        "ai_report": {
+          "type": "object",
+          "properties": {
+            "findings": { "type": "string" },
+            "impression": { "type": "string" },
+            "disclaimer": { "type": "string" }
+          }
+        },
+        "ai_report_provider": { "type": "string" }
+      }
+    },
+    "measurements": {
+      "type": "object",
+      "properties": {
+        "image_dimensions": { "type": "array", "items": { "type": "integer" } },
+        "slices_rendered": { "type": "array", "items": { "type": "integer" } }
+      }
+    },
+    "qa_flags": { "type": "array", "items": { "type": "string" } },
+    "qa_details": { "type": "object", "additionalProperties": true },
+    "model_version": { "type": "string" },
+    "model_checksum": { "type": "string" },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "artifact_type", "local_path"],
+        "properties": {
+          "name": { "type": "string" },
+          "artifact_type": { "type": "string" },
+          "local_path": { "type": "string" },
+          "content_type": { "type": "string" }
+        }
+      }
+    }
+  }
+}

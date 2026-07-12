@@ -25,6 +25,73 @@ logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/reports", tags=["reports"])
 
 
+@router.get("/{study_uid}/{usecase}/consolidated-report")
+async def get_consolidated_report(
+    study_uid: str,
+    usecase: str,
+    service: Annotated[ResultService, Depends(get_result_service)],
+):
+    """Write a grounded FINDINGS/CONCLUSIONS report from a screening result's per-level
+    flags, using a SEPARATE text model (does not touch the pipeline). Falls back to the
+    pipeline's own ai_report / raw flags if the writer model is unavailable.
+    """
+    import re as _re
+
+    result = await service.get_result(study_uid, usecase)
+    if not result:
+        raise HTTPException(404, "No result found")
+
+    summary = result.summary or {}
+    flagged = summary.get("anomaly_findings") or []
+    settings = get_settings()
+
+    consolidated: dict[str, str] | None = None
+    used_model: str | None = None
+    if settings.medgemma_enabled:
+        from app.application.abdomen_report_service import AbdomenReportService
+        from app.infrastructure.llm.medgemma_client import MedGemmaClient
+
+        model = summary.get("medgemma_model") or settings.medgemma_model
+        client = MedGemmaClient(
+            base_url=settings.ollama_base_url,
+            model_name=model,
+            timeout_s=settings.medgemma_timeout_s,
+            force_json=True,
+        )
+        consolidated = await AbdomenReportService(client).consolidate(
+            flagged=flagged, study_description=summary.get("study_description")
+        )
+        if consolidated:
+            used_model = model
+
+    if not consolidated:
+        ai = summary.get("ai_report") or {}
+        raw = "; ".join(
+            _re.sub(r"^\s*\[[^\]]*\]\s*", "", str(f.get("finding", ""))).strip()
+            for f in flagged if f.get("finding")
+        )
+        consolidated = {
+            "findings": (
+                str(ai.get("findings", "")).strip()
+                or raw
+                or "No focal abnormality was flagged on the reviewed axial levels."
+            ),
+            "conclusions": (
+                str(ai.get("impression", "")).strip()
+                or ("See findings above; correlation with clinical information advised."
+                    if flagged else "No acute focal abnormality flagged on the reviewed levels.")
+            ),
+        }
+
+    return {
+        "findings": consolidated["findings"],
+        "conclusions": consolidated["conclusions"],
+        "model": used_model,
+        "grounded": True,
+        "flagged_count": len(flagged),
+    }
+
+
 @router.get("/{study_uid}/{usecase}/clinical-context")
 async def get_clinical_context(
     study_uid: str,
@@ -258,6 +325,32 @@ async def generate_pdf_report(
                 summary_for_pdf = {**summary_for_pdf, "ai_report": ai_report}
         except Exception as exc:
             logger.warning("petct_ai_report_ondemand_failed", study_uid=study_uid, error=str(exc))
+
+    # Abdomen CT: write FINDINGS/CONCLUSIONS with the separate report-writer model (same
+    # as the /consolidated-report endpoint) so the PDF matches the report view. The
+    # pipeline flow is untouched — this only reorganizes the stored per-level flags.
+    if usecase in ("abdomen_ct", "abdomen_ct2", "abdomen_ct3", "abdomen_ct4") and settings.medgemma_enabled:
+        try:
+            from app.application.abdomen_report_service import AbdomenReportService
+            from app.infrastructure.llm.medgemma_client import MedGemmaClient
+
+            _model = summary_for_pdf.get("medgemma_model") or settings.medgemma_model
+            _client = MedGemmaClient(
+                base_url=settings.ollama_base_url, model_name=_model,
+                timeout_s=settings.medgemma_timeout_s, force_json=True,
+            )
+            _consolidated = await AbdomenReportService(_client).consolidate(
+                flagged=summary_for_pdf.get("anomaly_findings") or [],
+                study_description=summary_for_pdf.get("study_description"),
+            )
+            if _consolidated:
+                summary_for_pdf = {**summary_for_pdf, "ai_report": {
+                    "findings": _consolidated["findings"],
+                    "impression": _consolidated["conclusions"],
+                    "disclaimer": (summary_for_pdf.get("ai_report") or {}).get("disclaimer", ""),
+                }}
+        except Exception as exc:
+            logger.warning("abdomen_report_ondemand_failed", study_uid=study_uid, error=str(exc))
 
     generator = PDFReportGenerator()
     patient_info = build_petct_patient_info(study_rec)

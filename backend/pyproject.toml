@@ -71,7 +71,10 @@ dependencies = [
     # Only loaded when MAMMOGRAPHY_CLIP_ENABLED=true and weights are staged; torch is
     # installed via the Dockerfile (CPU/CUDA variant).
     "timm>=0.9",
-    "transformers>=4.40",
+    # transformers>=4.52 is required for the Gemma-3 / MedGemma vision stack used by
+    # abdomen_ct4 Stage 1 (AutoModelForImageTextToText); accelerate powers device_map.
+    "transformers>=4.52",
+    "accelerate>=0.30",
     "einops>=0.7",
     "omegaconf>=2.3",
 ]

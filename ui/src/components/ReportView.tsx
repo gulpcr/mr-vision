@@ -92,6 +92,11 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
   const actuallyHasPet = study.series.some((s) => s.modality === "PT");
   const isPetCt = PET_USECASES.includes(result.usecase_name) && actuallyHasPet;
   const isPipelineMismatch = PET_USECASES.includes(result.usecase_name) && !actuallyHasPet;
+  const isAbdomenCt = result.usecase_name === "abdomen_ct";
+  const isAbdomenCt2 = result.usecase_name === "abdomen_ct2";
+  const isAbdomenCt3 = result.usecase_name === "abdomen_ct3";
+  const isAbdomenScan = isAbdomenCt2 || isAbdomenCt3; // full-volume scan variants (flagged slices)
+  const isAbdomenCtLike = isAbdomenCt || isAbdomenCt2 || isAbdomenCt3;
 
   return (
     <div className="report-container">
@@ -228,6 +233,105 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
           </div>
         );
       })()}
+
+      {/* ── Abdomen CT: MedGemma free-text report + sampled slices ── */}
+      {isAbdomenCtLike && (
+        <>
+          {(() => {
+            const report: any = result.summary?.ai_report;
+            if (!report || (!report.findings && !report.impression)) {
+              return (
+                <div className="report-section flex items-start gap-3 bg-amber-50 border border-amber-200 rounded-lg px-4 py-3">
+                  <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-sm font-semibold text-amber-800">No AI report generated</p>
+                    <p className="text-xs text-amber-700 mt-1 leading-relaxed">
+                      The raw slices below were rendered, but the local MedGemma model did not
+                      produce a report (it may be disabled or unreachable). Review the slices
+                      directly.
+                    </p>
+                  </div>
+                </div>
+              );
+            }
+            return (
+              <div className="report-section" style={{ borderLeft: "4px solid #2563eb", paddingLeft: "1.25rem" }}>
+                <h2 className="report-section-title flex items-center gap-2">
+                  <FileText className="w-5 h-5 text-blue-600" />
+                  AI Radiological Report
+                </h2>
+                {report.findings && (
+                  <div className="mt-2">
+                    <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">
+                      Findings
+                    </h3>
+                    <p className="text-sm text-gray-800 leading-relaxed whitespace-pre-line">
+                      {report.findings}
+                    </p>
+                  </div>
+                )}
+                {report.impression && (
+                  <div className="mt-4">
+                    <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">
+                      Impression
+                    </h3>
+                    <p className="text-sm text-gray-900 font-medium leading-relaxed whitespace-pre-line">
+                      {report.impression}
+                    </p>
+                  </div>
+                )}
+                {(report.disclaimer || result.summary?.ai_report_provider) && (
+                  <p className="text-xs text-gray-400 mt-3 italic">
+                    {report.disclaimer}
+                    {result.summary?.ai_report_provider
+                      ? ` (${result.summary.ai_report_provider})`
+                      : ""}
+                  </p>
+                )}
+              </div>
+            );
+          })()}
+
+          {(() => {
+            const slices = result.artifacts.filter(
+              (a) =>
+                a.artifact_type === "abdomen_ct_slice_png" ||
+                a.artifact_type === "abdomen_ct2_slice_png" ||
+                a.artifact_type === "abdomen_ct3_slice_png"
+            );
+            if (slices.length === 0) return null;
+            return (
+              <div className="report-section">
+                <h2 className="report-section-title">
+                  {isAbdomenScan ? "Flagged Slices" : "Sampled Slices"}
+                </h2>
+                <p className="text-xs text-gray-400 mb-3">
+                  {isAbdomenScan
+                    ? "MedGemma scanned every slice of the volume and flagged these axial levels as potentially abnormal (superior→inferior) — the report was written from these findings."
+                    : "Axial levels sampled evenly across the volume (superior→inferior), each in multiple HU windows (soft-tissue / liver / bone) — the exact images the AI report was written from."}
+                </p>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  {slices.map((artifact) => (
+                    <div key={artifact.name}>
+                      <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5 text-center">
+                        {artifact.name.replace(/\.[^.]+$/, "").replace(/_/g, " ")}
+                      </div>
+                      <div className="bg-black rounded-lg overflow-hidden border-2 border-gray-200">
+                        <AuthImage
+                          src={getArtifactUrl(study.study_instance_uid, result.usecase_name, artifact.name)}
+                          alt={artifact.name}
+                          className="w-full h-auto"
+                          fallback="Slice not available"
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
+        </>
+      )}
 
       {/* Clinical Findings */}
       {summarySection && (
@@ -683,6 +787,9 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
             );
           })()}
         </>
+      ) : isAbdomenCtLike ? (
+        /* abdomen_ct / abdomen_ct2: slices are rendered in the dedicated block above, no overlay */
+        null
       ) : (
         /* ── MRI / non-PET: Segmentation overlay via preview endpoint ── */
         <div className="report-section">

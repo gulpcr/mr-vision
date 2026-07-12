@@ -1,0 +1,22 @@
+name: abdomen_ct3
+version: "1.0.0"
+description: >
+  Abdomen CT screening by a local MedGemma vision-language model in a SINGLE
+  full-volume scan pass, with NO pre-selection of slices, NO segmentation and NO
+  measurement. The whole diagnostic CT volume is rendered slice-by-slice and fed to
+  MedGemma in LARGE batches (default 10 contiguous slices) in each scan window; for
+  each batch MedGemma flags the levels that look even possibly abnormal AND gives the
+  reason at flag time (high-sensitivity triage — when in doubt it flags). The final
+  radiological report is then SYNTHESIZED from the accumulated flag reasons in one
+  text-only call (no images are re-sent). Differs from abdomen_ct2 (small batches +
+  a second image report pass) by trading exact per-slice localization for continuity
+  context, far fewer model calls, and speed — which makes the larger 27B model
+  affordable. Requires medgemma_enabled (local Ollama). NON-DIAGNOSTIC assistive
+  output — full-volume radiologist review remains required.
+supported_body_parts:
+  - ABDOMEN
+  - PELVIS
+required_sequences:
+  - CT
+model_type: MedGemma (local VLM) single-pass full-volume flag-with-reason + synthesized report
+enabled: true

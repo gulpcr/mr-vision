@@ -65,6 +65,17 @@ is a serious error; omitting or deferring it is correct.
 Model evidence per breast (probability that each finding is PRESENT; density is the model's \
 BI-RADS composition call):
 {evidence_block}
+{birads_block}
+CRITICAL — THE REPORT MUST READ AS YOUR OWN RADIOLOGIST INTERPRETATION. The model evidence and the \
+pre-assigned BI-RADS above are INTERNAL grounding for your read only. Do NOT expose them in the \
+report. Specifically, in the findings, opinion and clinical_features you must NOT: mention "the AI \
+model", "the model", "the classifier", "AI-suggested", "AI assessment", or that any automated tool \
+produced a finding; print ANY numeric confidence, probability or score (e.g. "(confidence 0.82)", \
+"probability 0.1"); or phrase a finding as agreement/consistency with a model (e.g. "consistent \
+with the model's assessment of mass=none"). State every finding DIRECTLY as your own observation \
+(e.g. "No suspicious mass is identified", "The parenchyma is heterogeneously dense (ACR category \
+c)"). No number that is a confidence, probability or score may appear anywhere in the output.
+
 Write in the ACR BI-RADS lexicon, in flowing professional radiology prose (never a checklist). \
 Be comprehensive and specific. For EACH imaged breast, the "findings" must systematically address \
 ALL of the following, in this order, describing what is seen (and explicitly stating the negative \
@@ -91,12 +102,18 @@ be excluded on mammography alone.
 Then write a comprehensive "opinion" (impression) that: synthesises the salient findings per \
 breast; gives an explicit, actionable recommendation (e.g. "Advise ultrasound correlation", \
 "correlate with prior mammograms", "tissue sampling advised" — as appropriate); and states the \
-BI-RADS category per breast in the prose.
+pre-assigned BI-RADS category per breast in the prose.
 
-Assign a BI-RADS CATEGORY per breast as an integer 0-6 (0 = incomplete, needs further imaging \
-such as ultrasound / prior comparison; 1 = negative; 2 = benign; 3 = probably benign; \
-4 = suspicious; 5 = highly suggestive of malignancy; 6 = biopsy-proven malignancy). A \
-post-operative breast with possible residual disease that needs ultrasound is typically category 0.
+BI-RADS CATEGORY — REPORT AS ASSIGNED, DO NOT OVERRIDE. The BI-RADS category for each imaged \
+breast has already been assigned by the platform (shown above) and is authoritative. You MUST use \
+that exact category in your prose and echo it unchanged in the JSON below — do NOT substitute your \
+own number, even if your read of the images would suggest a different category. Your narrative must \
+be consistent with the assigned category. If the images make you doubt the assigned category, say \
+so qualitatively in the opinion (e.g. "features warrant careful correlation") and recommend the \
+appropriate work-up — but still report the assigned BI-RADS number. Reference (for wording only): \
+0 = incomplete, needs further imaging; 1 = negative; 2 = benign; 3 = probably benign; \
+4 = suspicious; 5 = highly suggestive of malignancy; 6 = biopsy-proven malignancy. If a breast has \
+no assigned category above, set its birads to null.
 
 Summarise the clinical history into a concise "clinical_features" string.
 Only report on a breast that was imaged (present in the evidence below). If a breast is absent from \
@@ -136,14 +153,20 @@ class MammographyRadiologistService:
         qa_flags: list[str] | None = None,
         patient_age: str | None = None,
         patient_sex: str | None = None,
+        birads_right: int | None = None,
+        birads_left: int | None = None,
     ) -> dict[str, Any] | None:
         """Returns {clinical_features, right_breast_findings, left_breast_findings, opinion,
-        birads_right, birads_left, disclaimer} or None on failure/unavailability."""
+        birads_right, birads_left, disclaimer} or None on failure/unavailability.
+
+        ``birads_right``/``birads_left`` are the platform's pre-assigned BI-RADS categories.
+        They are authoritative: the model is instructed to report them as-is (in prose and JSON)
+        and NOT to substitute its own — the caller also ignores any model-returned BI-RADS."""
         if not self.available or not images:
             return None
         prompt = _build_prompt(
             findings, laterality, clinical_indication, clinical_history,
-            qa_flags, patient_age, patient_sex,
+            qa_flags, patient_age, patient_sex, birads_right, birads_left,
         )
         try:
             raw = await self._client.generate_from_images(prompt, images)
@@ -177,6 +200,18 @@ def _evidence_for_side(label: str, slots: dict[str, Any] | None) -> str:
     return f"  {label}: " + "; ".join(parts) if parts else f"  {label}: no model calls."
 
 
+def _birads_block(birads_right: int | None, birads_left: int | None) -> str:
+    """Pre-assigned, authoritative BI-RADS categories for the prompt (report-as-is)."""
+    def _fmt(side: str, val: int | None) -> str:
+        return f"  {side} breast: BI-RADS {val}" if val is not None else f"  {side} breast: not assigned"
+    return (
+        "Pre-assigned BI-RADS category per breast (AUTHORITATIVE — report exactly this, do not "
+        "override):\n"
+        + _fmt("RIGHT", birads_right) + "\n"
+        + _fmt("LEFT", birads_left)
+    )
+
+
 def _build_prompt(
     findings: dict[str, Any],
     laterality: str,
@@ -185,6 +220,8 @@ def _build_prompt(
     qa_flags: list[str] | None,
     patient_age: str | None,
     patient_sex: str | None,
+    birads_right: int | None = None,
+    birads_left: int | None = None,
 ) -> str:
     clinical_lines = []
     if patient_age:
@@ -209,6 +246,7 @@ def _build_prompt(
     return _PROMPT_TEMPLATE.format(
         clinical_block=clinical_block,
         evidence_block=evidence_block,
+        birads_block=_birads_block(birads_right, birads_left),
         disclaimer=_DEFAULT_DISCLAIMER,
     )
 

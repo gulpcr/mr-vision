@@ -1,0 +1,61 @@
+# abdomen_ct3 configuration. There is no learned model. Like abdomen_ct2 it renders
+# the WHOLE diagnostic volume, but it uses a SINGLE scan pass with LARGE batches:
+# MedGemma flags abnormal levels AND gives the reason at flag time, then the report is
+# SYNTHESIZED from those accumulated reasons in one text-only call (no image re-send).
+# These knobs govern how many slices are rendered/scanned, batch size, scan windows,
+# and which MedGemma model to use.
+preprocessing:
+  # Fraction of the volume trimmed off each end before scanning (extreme top/bottom
+  # slices are usually partial anatomy / table artifact).
+  edge_trim_fraction: 0.05
+  # Skip near-empty (air/table) slices so they are never scanned or reported: a slice
+  # is kept only if at least this fraction of pixels are tissue (HU > -500).
+  min_foreground_fraction: 0.05
+  # Hard cap on the number of slices scanned per study (bounds MedGemma calls and
+  # latency). If the foreground slice count exceeds this, an evenly-strided subset of
+  # this size is scanned instead (logged). 96 keeps inter-slice gaps small (~a few
+  # slices) so a focal finding lands on at least one scanned level anywhere.
+  max_scan_slices: 96
+  # Long-edge output size for each rendered PNG (px); 0 keeps native resolution.
+  out_size: 768
+  # Number of representative slices always rendered as artifacts (so the UI shows
+  # something even when MedGemma is disabled or flags nothing).
+  preview_count: 6
+
+  # HU windows each scanned slice is rendered in. ct3 only renders the scan windows
+  # (there is no image report pass), so this should match scan.scan_windows.
+  #   soft-tissue / portal-venous (L40 W400): organs, masses, fluid, bowel, nodes
+  #   bone  (L400 W1800): skeleton — lytic/blastic mets, fractures, cortical detail
+  #   liver (L40 W150): subtle hypo/hyperdense hepatic (and splenic) lesions
+  windows:
+    - {name: soft-tissue, level: 40.0, width: 400.0}
+    - {name: bone,        level: 400.0, width: 1800.0}
+
+scan:
+  # Which windows are scanned. Each is scanned over the WHOLE volume independently and
+  # the flagged levels are unioned, so a bone-only finding gets caught in the bone pass
+  # even when the soft-tissue view looks normal. Must be a subset of
+  # preprocessing.windows; falls back to the first window if empty/invalid.
+  scan_windows:
+    - soft-tissue
+    - bone
+  # Images sent to MedGemma per scan call. The volume is scanned in ceil(N/batch_size)
+  # calls PER scan window. LARGE batches (10) give the model continuity context across
+  # contiguous slices (a mass spanning several levels is easier to recognize) and cut
+  # the call count ~5x — which is what makes the 27B model affordable here. The cost is
+  # looser per-slice z-attribution, acceptable for a region-level triage.
+  batch_size: 10
+  # MedGemma model tag used for THIS use case, overriding the global MEDGEMMA_MODEL.
+  # ct3 deliberately uses the larger, more sensitive 27B for the scan; other use cases
+  # (pet_ct, abdomen_ct2) keep whatever MEDGEMMA_MODEL is set to. Empty → global.
+  model: "medgemma:27b"
+
+report:
+  # ct3 synthesizes the report from the accumulated scan-flag reasons in one TEXT-ONLY
+  # call — no images are re-sent — so there are no report windows. This caps how many
+  # flagged levels' reasons are passed to the synthesis prompt (bounds prompt size).
+  max_report_levels: 24
+
+quality_checks:
+  # Warn when the primary series has too few slices to scan meaningfully.
+  min_slices: 10
