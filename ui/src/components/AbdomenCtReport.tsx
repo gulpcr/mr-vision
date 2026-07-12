@@ -78,16 +78,20 @@ export function AbdomenCtReport({ study, result }: { study: Study; result: Resul
     (aiReport.findings && String(aiReport.findings).trim()) ||
     (flagged.length ? flagged.map((f) => `z=${f.z}: ${cleanFinding(f.finding)}`).join("\n") : "") ||
     (summary.processing_notes ? String(summary.processing_notes) : "");
-  const findingParas = toParagraphs(
-    (report?.findings || fallbackFindings) ||
-      "No focal abnormality was flagged on the reviewed axial levels."
-  );
-  const conclusions: string =
-    (report?.conclusions && report.conclusions.trim()) ||
-    (aiReport.impression && String(aiReport.impression).trim()) ||
-    (flagged.length ? "See findings above; correlation with clinical information advised." : "No acute focal abnormality flagged on the reviewed levels.");
+  // Only show text once the writer has responded (or failed) — never flash the raw
+  // fallback and then swap it for the written report.
+  const findingParas = reportLoading
+    ? []
+    : toParagraphs(
+        (report?.findings || fallbackFindings) ||
+          "No focal abnormality was flagged on the reviewed axial levels."
+      );
+  const conclusions: string = reportLoading
+    ? ""
+    : (report?.conclusions && report.conclusions.trim()) ||
+      (aiReport.impression && String(aiReport.impression).trim()) ||
+      (flagged.length ? "See findings above; correlation with clinical information advised." : "No acute focal abnormality flagged on the reviewed levels.");
   const disclaimer: string = aiReport.disclaimer || "";
-  const provider: string = report?.model || summary.ai_report_provider || summary.medgemma_model || "";
 
   const [pdfLoading, setPdfLoading] = useState(false);
 
@@ -200,47 +204,23 @@ export function AbdomenCtReport({ study, result }: { study: Study; result: Resul
         <p className="text-justify">{clinicalFeatures}</p>
 
         <Sec>FINDINGS:</Sec>
-        {reportLoading && (
-          <p className="no-print text-xs text-gray-400 mb-2">Writing report from the AI findings…</p>
+        {reportLoading ? (
+          <p className="text-sm text-gray-400 italic mb-2 animate-pulse">Writing the report from the AI findings…</p>
+        ) : (
+          findingParas.map((p, i) => (
+            <p key={i} className="text-justify mb-2">{p}</p>
+          ))
         )}
-        {findingParas.map((p, i) => (
-          <p key={i} className="text-justify mb-2">{p}</p>
-        ))}
 
         <Sec>CONCLUSIONS:</Sec>
-        <p className="text-justify">{conclusions}</p>
+        {reportLoading ? (
+          <p className="text-sm text-gray-400 italic animate-pulse">…</p>
+        ) : (
+          <p className="text-justify">{conclusions}</p>
+        )}
 
         {disclaimer && (
           <p className="text-[11px] italic text-gray-500 mt-4">{disclaimer}</p>
-        )}
-
-        {/* Flagged levels appendix (transparency: the raw AI flags) */}
-        {flagged.length > 0 && (
-          <div className="mt-6">
-            <p className="font-bold underline mb-1">AI-FLAGGED LEVELS (appendix):</p>
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs border-collapse">
-                <thead>
-                  <tr className="text-left text-gray-500 border-b border-gray-200">
-                    <th className="py-1 pr-4 font-semibold">Level (z)</th>
-                    <th className="py-1 font-semibold">Flagged finding</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {flagged.map((f, i) => (
-                    <tr key={i} className="border-b border-gray-100">
-                      <td className="py-1 pr-4 font-mono">z={f.z}</td>
-                      <td className="py-1">{cleanFinding(f.finding)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <p className="text-[11px] italic text-gray-400 mt-1">
-              Raw per-level flags from the AI scan{provider ? ` (${provider})` : ""} — the
-              consolidated FINDINGS above are derived from these.
-            </p>
-          </div>
         )}
 
         {/* Signatory */}

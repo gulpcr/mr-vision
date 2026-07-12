@@ -49,6 +49,35 @@ def _even_pick(items: list[int], k: int) -> list[int]:
     return seen
 
 
+async def rich_read(
+    *,
+    client: Any,
+    images: list[dict[str, Any]],
+    flagged: list[dict[str, Any]] | None,
+    study_description: str | None,
+) -> dict[str, Any] | None:
+    """Detailed-read pass: characterize findings + systematic organ review.
+
+    ``images`` is an ordered ``[{"z", "bytes"}]`` set of soft-tissue slices spanning the
+    volume (flagged levels + coverage), superior→inferior. Returns
+    ``{findings, impression, disclaimer}`` or None on failure. Additive — does not affect
+    the scan/flag flow; the caller merges this into ``summary["ai_report"]``.
+    """
+    if not images:
+        return None
+    prompt = prompts.build_richread_prompt(
+        [int(e["z"]) for e in images], flagged or [], study_description
+    )
+    raw = await client.generate_from_images(prompt, [e["bytes"] for e in images])
+    parsed = prompts.parse_report(raw) if raw else None
+    if parsed:
+        # A VLM cannot measure from a slice — strip any numeric size it fabricated.
+        parsed["findings"] = prompts.strip_measurements(parsed.get("findings", ""))
+        parsed["impression"] = prompts.strip_measurements(parsed.get("impression", ""))
+    logger.info("abdomen_ct2_rich_read", images=len(images), has_report=bool(parsed))
+    return parsed
+
+
 async def scan_and_report(
     *,
     client: Any,

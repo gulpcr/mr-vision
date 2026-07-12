@@ -208,6 +208,60 @@ Respond ONLY with a valid JSON object — no markdown fences, no extra text:
 """
 
 
+def build_richread_prompt(
+    image_zs: list[int],
+    flagged: list[dict[str, Any]] | None,
+    study_description: str | None,
+) -> str:
+    """Detailed-read prompt: characterize the findings + systematic organ review.
+
+    Given a set of soft-tissue axial images spanning the abdomen/pelvis (flagged levels
+    plus evenly-spread coverage), MedGemma writes a DETAILED findings paragraph the way
+    a radiologist dictates: it characterizes each abnormality (location and relationship
+    to ADJACENT structures) and then does a SYSTEMATIC organ review of what is visible.
+    Grounded to the images — no invented measurements. ``image_zs`` is only for internal
+    reference; the model is told not to cite slice numbers.
+    """
+    context = f' The study is described as "{study_description}".' if study_description else ""
+    hint = ""
+    if flagged:
+        items = "; ".join(
+            re.sub(r"^\s*\[[^\]]*\]\s*", "", str(f.get("finding", ""))).strip()
+            for f in flagged if f.get("finding")
+        )
+        if items:
+            hint = (
+                f"\nA first pass flagged: {items}. Confirm and CHARACTERIZE these on the images "
+                "(they may misfire).\n"
+            )
+
+    return f"""You are a consultant radiologist reading an ABDOMEN/PELVIS CT.{context} You are \
+shown {len(image_zs)} axial soft-tissue images spanning the abdomen and pelvis (superior→inferior).
+{hint}
+Dictate a DETAILED FINDINGS section the way a radiologist writes a report:
+- For each abnormality you see, describe it fully: its ORGAN/anatomical location, and its \
+RELATIONSHIP to ADJACENT structures visible on the images (e.g. abutting the rectum, in contact \
+with the urinary bladder, abutting the sigmoid colon / bowel loops, fat planes preserved or \
+indistinct), plus its character (e.g. heterogeneous, cystic/solid, enhancing) IF visible.
+- Then give a SYSTEMATIC ORGAN REVIEW of the structures visible across the images: liver, \
+gallbladder, spleen, pancreas, adrenals, kidneys, bowel, mesentery/peritoneum (free fluid/air), \
+abdominal aorta/vessels, lymph nodes, and the visualized bones — stating the status of each \
+(normal, or the abnormality seen). Comment on an organ only if it is actually visible.
+- GROUNDING: describe ONLY what is visible. NEVER state a numeric size or measurement — no \
+centimetres, millimetres, or dimensions of ANY kind (you cannot measure from these images). You \
+MAY describe size qualitatively ("bulky", "large", "small") but NEVER with a number. Do NOT \
+invent HU values or findings you cannot see. Do NOT mention slice/z numbers, "images", or that an \
+AI produced this — write as a radiologist dictating.
+
+Respond ONLY with a valid JSON object — no markdown fences, no extra text:
+{{
+  "findings": "<detailed radiological FINDINGS: characterized abnormalities with adjacent-structure relationships, then a systematic organ review; fluent prose, several sentences>",
+  "impression": "<concise impression of the significant findings + a brief hedged recommendation>",
+  "disclaimer": "{_DISCLAIMER}"
+}}
+"""
+
+
 def parse_report(raw: str) -> dict[str, str] | None:
     """Parse a report reply into ``{findings, impression, disclaimer}``.
 
@@ -226,6 +280,30 @@ def parse_report(raw: str) -> dict[str, str] | None:
         "impression": impression,
         "disclaimer": str(data.get("disclaimer", "") or "").strip() or _DISCLAIMER,
     }
+
+
+# A VLM cannot measure from a windowed slice, so any numeric size it emits is fabricated.
+# Strip measurement clauses as a safety net (the prompt also forbids them).
+_MEASURE_RE = re.compile(
+    r"[,;]?\s*(?:,?\s*(?:which is\s+|and\s+)?measuring\s+)?"
+    r"(?:approximately\s+|approx\.?\s+|about\s+|roughly\s+|~\s*)?"
+    r"\d+(?:\.\d+)?\s*(?:[-–xX×]\s*\d+(?:\.\d+)?\s*)*(?:mm|cm)\b"
+    r"(?:\s+in\s+(?:its\s+)?[a-z ]+?dimension)?"
+    r"(?:\s*\((?:[A-Z]{1,3}\s*[x×]\s*)+[A-Z]{1,3}\))?",
+    re.IGNORECASE,
+)
+
+
+def strip_measurements(text: str) -> str:
+    """Remove fabricated numeric size/measurement clauses from report prose."""
+    if not text:
+        return text
+    t = _MEASURE_RE.sub("", text)
+    t = re.sub(r"\(\s*\)", "", t)
+    t = re.sub(r"\s{2,}", " ", t)
+    t = re.sub(r"\s+([.,;])", r"\1", t)
+    t = re.sub(r"([.,;]){2,}", r"\1", t)
+    return t.strip()
 
 
 # ── shared JSON extraction ─────────────────────────────────────────────────────

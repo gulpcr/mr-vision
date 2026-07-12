@@ -30,10 +30,13 @@ async def get_consolidated_report(
     study_uid: str,
     usecase: str,
     service: Annotated[ResultService, Depends(get_result_service)],
+    refresh: bool = False,
 ):
     """Write a grounded FINDINGS/CONCLUSIONS report from a screening result's per-level
-    flags, using a SEPARATE text model (does not touch the pipeline). Falls back to the
-    pipeline's own ai_report / raw flags if the writer model is unavailable.
+    flags, using a SEPARATE text model (does not touch the pipeline). The first call
+    generates and CACHES it on the result so repeat opens return the identical report
+    (the writer is non-deterministic); pass ?refresh=true to regenerate. Falls back to
+    the pipeline's own ai_report / raw flags if the writer model is unavailable.
     """
     import re as _re
 
@@ -44,6 +47,11 @@ async def get_consolidated_report(
     summary = result.summary or {}
     flagged = summary.get("anomaly_findings") or []
     settings = get_settings()
+
+    # Return the cached report so every open is identical (unless ?refresh=true).
+    cached = summary.get("consolidated_report")
+    if cached and not refresh and cached.get("findings"):
+        return {**cached, "cached": True, "flagged_count": len(flagged)}
 
     consolidated: dict[str, str] | None = None
     used_model: str | None = None
@@ -59,7 +67,9 @@ async def get_consolidated_report(
             force_json=True,
         )
         consolidated = await AbdomenReportService(client).consolidate(
-            flagged=flagged, study_description=summary.get("study_description")
+            flagged=flagged,
+            study_description=summary.get("study_description"),
+            detail=(summary.get("ai_report") or {}).get("findings"),
         )
         if consolidated:
             used_model = model
@@ -83,13 +93,34 @@ async def get_consolidated_report(
             ),
         }
 
-    return {
+    payload = {
         "findings": consolidated["findings"],
         "conclusions": consolidated["conclusions"],
         "model": used_model,
-        "grounded": True,
-        "flagged_count": len(flagged),
     }
+
+    # Cache onto the result's summary so subsequent opens are identical. Best-effort —
+    # never fail the request if the write doesn't go through.
+    try:
+        from sqlalchemy import select
+        from sqlalchemy.orm.attributes import flag_modified
+
+        from app.infrastructure.database.models import ResultRecord
+
+        session = service._result_repo._session
+        rec = (
+            await session.execute(select(ResultRecord).where(ResultRecord.id == result.id))
+        ).scalar_one_or_none()
+        if rec is not None:
+            new_summary = dict(rec.summary or {})
+            new_summary["consolidated_report"] = payload
+            rec.summary = new_summary
+            flag_modified(rec, "summary")
+            await session.commit()
+    except Exception as exc:
+        logger.warning("consolidated_report_cache_failed", study_uid=study_uid, error=str(exc))
+
+    return {**payload, "grounded": True, "cached": False, "flagged_count": len(flagged)}
 
 
 @router.get("/{study_uid}/{usecase}/clinical-context")
@@ -331,18 +362,26 @@ async def generate_pdf_report(
     # pipeline flow is untouched — this only reorganizes the stored per-level flags.
     if usecase in ("abdomen_ct", "abdomen_ct2", "abdomen_ct3", "abdomen_ct4") and settings.medgemma_enabled:
         try:
-            from app.application.abdomen_report_service import AbdomenReportService
-            from app.infrastructure.llm.medgemma_client import MedGemmaClient
+            # Prefer the cached report (written when the web report was first opened) so the
+            # PDF is identical to the on-screen report; only generate if not cached yet.
+            _cached = summary_for_pdf.get("consolidated_report") or {}
+            _consolidated = None
+            if _cached.get("findings"):
+                _consolidated = {"findings": _cached["findings"], "conclusions": _cached.get("conclusions", "")}
+            else:
+                from app.application.abdomen_report_service import AbdomenReportService
+                from app.infrastructure.llm.medgemma_client import MedGemmaClient
 
-            _model = summary_for_pdf.get("medgemma_model") or settings.medgemma_model
-            _client = MedGemmaClient(
-                base_url=settings.ollama_base_url, model_name=_model,
-                timeout_s=settings.medgemma_timeout_s, force_json=True,
-            )
-            _consolidated = await AbdomenReportService(_client).consolidate(
-                flagged=summary_for_pdf.get("anomaly_findings") or [],
-                study_description=summary_for_pdf.get("study_description"),
-            )
+                _model = summary_for_pdf.get("medgemma_model") or settings.medgemma_model
+                _client = MedGemmaClient(
+                    base_url=settings.ollama_base_url, model_name=_model,
+                    timeout_s=settings.medgemma_timeout_s, force_json=True,
+                )
+                _consolidated = await AbdomenReportService(_client).consolidate(
+                    flagged=summary_for_pdf.get("anomaly_findings") or [],
+                    study_description=summary_for_pdf.get("study_description"),
+                    detail=(summary_for_pdf.get("ai_report") or {}).get("findings"),
+                )
             if _consolidated:
                 summary_for_pdf = {**summary_for_pdf, "ai_report": {
                     "findings": _consolidated["findings"],

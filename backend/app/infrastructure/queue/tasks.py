@@ -990,6 +990,41 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
                             summ["ai_report_provider"] = f"medgemma:{ct2_model}"
                             summ["medgemma_model"] = ct2_model
 
+                        # Detailed read: characterization (adjacent-structure relationships)
+                        # + systematic organ review over the flagged levels PLUS an evenly-
+                        # spread coverage set, so the report reads like a full radiologist
+                        # report. Additive — does not affect scanning/flagging. Overwrites
+                        # ai_report with the richer version when it succeeds.
+                        try:
+                            _stw = scan_windows[0] if scan_windows else None
+                            _by_z: dict[int, str] = {}
+                            for e in manifest:
+                                lp = e.get("local_path")
+                                if e.get("window") == _stw and lp and os.path.exists(lp):
+                                    _by_z.setdefault(int(e["z"]), lp)
+                            _all = sorted(_by_z)
+                            _cov_n = 10
+                            if len(_all) > _cov_n:
+                                _st = (len(_all) - 1) / (_cov_n - 1)
+                                _cov = {_all[round(i * _st)] for i in range(_cov_n)}
+                            else:
+                                _cov = set(_all)
+                            _pick = sorted(set(anomaly_z) | _cov, reverse=True)[:16]
+                            _rr = [{"z": z, "bytes": _read_png(_by_z[z])} for z in _pick if z in _by_z]
+                            rich = loop.run_until_complete(
+                                abdomen_ct2_report.rich_read(
+                                    client=client, images=_rr,
+                                    flagged=result.get("flagged") or [],
+                                    study_description=summ.get("study_description"),
+                                )
+                            )
+                            if rich:
+                                summ["ai_report"] = rich
+                                summ["ai_report_provider"] = f"medgemma:{ct2_model}"
+                                summ["medgemma_model"] = ct2_model
+                        except Exception as exc:
+                            logger.warning("abdomen_ct2_rich_read_failed", job_id=job_id, error=str(exc))
+
                         # Surface the reported-on slices as artifacts (append + dedup by
                         # name) so the UI shows exactly what MedGemma reported on.
                         arts = postprocessed.setdefault("artifacts", [])
