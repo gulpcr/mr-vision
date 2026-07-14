@@ -36,6 +36,7 @@ class Study:
     assigned_at: datetime | None = None
     reported_at: datetime | None = None
     signed_at: datetime | None = None
+    tenant_id: str = "default"
     series: list[Series] = field(default_factory=list)
     created_at: datetime = field(default_factory=_utcnow)
     updated_at: datetime = field(default_factory=_utcnow)
@@ -56,6 +57,7 @@ class Series:
     image_orientation: str | None = None
     orthanc_id: str | None = None
     dicom_tags: dict[str, Any] = field(default_factory=dict)
+    tenant_id: str = "default"
     created_at: datetime = field(default_factory=_utcnow)
 
 
@@ -86,6 +88,7 @@ class JobRun:
     completed_at: datetime | None = None
     error_detail: str | None = None
     retry_count: int = 0
+    tenant_id: str = "default"
     created_at: datetime = field(default_factory=_utcnow)
     updated_at: datetime = field(default_factory=_utcnow)
 
@@ -105,6 +108,7 @@ class Result:
     artifacts: list[ResultArtifact] = field(default_factory=list)
     version: int = 1
     is_latest: bool = True
+    tenant_id: str = "default"
     created_at: datetime = field(default_factory=_utcnow)
 
 
@@ -125,6 +129,7 @@ class AuditEntry:
     entity_id: str = ""
     actor: str = "system"
     details: dict[str, Any] = field(default_factory=dict)
+    tenant_id: str = "default"
     timestamp: datetime = field(default_factory=_utcnow)
 
 
@@ -149,6 +154,9 @@ class User:
     role: str = "viewer"
     tenant_id: str = "default"
     is_active: bool = True
+    is_platform_admin: bool = False
+    is_platform_operator: bool = False
+    totp_enabled: bool = False
     created_at: datetime = field(default_factory=_utcnow)
     updated_at: datetime = field(default_factory=_utcnow)
 
@@ -159,6 +167,42 @@ class Tenant:
     name: str = ""
     slug: str = ""
     is_active: bool = True
+    status: str = "active"
+    plan: str = "starter"
+    features: list[str] = field(default_factory=list)
+    created_at: datetime = field(default_factory=_utcnow)
+
+
+@dataclass
+class TenantApiKey:
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    tenant_id: str = ""
+    name: str = ""
+    key_hash: str = ""
+    prefix: str = ""
+    scopes: list[str] = field(default_factory=list)
+    expires_at: datetime | None = None
+    is_active: bool = True
+    last_used_at: datetime | None = None
+    revoked_at: datetime | None = None
+    created_at: datetime = field(default_factory=_utcnow)
+
+    def has_scope(self, scope: str) -> bool:
+        return scope in self.scopes
+
+    def is_expired(self) -> bool:
+        if self.expires_at is None:
+            return False
+        now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+        expires_naive = self.expires_at.replace(tzinfo=None)
+        return now_naive >= expires_naive
+
+
+@dataclass
+class PendingStudyTenant:
+    study_instance_uid: str
+    tenant_id: str
+    api_key_id: str | None = None
     created_at: datetime = field(default_factory=_utcnow)
 
 

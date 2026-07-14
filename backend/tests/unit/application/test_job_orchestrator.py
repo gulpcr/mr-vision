@@ -10,14 +10,20 @@ import pytest
 from app.domain.enums import JobStatus
 from app.domain.models import JobRun, Series, Study, UseCase
 
-# Mock heavy infrastructure modules before importing JobOrchestrator
+# Mock heavy infrastructure modules before importing JobOrchestrator.
+# Scoped via patch.dict (not a bare sys.modules[...] = ...  assignment) so it
+# reverts once job_orchestrator.py's own `from ... import run_usecase_pipeline`
+# has captured the mock — a permanent assignment here would leak a MagicMock
+# stand-in for app.infrastructure.queue.tasks into every OTHER test that runs
+# afterward in the same pytest process, breaking any that import real
+# functions from that module (e.g. _write_audit).
 _mock_tasks_module = MagicMock()
 _mock_tasks_module.run_usecase_pipeline = MagicMock()
-sys.modules["app.infrastructure.queue.tasks"] = _mock_tasks_module
+with patch.dict(sys.modules, {"app.infrastructure.queue.tasks": _mock_tasks_module}):
+    from app.application.job_orchestrator import JobOrchestrator  # noqa: E402
+    # Grab a reference to the actual imported name used by the orchestrator module
+    import app.application.job_orchestrator as _orch_mod
 
-from app.application.job_orchestrator import JobOrchestrator  # noqa: E402
-# Grab a reference to the actual imported name used by the orchestrator module
-import app.application.job_orchestrator as _orch_mod
 _run_pipeline = _orch_mod.run_usecase_pipeline
 
 

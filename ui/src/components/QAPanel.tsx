@@ -18,6 +18,14 @@ const SEVERITY: Record<string, { bg: string; text: string; label: string }> = {
   truncation_artifact:      { bg: "bg-blue-50",   text: "text-blue-800",   label: "Info"    },
   chemical_shift_artifact:  { bg: "bg-yellow-50", text: "text-yellow-800", label: "Warning" },
   parallel_imaging_artifact:{ bg: "bg-yellow-50", text: "text-yellow-800", label: "Warning" },
+  // ct_face_neck (Gemini VLM structured extraction). Without entries here these
+  // fall through to the generic gray "Info" badge below — which would visually
+  // understate flags like vlm_unavailable (the AI extraction never ran at all).
+  insufficient_slices:      { bg: "bg-red-50",    text: "text-red-800",    label: "Error"   },
+  excessive_slice_thickness:{ bg: "bg-yellow-50", text: "text-yellow-800", label: "Warning" },
+  preview_render_failed:    { bg: "bg-red-50",    text: "text-red-800",    label: "Error"   },
+  vlm_unavailable:          { bg: "bg-red-50",    text: "text-red-800",    label: "Error"   },
+  low_confidence_extraction:{ bg: "bg-yellow-50", text: "text-yellow-800", label: "Warning" },
 };
 
 interface VLMSeries {

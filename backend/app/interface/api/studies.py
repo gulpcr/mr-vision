@@ -1,5 +1,5 @@
 import asyncio
-from typing import Annotated
+from typing import Annotated, Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import delete
@@ -11,7 +11,7 @@ from app.application.job_orchestrator import JobOrchestrator
 from app.application.routing_service import RoutingService
 from app.interface.api.dependencies import (
     get_study_service,
-    get_job_orchestrator,
+    get_job_orchestrator_factory,
     get_routing_service,
     get_session,
 )
@@ -154,13 +154,20 @@ orthanc_router = APIRouter(prefix="/orthanc", tags=["orthanc"])
 async def on_stable_study(
     body: OrthancStableStudyNotification,
     service: Annotated[StudyService, Depends(get_study_service)],
-    orchestrator: Annotated[JobOrchestrator, Depends(get_job_orchestrator)],
+    job_orchestrator_factory: Annotated[
+        Callable[[str], JobOrchestrator], Depends(get_job_orchestrator_factory)
+    ],
 ):
     """Called by Orthanc Lua script when a study becomes stable.
 
-    Ingests the study metadata and auto-routes to applicable use cases.
+    Ingests the study metadata and auto-routes to applicable use cases. This
+    call has no caller tenant (Orthanc, not a logged-in user, triggers it) —
+    the study's tenant is only known after ingest_study() resolves it (via the
+    tenant-upload pending-mapping, or "default" for a direct Orthanc upload),
+    so the orchestrator must be scoped to THAT, not request_tenant_id.
     """
     study = await service.ingest_study(body.study_instance_uid)
+    orchestrator = job_orchestrator_factory(study.tenant_id)
     jobs = await orchestrator.create_jobs_for_study(body.study_instance_uid)
     return {
         "study_instance_uid": body.study_instance_uid,

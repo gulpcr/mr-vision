@@ -10,34 +10,51 @@ from app.domain.enums import AuditAction, JobStatus, QAFlag
 from app.domain.interfaces import (
     AuditRepository,
     JobRepository,
+    PendingStudyTenantRepository,
+    PlanFeatureRepository,
     ResultRepository,
     SeriesRepository,
     StudyRepository,
+    TenantApiKeyRepository,
+    TenantRepository,
     UseCaseRegistryRepository,
 )
 from app.domain.models import (
     AuditEntry,
     JobRun,
+    PendingStudyTenant,
     Result,
     ResultArtifact,
     RoutingRule,
     Series,
     Study,
+    Tenant,
+    TenantApiKey,
     UseCase,
 )
 from app.infrastructure.database.models import (
     AuditLogRecord,
     JobRunRecord,
+    PendingStudyTenantRecord,
+    PlanFeatureRecord,
     ResultRecord,
     SeriesRecord,
     StudyRecord,
+    TenantApiKeyRecord,
+    TenantRecord,
     UseCaseRegistryRecord,
 )
 
 
 class PgStudyRepository(StudyRepository):
-    def __init__(self, session: AsyncSession):
+    def __init__(self, session: AsyncSession, tenant_id: str | None = None):
         self._session = session
+        self._tenant_id = tenant_id
+
+    def _scope(self, stmt):
+        if self._tenant_id:
+            stmt = stmt.where(StudyRecord.tenant_id == self._tenant_id)
+        return stmt
 
     async def save(self, study: Study) -> Study:
         record = StudyRecord(
@@ -56,6 +73,7 @@ class PgStudyRepository(StudyRepository):
             modality=study.modality,
             institution_name=study.institution_name,
             orthanc_id=study.orthanc_id,
+            tenant_id=study.tenant_id if study.tenant_id != "default" else (self._tenant_id or "default"),
         )
         await self._session.merge(record)
         await self._session.flush()
@@ -65,6 +83,7 @@ class PgStudyRepository(StudyRepository):
         stmt = select(StudyRecord).where(
             StudyRecord.study_instance_uid == study_instance_uid
         )
+        stmt = self._scope(stmt)
         result = await self._session.execute(stmt)
         record = result.scalar_one_or_none()
         if record is None:
@@ -76,6 +95,7 @@ class PgStudyRepository(StudyRepository):
     ) -> list[Study]:
         stmt = select(StudyRecord).order_by(StudyRecord.created_at.desc())
         stmt = self._apply_filters(stmt, filters)
+        stmt = self._scope(stmt)
         stmt = stmt.offset(offset).limit(limit)
         result = await self._session.execute(stmt)
         return [self._to_domain(r) for r in result.scalars().all()]
@@ -83,6 +103,7 @@ class PgStudyRepository(StudyRepository):
     async def count(self, filters: dict[str, Any] | None = None) -> int:
         stmt = select(func.count()).select_from(StudyRecord)
         stmt = self._apply_filters(stmt, filters)
+        stmt = self._scope(stmt)
         result = await self._session.execute(stmt)
         return result.scalar_one()
 
@@ -108,6 +129,7 @@ class PgStudyRepository(StudyRepository):
                 updated_at=datetime.now(timezone.utc).replace(tzinfo=None),
             )
         )
+        stmt = self._scope(stmt)
         await self._session.execute(stmt)
         await self._session.flush()
         return study
@@ -154,6 +176,7 @@ class PgStudyRepository(StudyRepository):
             modality=record.modality,
             institution_name=record.institution_name,
             orthanc_id=record.orthanc_id,
+            tenant_id=getattr(record, "tenant_id", None) or "default",
             reading_status=getattr(record, "reading_status", "unread") or "unread",
             assigned_to=getattr(record, "assigned_to", None),
             assigned_to_username=getattr(record, "assigned_to_username", None),
@@ -166,8 +189,14 @@ class PgStudyRepository(StudyRepository):
 
 
 class PgSeriesRepository(SeriesRepository):
-    def __init__(self, session: AsyncSession):
+    def __init__(self, session: AsyncSession, tenant_id: str | None = None):
         self._session = session
+        self._tenant_id = tenant_id
+
+    def _scope(self, stmt):
+        if self._tenant_id:
+            stmt = stmt.where(SeriesRecord.tenant_id == self._tenant_id)
+        return stmt
 
     async def save(self, series: Series) -> Series:
         record = SeriesRecord(
@@ -184,6 +213,7 @@ class PgSeriesRepository(SeriesRepository):
             image_orientation=series.image_orientation,
             orthanc_id=series.orthanc_id,
             dicom_tags=series.dicom_tags,
+            tenant_id=series.tenant_id if series.tenant_id != "default" else (self._tenant_id or "default"),
         )
         await self._session.merge(record)
         await self._session.flush()
@@ -193,6 +223,7 @@ class PgSeriesRepository(SeriesRepository):
         stmt = select(SeriesRecord).where(
             SeriesRecord.series_instance_uid == series_instance_uid
         )
+        stmt = self._scope(stmt)
         result = await self._session.execute(stmt)
         record = result.scalar_one_or_none()
         if record is None:
@@ -205,6 +236,7 @@ class PgSeriesRepository(SeriesRepository):
             .where(SeriesRecord.study_instance_uid == study_instance_uid)
             .order_by(SeriesRecord.series_number)
         )
+        stmt = self._scope(stmt)
         result = await self._session.execute(stmt)
         return [self._to_domain(r) for r in result.scalars().all()]
 
@@ -232,13 +264,20 @@ class PgSeriesRepository(SeriesRepository):
             image_orientation=record.image_orientation,
             orthanc_id=record.orthanc_id,
             dicom_tags=record.dicom_tags or {},
+            tenant_id=getattr(record, "tenant_id", None) or "default",
             created_at=record.created_at,
         )
 
 
 class PgJobRepository(JobRepository):
-    def __init__(self, session: AsyncSession):
+    def __init__(self, session: AsyncSession, tenant_id: str | None = None):
         self._session = session
+        self._tenant_id = tenant_id
+
+    def _scope(self, stmt):
+        if self._tenant_id:
+            stmt = stmt.where(JobRunRecord.tenant_id == self._tenant_id)
+        return stmt
 
     async def save(self, job: JobRun) -> JobRun:
         record = JobRunRecord(
@@ -254,6 +293,7 @@ class PgJobRepository(JobRepository):
             completed_at=job.completed_at,
             error_detail=job.error_detail,
             retry_count=job.retry_count,
+            tenant_id=job.tenant_id if job.tenant_id != "default" else (self._tenant_id or "default"),
         )
         self._session.add(record)
         await self._session.flush()
@@ -261,6 +301,7 @@ class PgJobRepository(JobRepository):
 
     async def get_by_id(self, job_id: str) -> JobRun | None:
         stmt = select(JobRunRecord).where(JobRunRecord.id == job_id)
+        stmt = self._scope(stmt)
         result = await self._session.execute(stmt)
         record = result.scalar_one_or_none()
         if record is None:
@@ -273,6 +314,7 @@ class PgJobRepository(JobRepository):
             .where(JobRunRecord.study_instance_uid == study_instance_uid)
             .order_by(JobRunRecord.created_at.desc())
         )
+        stmt = self._scope(stmt)
         result = await self._session.execute(stmt)
         return [self._to_domain(r) for r in result.scalars().all()]
 
@@ -292,6 +334,7 @@ class PgJobRepository(JobRepository):
                 updated_at=datetime.now(timezone.utc).replace(tzinfo=None),
             )
         )
+        stmt = self._scope(stmt)
         await self._session.execute(stmt)
         await self._session.flush()
         return job
@@ -305,6 +348,7 @@ class PgJobRepository(JobRepository):
                 stmt = stmt.where(JobRunRecord.status == filters["status"])
             if "usecase_name" in filters:
                 stmt = stmt.where(JobRunRecord.usecase_name == filters["usecase_name"])
+        stmt = self._scope(stmt)
         stmt = stmt.offset(offset).limit(limit)
         result = await self._session.execute(stmt)
         return [self._to_domain(r) for r in result.scalars().all()]
@@ -324,14 +368,21 @@ class PgJobRepository(JobRepository):
             completed_at=record.completed_at,
             error_detail=record.error_detail,
             retry_count=getattr(record, "retry_count", 0),
+            tenant_id=getattr(record, "tenant_id", None) or "default",
             created_at=record.created_at,
             updated_at=record.updated_at,
         )
 
 
 class PgResultRepository(ResultRepository):
-    def __init__(self, session: AsyncSession):
+    def __init__(self, session: AsyncSession, tenant_id: str | None = None):
         self._session = session
+        self._tenant_id = tenant_id
+
+    def _scope(self, stmt):
+        if self._tenant_id:
+            stmt = stmt.where(ResultRecord.tenant_id == self._tenant_id)
+        return stmt
 
     async def save(self, result: Result) -> Result:
         # Mark previous latest version as not-latest
@@ -375,6 +426,7 @@ class PgResultRepository(ResultRepository):
             ],
             version=next_version,
             is_latest=True,
+            tenant_id=result.tenant_id if result.tenant_id != "default" else (self._tenant_id or "default"),
         )
         self._session.add(record)
         await self._session.flush()
@@ -390,6 +442,7 @@ class PgResultRepository(ResultRepository):
             ResultRecord.usecase_name == usecase_name,
             ResultRecord.is_latest == True,
         )
+        stmt = self._scope(stmt)
         result = await self._session.execute(stmt)
         record = result.scalar_one_or_none()
         if record is None:
@@ -404,6 +457,7 @@ class PgResultRepository(ResultRepository):
             ResultRecord.usecase_name == usecase_name,
             ResultRecord.version == version,
         )
+        stmt = self._scope(stmt)
         result = await self._session.execute(stmt)
         record = result.scalar_one_or_none()
         if record is None:
@@ -421,11 +475,13 @@ class PgResultRepository(ResultRepository):
             )
             .order_by(ResultRecord.version.desc())
         )
+        stmt = self._scope(stmt)
         result = await self._session.execute(stmt)
         return [self._to_domain(r) for r in result.scalars().all()]
 
     async def get_by_id(self, result_id: str) -> Result | None:
         stmt = select(ResultRecord).where(ResultRecord.id == result_id)
+        stmt = self._scope(stmt)
         result = await self._session.execute(stmt)
         record = result.scalar_one_or_none()
         if record is None:
@@ -441,6 +497,7 @@ class PgResultRepository(ResultRepository):
             )
             .order_by(ResultRecord.created_at.desc())
         )
+        stmt = self._scope(stmt)
         result = await self._session.execute(stmt)
         return [self._to_domain(r) for r in result.scalars().all()]
 
@@ -475,6 +532,7 @@ class PgResultRepository(ResultRepository):
             model_version=record.model_version,
             model_checksum=record.model_checksum,
             artifacts=artifacts,
+            tenant_id=getattr(record, "tenant_id", None) or "default",
             version=getattr(record, "version", 1),
             is_latest=getattr(record, "is_latest", True),
             created_at=record.created_at,
@@ -532,17 +590,62 @@ class PgUseCaseRegistryRepository(UseCaseRegistryRepository):
 
 
 class PgAuditRepository(AuditRepository):
-    def __init__(self, session: AsyncSession):
+    def __init__(self, session: AsyncSession, tenant_id: str | None = None):
         self._session = session
+        self._tenant_id = tenant_id
+
+    def _scope(self, stmt):
+        if self._tenant_id:
+            stmt = stmt.where(AuditLogRecord.tenant_id == self._tenant_id)
+        return stmt
 
     async def save(self, entry: AuditEntry) -> AuditEntry:
-        record = AuditLogRecord(
-            id=entry.id,
-            action=entry.action.value if isinstance(entry.action, AuditAction) else entry.action,
+        from app.config import derive_secret
+        from app.domain.audit_chain import compute_audit_row_hash
+
+        secret = derive_secret("audit-chain-v1")
+        action_value = entry.action.value if isinstance(entry.action, AuditAction) else entry.action
+        tenant_id = entry.tenant_id if entry.tenant_id != "default" else (self._tenant_id or "default")
+
+        # Lock the current chain tail so concurrent writers serialize on it —
+        # without this, two concurrent audit writes could both read the same
+        # prev_hash and fork the chain instead of extending it linearly.
+        # (No-op on SQLite, which has no row-level FOR UPDATE — fine for
+        # single-writer tests; Postgres is where concurrent writes happen.)
+        tail_stmt = (
+            select(AuditLogRecord.seq, AuditLogRecord.row_hash)
+            .where(AuditLogRecord.seq.isnot(None))
+            .order_by(AuditLogRecord.seq.desc())
+            .limit(1)
+            .with_for_update()
+        )
+        tail = (await self._session.execute(tail_stmt)).first()
+        next_seq = (tail.seq + 1) if tail else 1
+        prev_hash = tail.row_hash if tail else None
+
+        row_hash = compute_audit_row_hash(
+            secret=secret,
+            seq=next_seq,
+            action=action_value,
             entity_type=entry.entity_type,
             entity_id=entry.entity_id,
             actor=entry.actor,
             details=entry.details,
+            tenant_id=tenant_id,
+            prev_hash=prev_hash,
+        )
+
+        record = AuditLogRecord(
+            id=entry.id,
+            action=action_value,
+            entity_type=entry.entity_type,
+            entity_id=entry.entity_id,
+            actor=entry.actor,
+            details=entry.details,
+            tenant_id=tenant_id,
+            seq=next_seq,
+            prev_hash=prev_hash,
+            row_hash=row_hash,
         )
         self._session.add(record)
         await self._session.flush()
@@ -560,6 +663,7 @@ class PgAuditRepository(AuditRepository):
             .order_by(AuditLogRecord.timestamp.desc())
             .limit(limit)
         )
+        stmt = self._scope(stmt)
         result = await self._session.execute(stmt)
         entries = []
         for r in result.scalars().all():
@@ -575,7 +679,234 @@ class PgAuditRepository(AuditRepository):
                     entity_id=r.entity_id,
                     actor=r.actor,
                     details=r.details or {},
+                    tenant_id=getattr(r, "tenant_id", None) or "default",
                     timestamp=r.timestamp,
                 )
             )
         return entries
+
+
+class PgTenantRepository(TenantRepository):
+    def __init__(self, session: AsyncSession):
+        self._session = session
+
+    async def save(self, tenant: Tenant) -> Tenant:
+        record = TenantRecord(
+            id=tenant.id,
+            name=tenant.name,
+            slug=tenant.slug,
+            is_active=tenant.is_active,
+            status=tenant.status,
+            plan=tenant.plan,
+            features=list(tenant.features),
+        )
+        self._session.add(record)
+        await self._session.flush()
+        return tenant
+
+    async def get_by_id(self, tenant_id: str) -> Tenant | None:
+        stmt = select(TenantRecord).where(TenantRecord.id == tenant_id)
+        result = await self._session.execute(stmt)
+        record = result.scalar_one_or_none()
+        if record is None:
+            return None
+        return self._to_domain(record)
+
+    async def get_by_slug(self, slug: str) -> Tenant | None:
+        stmt = select(TenantRecord).where(TenantRecord.slug == slug)
+        result = await self._session.execute(stmt)
+        record = result.scalar_one_or_none()
+        if record is None:
+            return None
+        return self._to_domain(record)
+
+    async def list_all(self) -> list[Tenant]:
+        stmt = select(TenantRecord).order_by(TenantRecord.created_at.desc())
+        result = await self._session.execute(stmt)
+        return [self._to_domain(r) for r in result.scalars().all()]
+
+    async def update(self, tenant: Tenant) -> Tenant:
+        stmt = (
+            update(TenantRecord)
+            .where(TenantRecord.id == tenant.id)
+            .values(
+                name=tenant.name,
+                is_active=tenant.is_active,
+                status=tenant.status,
+                plan=tenant.plan,
+                features=list(tenant.features),
+            )
+        )
+        await self._session.execute(stmt)
+        await self._session.flush()
+        return tenant
+
+    @staticmethod
+    def _to_domain(record: TenantRecord) -> Tenant:
+        return Tenant(
+            id=record.id,
+            name=record.name,
+            slug=record.slug,
+            is_active=record.is_active,
+            status=getattr(record, "status", None) or "active",
+            plan=getattr(record, "plan", None) or "starter",
+            features=list(getattr(record, "features", None) or []),
+            created_at=record.created_at,
+        )
+
+
+class PgTenantApiKeyRepository(TenantApiKeyRepository):
+    def __init__(self, session: AsyncSession):
+        self._session = session
+
+    async def save(self, key: TenantApiKey) -> TenantApiKey:
+        record = TenantApiKeyRecord(
+            id=key.id,
+            tenant_id=key.tenant_id,
+            name=key.name,
+            key_hash=key.key_hash,
+            prefix=key.prefix,
+            scopes=list(key.scopes),
+            expires_at=key.expires_at,
+            is_active=key.is_active,
+        )
+        self._session.add(record)
+        await self._session.flush()
+        return key
+
+    async def get_by_id(self, key_id: str) -> TenantApiKey | None:
+        stmt = select(TenantApiKeyRecord).where(TenantApiKeyRecord.id == key_id)
+        result = await self._session.execute(stmt)
+        record = result.scalar_one_or_none()
+        if record is None:
+            return None
+        return self._to_domain(record)
+
+    async def get_by_hash(self, key_hash: str) -> TenantApiKey | None:
+        stmt = select(TenantApiKeyRecord).where(
+            TenantApiKeyRecord.key_hash == key_hash,
+            TenantApiKeyRecord.revoked_at.is_(None),
+        )
+        result = await self._session.execute(stmt)
+        record = result.scalar_one_or_none()
+        if record is None:
+            return None
+        return self._to_domain(record)
+
+    async def list_by_tenant(self, tenant_id: str) -> list[TenantApiKey]:
+        stmt = (
+            select(TenantApiKeyRecord)
+            .where(TenantApiKeyRecord.tenant_id == tenant_id)
+            .order_by(TenantApiKeyRecord.created_at.desc())
+        )
+        result = await self._session.execute(stmt)
+        return [self._to_domain(r) for r in result.scalars().all()]
+
+    async def update(self, key: TenantApiKey) -> TenantApiKey:
+        stmt = (
+            update(TenantApiKeyRecord)
+            .where(TenantApiKeyRecord.id == key.id)
+            .values(
+                is_active=key.is_active,
+                last_used_at=key.last_used_at,
+                revoked_at=key.revoked_at,
+            )
+        )
+        await self._session.execute(stmt)
+        await self._session.flush()
+        return key
+
+    @staticmethod
+    def _to_domain(record: TenantApiKeyRecord) -> TenantApiKey:
+        return TenantApiKey(
+            id=record.id,
+            tenant_id=record.tenant_id,
+            name=record.name,
+            key_hash=record.key_hash,
+            prefix=record.prefix,
+            scopes=list(record.scopes or []),
+            expires_at=record.expires_at,
+            is_active=record.is_active,
+            last_used_at=record.last_used_at,
+            revoked_at=record.revoked_at,
+            created_at=record.created_at,
+        )
+
+
+class PgPendingStudyTenantRepository(PendingStudyTenantRepository):
+    def __init__(self, session: AsyncSession):
+        self._session = session
+
+    async def get_by_study_uid(self, study_instance_uid: str) -> PendingStudyTenant | None:
+        stmt = select(PendingStudyTenantRecord).where(
+            PendingStudyTenantRecord.study_instance_uid == study_instance_uid
+        )
+        result = await self._session.execute(stmt)
+        record = result.scalar_one_or_none()
+        if record is None:
+            return None
+        return self._to_domain(record)
+
+    async def register(self, mapping: PendingStudyTenant) -> PendingStudyTenant:
+        existing = await self.get_by_study_uid(mapping.study_instance_uid)
+        if existing is not None:
+            if existing.tenant_id != mapping.tenant_id:
+                raise ValueError(
+                    f"Study {mapping.study_instance_uid} is already registered "
+                    f"to a different workspace"
+                )
+            return existing
+
+        record = PendingStudyTenantRecord(
+            study_instance_uid=mapping.study_instance_uid,
+            tenant_id=mapping.tenant_id,
+            api_key_id=mapping.api_key_id,
+        )
+        self._session.add(record)
+        await self._session.flush()
+        return mapping
+
+    async def consume(self, study_instance_uid: str) -> None:
+        await self._session.execute(
+            delete(PendingStudyTenantRecord).where(
+                PendingStudyTenantRecord.study_instance_uid == study_instance_uid
+            )
+        )
+        await self._session.flush()
+
+    @staticmethod
+    def _to_domain(record: PendingStudyTenantRecord) -> PendingStudyTenant:
+        return PendingStudyTenant(
+            study_instance_uid=record.study_instance_uid,
+            tenant_id=record.tenant_id,
+            api_key_id=record.api_key_id,
+            created_at=record.created_at,
+        )
+
+
+class PgPlanFeatureRepository(PlanFeatureRepository):
+    def __init__(self, session: AsyncSession):
+        self._session = session
+
+    async def list_by_plan(self, plan_name: str) -> list[str]:
+        stmt = select(PlanFeatureRecord.feature_key).where(
+            PlanFeatureRecord.plan_name == plan_name
+        )
+        result = await self._session.execute(stmt)
+        return [row[0] for row in result.all()]
+
+    async def set_plan_features(self, plan_name: str, feature_keys: list[str]) -> None:
+        await self._session.execute(
+            delete(PlanFeatureRecord).where(PlanFeatureRecord.plan_name == plan_name)
+        )
+        for key in feature_keys:
+            self._session.add(PlanFeatureRecord(plan_name=plan_name, feature_key=key))
+        await self._session.flush()
+
+    async def list_all_plans(self) -> dict[str, list[str]]:
+        stmt = select(PlanFeatureRecord.plan_name, PlanFeatureRecord.feature_key)
+        result = await self._session.execute(stmt)
+        plans: dict[str, list[str]] = {}
+        for plan_name, feature_key in result.all():
+            plans.setdefault(plan_name, []).append(feature_key)
+        return plans

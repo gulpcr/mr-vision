@@ -59,7 +59,9 @@ class GeminiClient:
         self._model = None
 
         if not api_key:
-            logger.warning("gemini_api_key_missing", detail="Set GEMINI_API_KEY to enable LLM reports")
+            logger.warning(
+                "gemini_api_key_missing", detail="Set GEMINI_API_KEY to enable LLM reports"
+            )
             return
 
         try:
@@ -112,6 +114,50 @@ class GeminiClient:
             text = response.text.strip()
         except Exception as exc:
             logger.warning("gemini_image_response_error", error=str(exc))
+            text = _extract_text_from_parts(response)
+        return text
+
+    async def generate_structured_from_images(
+        self,
+        prompt: str,
+        images: list[bytes],
+        response_schema: dict,
+        *,
+        temperature: float = 0.1,
+        max_output_tokens: int = 4096,
+    ) -> str:
+        """Send a prompt + images to Gemini with a response_schema, constraining the reply to
+        strictly conform to the given JSON shape (controlled generation / structured output).
+        For use cases where the VLM call IS the primary model (e.g. ct_face_neck's per-region
+        structured extraction) rather than a supplementary QA/report pass.
+
+        response_schema must use the OpenAPI-subset dict format this SDK version
+        (google-generativeai>=0.8.0) accepts: lowercase "type" values
+        (object/string/number/integer/boolean/array), "properties", "required", "enum",
+        "items", and "nullable" for optional fields — NOT full JSON-Schema (no "$ref", no
+        additionalProperties, no ["type", "null"] unions). Build a reduced, schema-compatible
+        mirror of any richer JSON-Schema contract rather than passing it through unchanged.
+        """
+        if not self._ready or self._model is None:
+            return ""
+        from PIL import Image as _PIL_Image
+
+        pil_imgs = [_PIL_Image.open(io.BytesIO(b)) for b in images]
+        generation_config = {
+            "temperature": temperature,
+            "max_output_tokens": max_output_tokens,
+            "response_mime_type": "application/json",
+            "response_schema": response_schema,
+        }
+        response = await asyncio.to_thread(
+            self._model.generate_content,
+            [prompt, *pil_imgs],
+            generation_config=generation_config,
+        )
+        try:
+            text = response.text.strip()
+        except Exception as exc:
+            logger.warning("gemini_structured_response_error", error=str(exc))
             text = _extract_text_from_parts(response)
         return text
 

@@ -29,8 +29,9 @@ import {
   BarChart2,
   Wrench,
   UserPlus,
+  Building2,
 } from "lucide-react";
-import { useCriticalAlertStats } from "@/lib/hooks";
+import { useCriticalAlertStats, useCurrentUser } from "@/lib/hooks";
 
 const NAV_ITEMS = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -51,18 +52,24 @@ const NAV_ITEMS = [
   { href: "/settings", label: "Settings", icon: Settings },
   { href: "/admin/users", label: "Users", icon: Users },
   { href: "/admin/tools", label: "Admin Tools", icon: Wrench },
+  { href: "/admin/tenants", label: "Tenants", icon: Building2, platformAdminOnly: true },
 ];
 
 export function Sidebar() {
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
   const { data: alertStats } = useCriticalAlertStats();
+  const { data: currentUser } = useCurrentUser();
   const unackedCount = alertStats?.total_unacknowledged ?? 0;
 
   useEffect(() => {
     const saved = localStorage.getItem("sidebar-collapsed");
     if (saved === "true") setCollapsed(true);
   }, []);
+
+  const visibleNavItems = NAV_ITEMS.filter(
+    (item) => !item.platformAdminOnly || currentUser?.is_platform_admin
+  );
 
   const toggle = () => {
     const next = !collapsed;
@@ -97,7 +104,7 @@ export function Sidebar() {
 
       {/* Navigation */}
       <nav className="flex-1 py-3 space-y-1 px-2">
-        {NAV_ITEMS.map((item) => {
+        {visibleNavItems.map((item) => {
           const Icon = item.icon;
           const active = isActive(item.href);
           return (

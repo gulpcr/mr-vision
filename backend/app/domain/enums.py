@@ -30,6 +30,16 @@ class QAFlag(str, enum.Enum):
     TRUNCATION_ARTIFACT = "truncation_artifact"
     CHEMICAL_SHIFT_ARTIFACT = "chemical_shift_artifact"
     PARALLEL_IMAGING_ARTIFACT = "parallel_imaging_artifact"
+    # ct_face_neck — Gemini VLM structured extraction checks. Any qa_flag string
+    # not registered here is silently dropped on read by
+    # PgResultRepository._to_domain() (QAFlag(f) raises ValueError, caught, and
+    # skipped) — new pipeline-emitted flags MUST be added here or they vanish
+    # from the API/UI despite being stored correctly in results_index.qa_flags.
+    INSUFFICIENT_SLICES = "insufficient_slices"
+    EXCESSIVE_SLICE_THICKNESS = "excessive_slice_thickness"
+    PREVIEW_RENDER_FAILED = "preview_render_failed"
+    VLM_UNAVAILABLE = "vlm_unavailable"
+    LOW_CONFIDENCE_EXTRACTION = "low_confidence_extraction"
 
 
 class Modality(str, enum.Enum):
@@ -77,6 +87,17 @@ class AuditAction(str, enum.Enum):
     ALERT_TRIGGERED = "alert_triggered"
     DATA_PURGED = "data_purged"
     PHI_DEIDENTIFIED = "phi_deidentified"
+    DICOM_UPLOADED = "dicom_uploaded"
+    API_KEY_CREATED = "api_key_created"
+    API_KEY_REVOKED = "api_key_revoked"
+    PLATFORM_ADMIN_GRANTED = "platform_admin_granted"
+    PLATFORM_ADMIN_REVOKED = "platform_admin_revoked"
+    PLATFORM_OPERATOR_GRANTED = "platform_operator_granted"
+    PLATFORM_OPERATOR_REVOKED = "platform_operator_revoked"
+    IMPERSONATION_STARTED = "impersonation_started"
+    IMPERSONATION_STOPPED = "impersonation_stopped"
+    MFA_ENABLED = "mfa_enabled"
+    MFA_DISABLED = "mfa_disabled"
 
 
 class QASeverity(str, enum.Enum):

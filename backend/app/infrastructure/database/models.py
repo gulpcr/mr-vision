@@ -82,6 +82,7 @@ class SeriesRecord(Base):
     image_orientation = Column(String(256), nullable=True)
     orthanc_id = Column(String(128), nullable=True)
     dicom_tags = Column(JSON, default=dict)
+    tenant_id = Column(String(36), nullable=True, server_default="default")
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
     study = relationship("StudyRecord", back_populates="series")
@@ -173,10 +174,21 @@ class AuditLogRecord(Base):
     entity_id = Column(String(256), nullable=False)
     actor = Column(String(128), default="system")
     details = Column(JSON, default=dict)
+    tenant_id = Column(String(36), nullable=True, server_default="default")
     timestamp = Column(DateTime, server_default=func.now(), nullable=False, index=True)
+    # Tamper-evident hash chain (see app.domain.audit_chain). Nullable because
+    # rows written before this feature existed have no chain position — the
+    # chain covers everything from its introduction forward, not retroactively.
+    # A plain UNIQUE index on `seq` still permits unlimited NULLs on both
+    # Postgres and SQLite (ANSI NULL != NULL semantics), so legacy rows coexist
+    # fine with the uniqueness constraint on chained rows.
+    seq = Column(Integer, nullable=True)
+    prev_hash = Column(String(64), nullable=True)
+    row_hash = Column(String(64), nullable=True)
 
     __table_args__ = (
         Index("ix_audit_entity", "entity_type", "entity_id"),
+        Index("ix_audit_log_seq", "seq", unique=True),
     )
 
 
@@ -191,8 +203,24 @@ class UserRecord(Base):
     role = Column(String(32), nullable=False, default="viewer")
     tenant_id = Column(String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, default="default")
     is_active = Column(Boolean, default=True)
+    is_platform_admin = Column(Boolean, nullable=False, default=False, server_default="false")
+    is_platform_operator = Column(Boolean, nullable=False, default=False, server_default="false")
+    # Fernet-encrypted TOTP secret (see app.application.mfa_service) — never
+    # stored plaintext. NULL until enrollment starts.
+    totp_secret = Column(String(256), nullable=True)
+    totp_enabled = Column(Boolean, nullable=False, default=False, server_default="false")
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class MfaRecoveryCodeRecord(Base):
+    __tablename__ = "mfa_recovery_codes"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    code_hash = Column(String(64), nullable=False)
+    used_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
 
 class TenantRecord(Base):
@@ -202,7 +230,48 @@ class TenantRecord(Base):
     name = Column(String(256), nullable=False)
     slug = Column(String(128), unique=True, nullable=False, index=True)
     is_active = Column(Boolean, default=True)
+    status = Column(String(32), nullable=False, server_default="active")
+    plan = Column(String(32), nullable=False, server_default="starter")
+    features = Column(JSON, nullable=False, default=list)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class TenantApiKeyRecord(Base):
+    __tablename__ = "tenant_api_keys"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = Column(String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(256), nullable=False)
+    key_hash = Column(String(128), nullable=False)
+    prefix = Column(String(16), nullable=False)
+    scopes = Column(JSON, nullable=False, default=list)
+    expires_at = Column(DateTime, nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True)
+    last_used_at = Column(DateTime, nullable=True)
+    revoked_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class PendingStudyTenantRecord(Base):
+    __tablename__ = "pending_study_tenants"
+
+    study_instance_uid = Column(String(128), primary_key=True)
+    tenant_id = Column(String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    api_key_id = Column(String(36), ForeignKey("tenant_api_keys.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class PlanFeatureRecord(Base):
+    __tablename__ = "plan_features"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    plan_name = Column(String(32), nullable=False, index=True)
+    feature_key = Column(String(128), nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index("uq_plan_features_plan_key", "plan_name", "feature_key", unique=True),
+    )
 
 
 class PatientRecord(Base):
@@ -367,6 +436,7 @@ class ReviewQueueRecord(Base):
     reviewer = Column(String(128), nullable=True)
     review_notes = Column(Text, default="")
     reviewed_at = Column(DateTime, nullable=True)
+    tenant_id = Column(String(36), nullable=True, server_default="default")
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
 
@@ -418,6 +488,7 @@ class ShareLinkRecord(Base):
     created_by = Column(String(128), default="system")
     expires_at = Column(DateTime, nullable=False)
     is_active = Column(Boolean, default=True)
+    tenant_id = Column(String(36), nullable=True, server_default="default")
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
 

@@ -93,6 +93,33 @@ export function useRetentionPolicies() {
   return useSWR("retention", () => api.retention.list().then((d) => d.policies));
 }
 
+export function useTenants() {
+  return useSWR("tenants", () => api.tenants.list());
+}
+
+export function useTenant(id: string | null) {
+  return useSWR(id ? ["tenant", id] : null, () => api.tenants.get(id!));
+}
+
+export function useTenantApiKeys(tenantId: string | null) {
+  return useSWR(tenantId ? ["tenant-api-keys", tenantId] : null, () => api.tenantApiKeys.list(tenantId!));
+}
+
+export function useTenantUsers(tenantId: string | null) {
+  return useSWR(tenantId ? ["tenant-users", tenantId] : null, () => api.auth.listUsers(tenantId!));
+}
+
+export function usePlans() {
+  return useSWR("plans", () => api.plans.list());
+}
+
+export function useCurrentUser() {
+  // Live is_platform_admin/is_platform_operator state — the "user" object
+  // cached in localStorage at login only has {id, username, role, tenant_id},
+  // and platform-admin status can change without the affected user re-logging in.
+  return useSWR("current-user", () => api.auth.me());
+}
+
 export function useBatches() {
   return useSWR("batches", () => api.batches.list().then((d) => d.batches), {
     refreshInterval: 10000,

@@ -1,0 +1,195 @@
+{
+  "title": "CT Face & Neck Analysis",
+  "description": "Structured per-region findings for CT of the Face & Neck (parotid, cervical lymph nodes, mandible/maxilla, airway, thyroid, nasal septum) with baseline comparison",
+  "sections": [
+    {
+      "id": "summary",
+      "title": "Study Summary",
+      "type": "key_value",
+      "data_path": "summary",
+      "fields": [
+        { "key": "study_description",  "label": "Study Description",   "format": "text" },
+        { "key": "clinical_indication", "label": "Clinical Indication", "format": "text" },
+        { "key": "comparison_performed", "label": "Prior Study Compared", "format": "boolean" },
+        { "key": "baseline_study_date", "label": "Baseline Study Date", "format": "text" },
+        { "key": "overall_impression", "label": "Overall Impression",  "format": "text" },
+        { "key": "confidence",         "label": "Confidence",          "format": "text" },
+        { "key": "processing_notes",   "label": "Notes",               "format": "text" }
+      ]
+    },
+    {
+      "id": "clinical_conclusion_banner",
+      "title": "Clinical Findings & Structural Regression",
+      "type": "banner",
+      "note": "Rendered by ui/src/components/ReportView.tsx's generic renderBannerSection() (type: 'banner' sections). ResultsPanel.tsx is currently unused dead code (not wired into any page) and does not render this type.",
+      "tone_source": "measurements.longitudinal_comparison.trend",
+      "tone_colors": {
+        "regression":         "#16a34a",
+        "stable":             "#2563eb",
+        "progression":        "#dc2626",
+        "mixed":              "#d97706",
+        "not_applicable":     "#6b7280"
+      },
+      "fields": [
+        { "key": "conclusion", "label": "Conclusion", "type": "string_list", "data_path": "summary.conclusion" },
+        { "key": "narrative",  "label": "Comparison with Prior Study", "type": "text", "data_path": "measurements.longitudinal_comparison.narrative" },
+        { "key": "trend",      "label": "Overall Trend", "type": "badge", "data_path": "measurements.longitudinal_comparison.trend" }
+      ]
+    },
+    {
+      "id": "finding_right_parotid_region",
+      "title": "Right Parotid Region",
+      "type": "key_value",
+      "data_path": "measurements.findings.right_parotid_region",
+      "fields": [
+        { "key": "finding",                "label": "Finding",                "format": "text" },
+        { "key": "status",                 "label": "Status",                 "format": "text" },
+        { "key": "post_treatment_state",   "label": "Post-Treatment State",   "format": "text" },
+        { "key": "comparison_to_baseline", "label": "Comparison to Baseline", "format": "text" }
+      ]
+    },
+    {
+      "id": "finding_lymphnodes_right_neck",
+      "title": "Lymph Nodes — Right Neck",
+      "type": "key_value",
+      "data_path": "measurements.findings.lymphnodes_right_neck",
+      "fields": [
+        { "key": "finding",                "label": "Finding",                "format": "text" },
+        { "key": "status",                 "label": "Status",                 "format": "text" },
+        { "key": "count",                  "label": "Node Count",             "format": "number" },
+        { "key": "largest_short_axis_mm",  "label": "Largest Short Axis",     "format": "number", "precision": 1, "unit": "mm" },
+        { "key": "comparison_to_baseline", "label": "Comparison to Baseline", "format": "text" }
+      ]
+    },
+    {
+      "id": "finding_lymphnodes_left_neck",
+      "title": "Lymph Nodes — Left Neck",
+      "type": "key_value",
+      "data_path": "measurements.findings.lymphnodes_left_neck",
+      "fields": [
+        { "key": "finding",                "label": "Finding",                "format": "text" },
+        { "key": "status",                 "label": "Status",                 "format": "text" },
+        { "key": "count",                  "label": "Node Count",             "format": "number" },
+        { "key": "largest_short_axis_mm",  "label": "Largest Short Axis",     "format": "number", "precision": 1, "unit": "mm" },
+        { "key": "comparison_to_baseline", "label": "Comparison to Baseline", "format": "text" }
+      ]
+    },
+    {
+      "id": "finding_mandible_and_maxilla",
+      "title": "Mandible & Maxilla",
+      "type": "key_value",
+      "data_path": "measurements.findings.mandible_and_maxilla",
+      "fields": [
+        { "key": "finding", "label": "Finding", "format": "text" },
+        { "key": "status",  "label": "Status",  "format": "text" }
+      ]
+    },
+    {
+      "id": "finding_supra_glottic_region",
+      "title": "Supra-glottic / Glottic / Infra-glottic Region",
+      "type": "key_value",
+      "data_path": "measurements.findings.supra_glottic_region",
+      "fields": [
+        { "key": "finding", "label": "Finding", "format": "text" },
+        { "key": "status",  "label": "Status",  "format": "text" }
+      ]
+    },
+    {
+      "id": "finding_oropharynx",
+      "title": "Oropharynx & Parapharyngeal Spaces",
+      "type": "key_value",
+      "data_path": "measurements.findings.oropharynx",
+      "fields": [
+        { "key": "finding",                      "label": "Finding",                 "format": "text" },
+        { "key": "status",                       "label": "Oropharynx Status",       "format": "text" },
+        { "key": "parapharyngeal_spaces_status", "label": "Parapharyngeal Spaces",   "format": "text" }
+      ]
+    },
+    {
+      "id": "finding_laryngeal_structures",
+      "title": "Laryngeal Structures",
+      "type": "key_value",
+      "data_path": "measurements.findings.laryngeal_structures",
+      "fields": [
+        { "key": "finding", "label": "Finding", "format": "text" },
+        { "key": "status",  "label": "Status",  "format": "text" }
+      ]
+    },
+    {
+      "id": "finding_thyroid_gland",
+      "title": "Thyroid Gland",
+      "type": "key_value",
+      "data_path": "measurements.findings.thyroid_gland",
+      "fields": [
+        { "key": "finding", "label": "Finding", "format": "text" },
+        { "key": "status",  "label": "Status",  "format": "text" }
+      ]
+    },
+    {
+      "id": "thyroid_nodules_table",
+      "title": "Thyroid Nodules",
+      "type": "table",
+      "data_path": "measurements.findings.thyroid_gland.nodules",
+      "columns": [
+        { "key": "size_mm",  "label": "Size (mm)", "format": "number", "precision": 1 },
+        { "key": "cystic",   "label": "Cystic",    "format": "boolean" },
+        { "key": "septated", "label": "Septated",  "format": "boolean" },
+        { "key": "location", "label": "Location",  "format": "text" }
+      ]
+    },
+    {
+      "id": "finding_nasal_septum",
+      "title": "Nasal Septum",
+      "type": "key_value",
+      "data_path": "measurements.findings.nasal_septum",
+      "fields": [
+        { "key": "finding",   "label": "Finding",   "format": "text" },
+        { "key": "status",    "label": "Status",    "format": "text" },
+        { "key": "deviation", "label": "Deviation", "format": "text" }
+      ]
+    },
+    {
+      "id": "structural_regression_table",
+      "title": "Structural Comparison vs. Baseline",
+      "type": "table",
+      "data_path": "measurements.longitudinal_comparison.region_changes",
+      "columns": [
+        { "key": "region",         "label": "Region",         "format": "text" },
+        { "key": "metric",         "label": "Metric",         "format": "text" },
+        { "key": "baseline_value", "label": "Baseline",       "format": "number", "precision": 2 },
+        { "key": "current_value",  "label": "Current",        "format": "number", "precision": 2 },
+        { "key": "change_pct",     "label": "Change (%)",     "format": "number", "precision": 1 },
+        { "key": "direction",      "label": "Direction",      "format": "text" }
+      ]
+    },
+    {
+      "id": "ct_previews",
+      "title": "CT Preview Cross-Sections",
+      "type": "image",
+      "artifact_filter": "ct_preview_png"
+    },
+    {
+      "id": "qa",
+      "title": "Quality Assurance",
+      "type": "qa_panel",
+      "flags_path": "qa_flags",
+      "details_path": "qa_details",
+      "severity_map": {
+        "insufficient_slices":        "error",
+        "excessive_slice_thickness":  "warning",
+        "preview_render_failed":      "error",
+        "vlm_unavailable":            "error",
+        "low_confidence_extraction":  "warning"
+      }
+    },
+    {
+      "id": "model_info",
+      "title": "Model Information",
+      "type": "key_value",
+      "fields": [
+        { "key": "model_version",  "label": "Model Version",  "format": "text", "data_path": "model_version" },
+        { "key": "model_checksum", "label": "Model Checksum", "format": "text", "data_path": "model_checksum" }
+      ]
+    }
+  ]
+}

@@ -38,6 +38,12 @@ class BatchUploadService:
             tenant_id=tenant_id,
         )
         self._session.add(batch)
+        # Flush the parent row before adding items — BatchUploadRecord and
+        # BatchUploadItemRecord have no ORM relationship() linking them (just a
+        # raw FK column), so SQLAlchemy's unit-of-work has no way to infer
+        # insert order between them in a single flush; without this, the FK
+        # insert can be attempted before the parent row exists.
+        await self._session.flush()
 
         for uid in study_uids:
             item = BatchUploadItemRecord(
@@ -56,10 +62,12 @@ class BatchUploadService:
             "status": "pending",
         }
 
-    async def get_batch(self, batch_id: str) -> dict[str, Any] | None:
+    async def get_batch(self, batch_id: str, tenant_id: str | None = None) -> dict[str, Any] | None:
         from app.infrastructure.database.models import BatchUploadRecord, BatchUploadItemRecord
 
         stmt = select(BatchUploadRecord).where(BatchUploadRecord.id == batch_id)
+        if tenant_id:
+            stmt = stmt.where(BatchUploadRecord.tenant_id == tenant_id)
         result = await self._session.execute(stmt)
         record = result.scalar_one_or_none()
         if not record:

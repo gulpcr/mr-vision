@@ -7,7 +7,7 @@ from fastapi.responses import StreamingResponse
 
 from app.application.job_orchestrator import JobOrchestrator
 from app.infrastructure.database.repositories import PgJobRepository
-from app.interface.api.dependencies import get_job_orchestrator, get_job_repo
+from app.interface.api.dependencies import get_job_orchestrator, get_job_repo, require_usecase_feature
 from app.interface.schemas.job import CreateJobRequest, JobListResponse, JobResponse
 
 router = APIRouter(tags=["jobs"])
@@ -19,6 +19,11 @@ async def create_jobs(
     body: CreateJobRequest,
     orchestrator: Annotated[JobOrchestrator, Depends(get_job_orchestrator)],
 ):
+    # Explicitly requested pipelines are locked down here; an omitted usecase_names
+    # (auto-routing) is a system decision, not a direct user execution request.
+    for usecase_name in body.usecase_names or []:
+        require_usecase_feature(usecase_name)
+
     try:
         jobs = await orchestrator.create_jobs_for_study(
             study_instance_uid=study_uid,
@@ -81,8 +86,14 @@ async def cancel_job(
 async def retry_job(
     job_id: str,
     orchestrator: Annotated[JobOrchestrator, Depends(get_job_orchestrator)],
+    job_repo: Annotated[PgJobRepository, Depends(get_job_repo)],
 ):
     """Retry a failed or cancelled job."""
+    existing_job = await job_repo.get_by_id(job_id)
+    if not existing_job:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    require_usecase_feature(existing_job.usecase_name)
+
     try:
         job = await orchestrator.retry_job(job_id)
     except ValueError as e:

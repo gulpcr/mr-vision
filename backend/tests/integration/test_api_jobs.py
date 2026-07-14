@@ -11,9 +11,22 @@ from app.domain.models import JobRun
 
 
 @pytest.fixture
-def app_client():
+def app_client(monkeypatch):
+    from app.config import get_settings
     from app.main import create_app
     from app.interface.api import dependencies
+
+    # These tests exercise route/service wiring, not auth/tenancy — bypass RBAC
+    # and tenant resolution so requests don't need a real JWT, and so
+    # TenantResolutionMiddleware never calls get_tenant_by_slug() against the
+    # real DB engine (a module-level singleton bound to whichever event loop
+    # first used it — reusing it across each test's fresh TestClient/event
+    # loop throws "Future attached to a different loop"). get_settings() is
+    # process-cached, so clear it after the env var change takes effect and
+    # again on teardown.
+    monkeypatch.setenv("AUTH_MODE", "none")
+    monkeypatch.setenv("MULTI_TENANT_ENABLED", "false")
+    get_settings.cache_clear()
 
     app = create_app()
 
@@ -31,7 +44,8 @@ def app_client():
     dependencies.set_routing_service(mock_routing)
 
     client = TestClient(app)
-    return client, mock_orchestrator, mock_job_repo
+    yield client, mock_orchestrator, mock_job_repo
+    get_settings.cache_clear()
 
 
 @pytest.fixture

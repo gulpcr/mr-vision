@@ -38,6 +38,9 @@ dependencies = [
     # Auth (F1)
     "passlib[bcrypt]>=1.7.4",
     "python-jose[cryptography]>=3.3.0",
+    # MFA (TOTP)
+    "pyotp>=2.9.0",
+    "qrcode>=7.4.2",
     # PDF Reports (F18)
     "reportlab>=4.0",
     # FHIR (F11)

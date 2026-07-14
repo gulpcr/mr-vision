@@ -1,0 +1,15 @@
+rules:
+  - body_parts:
+      - HEAD
+      - NECK
+    study_description_patterns:
+      - "(?i)face"
+      - "(?i)neck"
+      - "(?i)parotid"
+    series_description_patterns:
+      - "(?i)face"
+      - "(?i)neck"
+      - "(?i)parotid"
+    modality: CT
+    priority: 10
+    enabled: true

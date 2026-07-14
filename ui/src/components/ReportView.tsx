@@ -81,6 +81,106 @@ interface ReportViewProps {
 const VIEWS = ["axial", "coronal", "sagittal"] as const;
 const PET_USECASES = ["pet_ct", "pet_ct_brain"];
 
+// Renders a single banner-type section (e.g. ct_face_neck's clinical conclusion
+// + comparison narrative). Kept generic/data-driven — not gated on usecase_name —
+// so any use case can declare one in its ui_schema.json.
+function renderBannerSection(section: any, result: Result) {
+  const toneValue = section.tone_source ? getNestedValue(result, section.tone_source) : undefined;
+  const toneColor = (toneValue && section.tone_colors?.[toneValue]) || "#6b7280";
+
+  const fields = (section.fields || [])
+    .map((field: any) => ({
+      field,
+      value: field.data_path ? getNestedValue(result, field.data_path) : undefined,
+    }))
+    .filter(({ value }: any) => value !== null && value !== undefined && value !== "" &&
+      !(Array.isArray(value) && value.length === 0));
+
+  if (fields.length === 0) return null;
+
+  return (
+    <div
+      key={section.id}
+      className="report-section"
+      style={{ borderLeft: `4px solid ${toneColor}`, paddingLeft: "1.25rem" }}
+    >
+      <h2 className="report-section-title">{section.title}</h2>
+      <div className="space-y-3">
+        {fields.map(({ field, value }: any) => {
+          if (field.type === "string_list") {
+            const items: any[] = Array.isArray(value) ? value : [value];
+            return (
+              <div key={field.key}>
+                <dt className="text-gray-500 text-xs uppercase tracking-wider mb-1">
+                  {field.label}
+                </dt>
+                <ul className="list-disc list-inside space-y-1 text-sm text-gray-900 leading-relaxed">
+                  {items.map((item, i) => (
+                    <li key={i}>{String(item)}</li>
+                  ))}
+                </ul>
+              </div>
+            );
+          }
+          if (field.type === "badge") {
+            return (
+              <div key={field.key} className="flex items-center gap-2">
+                <span className="text-gray-500 text-xs uppercase tracking-wider">
+                  {field.label}:
+                </span>
+                <span
+                  className="px-2.5 py-0.5 rounded-full text-xs font-semibold text-white capitalize"
+                  style={{ backgroundColor: toneColor }}
+                >
+                  {String(value).replace(/_/g, " ")}
+                </span>
+              </div>
+            );
+          }
+          return (
+            <div key={field.key}>
+              <dt className="text-gray-500 text-xs uppercase tracking-wider mb-1">
+                {field.label}
+              </dt>
+              <dd className="text-sm text-gray-900 leading-relaxed">{String(value)}</dd>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// Renders a key_value section using the SAME resolution rules for both
+// section-level data_path (e.g. ct_face_neck's per-region panels: data_path on
+// the section, bare `key` on each field) and field-level data_path (e.g.
+// mammography's structured_right/left panels: no section data_path, each field
+// fully qualified) — so both existing ui_schema.json conventions work correctly
+// rather than one silently resolving to "-" for every field.
+function renderKeyValueSection(section: any, result: Result) {
+  const base = section.data_path ? getNestedValue(result, section.data_path) : result;
+  return (
+    <div key={section.id} className="report-section">
+      <h2 className="report-section-title">{section.title}</h2>
+      <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-3 text-sm">
+        {section.fields?.map((field: any) => {
+          const value = field.data_path
+            ? getNestedValue(result, field.data_path)
+            : base?.[field.key];
+          return (
+            <div key={field.key}>
+              <dt className="text-gray-500 text-xs uppercase tracking-wider">{field.label}</dt>
+              <dd className="font-medium mt-0.5 text-gray-900">
+                {formatValue(value, field.format, field.precision, field.unit)}
+              </dd>
+            </div>
+          );
+        })}
+      </dl>
+    </div>
+  );
+}
+
 export function ReportView({ study, result, uiSchema }: ReportViewProps) {
   const summarySection = uiSchema?.sections?.find((s: any) => s.id === "summary");
   const tumorDetected = result.summary?.tumor_detected;
@@ -92,6 +192,17 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
   const actuallyHasPet = study.series.some((s) => s.modality === "PT");
   const isPetCt = PET_USECASES.includes(result.usecase_name) && actuallyHasPet;
   const isPipelineMismatch = PET_USECASES.includes(result.usecase_name) && !actuallyHasPet;
+
+  // Use cases with no segmentation model (ct_face_neck's VLM extraction,
+  // mammography's classifier) declare no "overlay" section in ui_schema.json.
+  // Without this check they fell into the generic axial/coronal/sagittal
+  // "Segmentation Overlay" branch below, which calls the /api/preview endpoint
+  // that only knows how to render a segmentation-NIfTI overlay — for these use
+  // cases it 404s/500s on every view, silently degrading to three "Preview not
+  // available" boxes under a "Segmentation Overlay" heading that wrongly implies
+  // a segmentation was attempted and failed, rather than never being applicable.
+  const hasOverlayCapability =
+    uiSchema?.sections?.some((s: any) => s.type === "overlay") ?? false;
 
   return (
     <div className="report-container">
@@ -286,6 +397,23 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
           </dl>
         </div>
       )}
+
+      {/* Additional structured key_value panels beyond "summary" (e.g.
+          ct_face_neck's 9 per-region finding panels, mammography's
+          structured_right/left panels). "model_info" is rendered in the
+          footer instead, so it's excluded here to avoid duplication. These
+          were previously declared in ui_schema.json but never rendered by
+          this component — silently dropped, not just unstyled. */}
+      {uiSchema?.sections
+        ?.filter((s: any) => s.type === "key_value" && s.id !== "summary" && s.id !== "model_info")
+        .map((section: any) => renderKeyValueSection(section, result))}
+
+      {/* Banner-type sections (e.g. ct_face_neck's clinical conclusion +
+          baseline-comparison narrative) — the single most important line of a
+          radiology report; previously not rendered at all. */}
+      {uiSchema?.sections
+        ?.filter((s: any) => s.type === "banner")
+        .map((section: any) => renderBannerSection(section, result))}
 
       {/* AI-Detected Abnormal Findings (pathology: abdomen organs, chest lungs,
           coronary stenosis, dedicated lesion model). Data-driven from the result
@@ -683,8 +811,8 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
             );
           })()}
         </>
-      ) : (
-        /* ── MRI / non-PET: Segmentation overlay via preview endpoint ── */
+      ) : hasOverlayCapability ? (
+        /* ── MRI / non-PET with a segmentation model: overlay via preview endpoint ── */
         <div className="report-section">
           <h2 className="report-section-title">Imaging — Segmentation Overlay</h2>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -717,6 +845,40 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
             Colored regions indicate AI-detected segmentation overlaid on the scan. Click to enlarge.
           </p>
         </div>
+      ) : (
+        /* ── No segmentation/PET overlay concept for this use case (e.g.
+             ct_face_neck's VLM extraction, mammography's classifier): render
+             any declared "image" sections instead of a misleading
+             "Segmentation Overlay" block that would only show three
+             "Preview not available" placeholders. ── */
+        uiSchema?.sections
+          ?.filter((s: any) => s.type === "image")
+          .map((section: any) => {
+            const imgArtifacts = result.artifacts.filter(
+              (a) => a.artifact_type === section.artifact_filter
+            );
+            if (imgArtifacts.length === 0) return null;
+            return (
+              <div key={section.id} className="report-section">
+                <h2 className="report-section-title">{section.title}</h2>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  {imgArtifacts.map((artifact) => (
+                    <div
+                      key={artifact.name}
+                      className="bg-black rounded-lg overflow-hidden border-2 border-gray-200"
+                    >
+                      <AuthImage
+                        src={getArtifactUrl(study.study_instance_uid, result.usecase_name, artifact.name)}
+                        alt={artifact.name}
+                        className="w-full h-auto"
+                        fallback="Image not available"
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })
       )}
 
       {/* Zoomed image modal */}

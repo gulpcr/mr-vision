@@ -1,24 +1,34 @@
 from functools import lru_cache
 from typing import Annotated, AsyncGenerator
 
-from fastapi import Depends
+from fastapi import Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.analytics_service import AnalyticsService
+from app.application.auth_service import AuthService
 from app.application.cds_service import ClinicalDecisionService
+from app.application.dicom_upload_service import DicomUploadService
 from app.application.job_orchestrator import JobOrchestrator
 from app.application.llm_report_service import LLMReportService
 from app.application.longitudinal_service import LongitudinalAnalysisService
+from app.application.plan_service import PlanService
 from app.application.result_service import ResultService
 from app.application.routing_service import RoutingService
 from app.application.study_service import StudyService
+from app.application.tenant_api_key_service import TenantApiKeyService
+from app.application.tenant_service import TenantService
 from app.application.usecase_registry import UseCaseRegistry
 from app.config import get_settings
 from app.infrastructure.database.repositories import (
     PgAuditRepository,
     PgJobRepository,
+    PgPendingStudyTenantRepository,
+    PgPlanFeatureRepository,
     PgResultRepository,
     PgSeriesRepository,
     PgStudyRepository,
+    PgTenantApiKeyRepository,
+    PgTenantRepository,
     PgUseCaseRegistryRepository,
 )
 from app.infrastructure.database.session import get_db_session
@@ -26,6 +36,9 @@ from app.infrastructure.dicomweb.client import DICOMwebClient
 from app.infrastructure.llm.gemini_client import GeminiClient
 from app.infrastructure.orthanc.client import OrthancPACSClient
 from app.infrastructure.storage.client import get_artifact_store
+from app.infrastructure.tenant.context import TenantContextService
+
+USECASE_FEATURE_LOCKED_DETAIL = "Feature package disabled under your subscription layout"
 
 _registry: UseCaseRegistry | None = None
 _routing_service: RoutingService | None = None
@@ -56,6 +69,33 @@ def get_routing_service() -> RoutingService:
     return _routing_service
 
 
+def tenant_has_usecase_access(usecase_name: str) -> bool:
+    """Feature-key is the usecase name itself (e.g. "brain_mri", "mammography").
+
+    Single-tenant deployments (multi_tenant_enabled=False) never restrict —
+    there is no tenant workspace whose plan could disable a pipeline.
+    """
+    if not get_settings().multi_tenant_enabled:
+        return True
+    return TenantContextService.has_feature(usecase_name)
+
+
+def require_usecase_feature(usecase_name: str) -> None:
+    if not tenant_has_usecase_access(usecase_name):
+        raise HTTPException(status_code=403, detail=USECASE_FEATURE_LOCKED_DETAIL)
+
+
+def request_tenant_id(request: Request) -> str:
+    """The authenticated caller's tenant, per the JWT claim RBACMiddleware sets.
+
+    Always populated (jwt/api_key/none auth modes all set "default" at minimum),
+    unlike TenantContextService which is only bound when the subdomain/header
+    tenant-resolution feature is enabled. This is the row-level isolation
+    boundary — repositories filter every query by it.
+    """
+    return getattr(request.state, "tenant_id", "default") or "default"
+
+
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
     async for session in get_db_session():
         yield session
@@ -63,13 +103,16 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
 
 def get_study_service(
     session: Annotated[AsyncSession, Depends(get_session)],
+    tenant_id: Annotated[str, Depends(request_tenant_id)],
 ) -> StudyService:
     return StudyService(
-        study_repo=PgStudyRepository(session),
-        series_repo=PgSeriesRepository(session),
-        audit_repo=PgAuditRepository(session),
+        study_repo=PgStudyRepository(session, tenant_id=tenant_id),
+        series_repo=PgSeriesRepository(session, tenant_id=tenant_id),
+        audit_repo=PgAuditRepository(session, tenant_id=tenant_id),
         pacs_client=OrthancPACSClient(),
         dicomweb_client=DICOMwebClient(),
+        pending_tenant_repo=PgPendingStudyTenantRepository(session),
+        unscoped_study_repo=PgStudyRepository(session, tenant_id=None),
     )
 
 
@@ -77,30 +120,100 @@ def get_job_orchestrator(
     session: Annotated[AsyncSession, Depends(get_session)],
     registry: Annotated[UseCaseRegistry, Depends(get_registry)],
     routing_service: Annotated[RoutingService, Depends(get_routing_service)],
+    tenant_id: Annotated[str, Depends(request_tenant_id)],
 ) -> JobOrchestrator:
     return JobOrchestrator(
-        study_repo=PgStudyRepository(session),
-        series_repo=PgSeriesRepository(session),
-        job_repo=PgJobRepository(session),
-        audit_repo=PgAuditRepository(session),
+        study_repo=PgStudyRepository(session, tenant_id=tenant_id),
+        series_repo=PgSeriesRepository(session, tenant_id=tenant_id),
+        job_repo=PgJobRepository(session, tenant_id=tenant_id),
+        audit_repo=PgAuditRepository(session, tenant_id=tenant_id),
         routing_service=routing_service,
         registry=registry,
     )
 
 
+def get_job_orchestrator_factory(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    registry: Annotated[UseCaseRegistry, Depends(get_registry)],
+    routing_service: Annotated[RoutingService, Depends(get_routing_service)],
+):
+    """For callers that don't know the right tenant scope until after some other
+    lookup (e.g. the Orthanc stable-study webhook, which has no caller tenant —
+    it only learns the study's real tenant once StudyService.ingest_study()
+    returns). request_tenant_id would be wrong here since there's no JWT/session
+    tenant to fall back to.
+    """
+
+    def _build(tenant_id: str) -> JobOrchestrator:
+        return JobOrchestrator(
+            study_repo=PgStudyRepository(session, tenant_id=tenant_id),
+            series_repo=PgSeriesRepository(session, tenant_id=tenant_id),
+            job_repo=PgJobRepository(session, tenant_id=tenant_id),
+            audit_repo=PgAuditRepository(session, tenant_id=tenant_id),
+            routing_service=routing_service,
+            registry=registry,
+        )
+
+    return _build
+
+
 def get_result_service(
     session: Annotated[AsyncSession, Depends(get_session)],
+    tenant_id: Annotated[str, Depends(request_tenant_id)],
 ) -> ResultService:
     return ResultService(
-        result_repo=PgResultRepository(session),
+        result_repo=PgResultRepository(session, tenant_id=tenant_id),
         artifact_store=get_artifact_store(),
     )
 
 
 def get_job_repo(
     session: Annotated[AsyncSession, Depends(get_session)],
+    tenant_id: Annotated[str, Depends(request_tenant_id)],
 ) -> PgJobRepository:
-    return PgJobRepository(session)
+    return PgJobRepository(session, tenant_id=tenant_id)
+
+
+def get_tenant_service(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> TenantService:
+    return TenantService(tenant_repo=PgTenantRepository(session))
+
+
+def get_analytics_service(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    tenant_id: Annotated[str, Depends(request_tenant_id)],
+) -> AnalyticsService:
+    return AnalyticsService(session, tenant_id=tenant_id)
+
+
+def get_tenant_api_key_service(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> TenantApiKeyService:
+    return TenantApiKeyService(key_repo=PgTenantApiKeyRepository(session))
+
+
+def get_plan_service(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> PlanService:
+    return PlanService(plan_feature_repo=PgPlanFeatureRepository(session))
+
+
+def get_auth_service(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> AuthService:
+    return AuthService(session=session)
+
+
+def get_dicom_upload_service(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> DicomUploadService:
+    return DicomUploadService(
+        pacs_client=OrthancPACSClient(),
+        pending_repo=PgPendingStudyTenantRepository(session),
+        unscoped_study_repo=PgStudyRepository(session, tenant_id=None),
+        audit_repo=PgAuditRepository(session),
+    )
 
 
 def get_llm_report_service() -> LLMReportService:

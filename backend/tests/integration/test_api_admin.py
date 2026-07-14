@@ -9,9 +9,16 @@ from app.domain.models import UseCase
 
 
 @pytest.fixture
-def app_client():
+def app_client(monkeypatch):
+    from app.config import get_settings
     from app.main import create_app
     from app.interface.api import dependencies
+
+    # These tests exercise route/service wiring, not auth — bypass RBAC so
+    # requests don't need a real JWT. get_settings() is process-cached, so
+    # clear it after the env var change takes effect and again on teardown.
+    monkeypatch.setenv("AUTH_MODE", "none")
+    get_settings.cache_clear()
 
     app = create_app()
 
@@ -36,7 +43,8 @@ def app_client():
     dependencies.set_routing_service(mock_routing)
 
     client = TestClient(app)
-    return client, mock_routing, mock_registry
+    yield client, mock_routing, mock_registry
+    get_settings.cache_clear()
 
 
 class TestGetRoutingRules:

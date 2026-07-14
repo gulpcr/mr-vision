@@ -9,6 +9,7 @@ from app.domain.enums import AuditAction, BodyPart
 from app.domain.interfaces import (
     AuditRepository,
     PACSClient,
+    PendingStudyTenantRepository,
     SeriesRepository,
     StudyRepository,
 )
@@ -28,19 +29,34 @@ class StudyService:
         audit_repo: AuditRepository,
         pacs_client: PACSClient,
         dicomweb_client: DICOMwebClient,
+        pending_tenant_repo: PendingStudyTenantRepository | None = None,
+        unscoped_study_repo: StudyRepository | None = None,
     ):
         self._study_repo = study_repo
         self._series_repo = series_repo
         self._audit_repo = audit_repo
         self._pacs = pacs_client
         self._dw = dicomweb_client
+        self._pending_tenant_repo = pending_tenant_repo
+        # `study_repo` is tenant-scoped (per-request), so it can't see a study
+        # that belongs to a different tenant than the caller — which would make
+        # this method think a study is "new" when it already exists elsewhere,
+        # and session.merge() would then re-stamp it back to the caller's
+        # tenant. The existence check below always needs an unscoped view.
+        self._unscoped_study_repo = unscoped_study_repo or study_repo
 
     async def ingest_study(self, study_instance_uid: str) -> Study:
         """Fetch study metadata from Orthanc and persist it."""
-        existing = await self._study_repo.get_by_uid(study_instance_uid)
+        existing = await self._unscoped_study_repo.get_by_uid(study_instance_uid)
         if existing:
             logger.info("study_already_ingested", study_uid=study_instance_uid)
             return existing
+
+        tenant_id: str | None = None
+        if self._pending_tenant_repo is not None:
+            pending = await self._pending_tenant_repo.get_by_study_uid(study_instance_uid)
+            if pending is not None:
+                tenant_id = pending.tenant_id
 
         study_meta = await self._pacs.get_study(study_instance_uid)
         ext = DICOMwebClient.extract_tag_value
@@ -86,6 +102,7 @@ class StudyService:
             body_part_examined=body_part,
             modality=ext(study_meta, "Modality"),
             institution_name=ext(study_meta, "InstitutionName"),
+            tenant_id=tenant_id or "default",
         )
 
         try:
@@ -98,6 +115,8 @@ class StudyService:
                     return existing
             raise
         logger.info("study_ingested", study_uid=study_instance_uid)
+        if tenant_id and self._pending_tenant_repo is not None:
+            await self._pending_tenant_repo.consume(study_instance_uid)
         try:
             from app.infrastructure.metrics import STUDY_INGESTED_TOTAL
             STUDY_INGESTED_TOTAL.inc()

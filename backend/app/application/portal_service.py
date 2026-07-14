@@ -30,11 +30,14 @@ class PortalService:
         usecase_name: str,
         created_by: str = "system",
         ttl_days: int = _DEFAULT_TTL_DAYS,
+        tenant_id: str | None = None,
     ) -> dict[str, Any]:
         from app.infrastructure.database.models import ShareLinkRecord
 
         token = secrets.token_urlsafe(32)
-        expires_at = datetime.now(timezone.utc) + timedelta(days=ttl_days)
+        # expires_at is a naive TIMESTAMP column (stores UTC) — asyncpg rejects
+        # binding a tz-aware datetime to it.
+        expires_at = (datetime.now(timezone.utc) + timedelta(days=ttl_days)).replace(tzinfo=None)
 
         record = ShareLinkRecord(
             id=str(uuid.uuid4()),
@@ -45,6 +48,7 @@ class PortalService:
             created_by=created_by,
             expires_at=expires_at,
             is_active=True,
+            tenant_id=tenant_id or "default",
         )
         self._session.add(record)
         await self._session.flush()
@@ -88,10 +92,12 @@ class PortalService:
             "expires_at": record.expires_at.isoformat(),
         }
 
-    async def revoke_link(self, link_id: str) -> bool:
+    async def revoke_link(self, link_id: str, tenant_id: str | None = None) -> bool:
         from app.infrastructure.database.models import ShareLinkRecord
 
         stmt = select(ShareLinkRecord).where(ShareLinkRecord.id == link_id)
+        if tenant_id:
+            stmt = stmt.where(ShareLinkRecord.tenant_id == tenant_id)
         result = await self._session.execute(stmt)
         record = result.scalar_one_or_none()
         if record is None:
@@ -100,7 +106,9 @@ class PortalService:
         await self._session.flush()
         return True
 
-    async def list_links_for_result(self, result_id: str) -> list[dict[str, Any]]:
+    async def list_links_for_result(
+        self, result_id: str, tenant_id: str | None = None
+    ) -> list[dict[str, Any]]:
         from app.infrastructure.database.models import ShareLinkRecord
 
         stmt = (
@@ -108,6 +116,8 @@ class PortalService:
             .where(ShareLinkRecord.result_id == result_id)
             .order_by(ShareLinkRecord.created_at.desc())
         )
+        if tenant_id:
+            stmt = stmt.where(ShareLinkRecord.tenant_id == tenant_id)
         result = await self._session.execute(stmt)
         return [
             {

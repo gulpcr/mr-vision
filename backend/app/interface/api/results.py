@@ -7,7 +7,7 @@ from fastapi.responses import Response, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.result_service import ResultService
-from app.interface.api.dependencies import get_result_service, get_session
+from app.interface.api.dependencies import get_result_service, get_session, request_tenant_id
 from app.interface.schemas.result import (
     ArtifactResponse,
     CompareRequest,
@@ -258,6 +258,7 @@ async def create_share_link(
     body: dict,
     service: Annotated[ResultService, Depends(get_result_service)],
     session: Annotated["AsyncSession", Depends(get_session)],
+    tenant_id: Annotated[str, Depends(request_tenant_id)],
 ):
     """Create a time-limited share link for referring physician portal access."""
     result = await service.get_result_by_id(result_id)
@@ -273,6 +274,7 @@ async def create_share_link(
         usecase_name=result.usecase_name,
         created_by=body.get("created_by", "system"),
         ttl_days=int(body.get("ttl_days", 7)),
+        tenant_id=tenant_id,
     )
     await session.commit()
     return link

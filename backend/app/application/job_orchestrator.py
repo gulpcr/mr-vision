@@ -108,7 +108,9 @@ class JobOrchestrator:
                 )
                 job.status = JobStatus.FAILED
                 job.error_detail = f"Failed to queue task: {exc}"
-                job.completed_at = datetime.now(timezone.utc)
+                # completed_at is a naive TIMESTAMP column (stores UTC) — asyncpg
+                # rejects binding a tz-aware datetime to it.
+                job.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
                 await self._job_repo.update(job)
                 raise ValueError(
                     f"Job created but could not be dispatched to the worker queue "
@@ -142,7 +144,7 @@ class JobOrchestrator:
             raise ValueError(f"Job {job_id} is already in terminal state: {job.status.value}")
 
         job.status = JobStatus.CANCELLED
-        job.completed_at = datetime.now(timezone.utc)
+        job.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
         job.status_message = "Cancelled by user"
         await self._job_repo.update(job)
 

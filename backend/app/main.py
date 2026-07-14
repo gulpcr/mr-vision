@@ -18,6 +18,10 @@ from app.interface.api.jobs import router as jobs_router
 from app.interface.api.reports import router as reports_router
 from app.interface.api.results import router as results_router
 from app.interface.api.studies import orthanc_router, router as studies_router
+from app.interface.api.dicom_upload import router as dicom_upload_router
+from app.interface.api.plan_features import router as plan_features_router
+from app.interface.api.tenant_api_keys import router as tenant_api_keys_router
+from app.interface.api.tenants import router as tenants_router
 from app.interface.api.usecases import router as usecases_router
 from app.interface.api.critical_alerts import router as critical_alerts_router
 from app.interface.api.dicomweb import router as dicomweb_router
@@ -27,6 +31,7 @@ from app.interface.api.onboarding import router as onboarding_router
 from app.interface.api.mammography import router as mammography_router
 from app.interface.api.ws import router as ws_router
 from app.interface.middleware.auth import RBACMiddleware
+from app.interface.middleware.tenant import TenantResolutionMiddleware
 
 structlog.configure(
     processors=[
@@ -84,6 +89,11 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    # Starlette executes the LAST-added middleware first, so RBACMiddleware
+    # (added last) runs before TenantResolutionMiddleware — the JWT is decoded
+    # and request.state.tenant_id is set before tenant resolution needs it as
+    # its fallback when no explicit subdomain/header slug is present.
+    app.add_middleware(TenantResolutionMiddleware)
     app.add_middleware(RBACMiddleware)
 
     # Routers
@@ -94,6 +104,10 @@ def create_app() -> FastAPI:
     app.include_router(results_router, prefix="/api")
     app.include_router(usecases_router, prefix="/api")
     app.include_router(admin_router, prefix="/api")
+    app.include_router(tenants_router, prefix="/api")
+    app.include_router(tenant_api_keys_router, prefix="/api")
+    app.include_router(plan_features_router, prefix="/api")
+    app.include_router(dicom_upload_router, prefix="/api")
     app.include_router(orthanc_router, prefix="/api")
     app.include_router(reports_router, prefix="/api")
     app.include_router(critical_alerts_router, prefix="/api")

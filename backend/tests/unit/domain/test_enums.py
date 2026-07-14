@@ -30,8 +30,19 @@ class TestQAFlag:
         assert QAFlag.MOTION_ARTIFACT.value == "motion_artifact"
         assert QAFlag.LOW_RESOLUTION.value == "low_resolution"
 
+    def test_ct_face_neck_values(self):
+        # These must stay registered here — PgResultRepository._to_domain() drops
+        # any qa_flag string that isn't a valid QAFlag member on read (ValueError
+        # is caught and swallowed), so an unregistered flag silently vanishes from
+        # the API/UI despite being stored correctly.
+        assert QAFlag.INSUFFICIENT_SLICES.value == "insufficient_slices"
+        assert QAFlag.EXCESSIVE_SLICE_THICKNESS.value == "excessive_slice_thickness"
+        assert QAFlag.PREVIEW_RENDER_FAILED.value == "preview_render_failed"
+        assert QAFlag.VLM_UNAVAILABLE.value == "vlm_unavailable"
+        assert QAFlag.LOW_CONFIDENCE_EXTRACTION.value == "low_confidence_extraction"
+
     def test_member_count(self):
-        assert len(QAFlag) == 6
+        assert len(QAFlag) == 18
 
 
 class TestModality:
@@ -48,7 +59,7 @@ class TestBodyPart:
         assert BodyPart.KNEE.value == "KNEE"
 
     def test_member_count(self):
-        assert len(BodyPart) == 10
+        assert len(BodyPart) == 15
 
     def test_is_str_enum(self):
         assert isinstance(BodyPart.BRAIN, str)
@@ -72,4 +83,4 @@ class TestAuditAction:
         assert AuditAction.CONFIG_CHANGED.value == "config_changed"
 
     def test_member_count(self):
-        assert len(AuditAction) == 10
+        assert len(AuditAction) == 31

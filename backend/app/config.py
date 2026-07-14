@@ -89,9 +89,18 @@ class Settings(BaseSettings):
     jwt_access_token_expire_minutes: int = 480
     auth_mode: str = "jwt"  # "jwt" | "api_key" | "none"
 
+    # MFA lockout — locks TOTP/recovery-code verification after repeated
+    # wrong attempts, so a stolen password + mfa_token can't be brute-forced.
+    mfa_max_attempts: int = 5
+    mfa_lockout_minutes: float = 15
+
     # Multi-tenant (F2)
     multi_tenant_enabled: bool = False
     default_tenant_id: str = "default"
+    tenant_root_domain: str = "mr-vision.ai"
+
+    # Tenant DICOM upload API keys
+    dicom_upload_rate_limit_per_minute: int = 60
 
     # PHI De-identification (F3)
     phi_deidentify_enabled: bool = False
@@ -247,3 +256,20 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def derive_secret(purpose: str) -> str:
+    """HMAC(master_secret, purpose) — a domain-separated subkey derived from
+    the platform master secret (jwt_secret_key), used wherever a purpose-
+    specific signing/verification key is needed (per-tenant JWT signing, the
+    audit hash chain, ...) without provisioning and storing a separate secret
+    out of band. Leaking one derived subkey does not reveal the master secret
+    or any other purpose's subkey (HMAC's PRF property).
+    """
+    import hashlib
+    import hmac
+
+    settings = get_settings()
+    return hmac.new(
+        settings.jwt_secret_key.encode("utf-8"), purpose.encode("utf-8"), hashlib.sha256
+    ).hexdigest()

@@ -1,0 +1,216 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "CT Face & Neck Structured Analysis Result",
+  "type": "object",
+  "required": ["summary", "measurements", "qa_flags", "qa_details", "model_version", "model_checksum", "artifacts"],
+  "properties": {
+    "summary": {
+      "type": "object",
+      "required": ["comparison_performed", "conclusion"],
+      "properties": {
+        "study_description":     { "type": "string" },
+        "body_parts_evaluated": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["HEAD", "NECK"] }
+        },
+        "clinical_indication":   { "type": "string" },
+        "comparison_performed":  { "type": "boolean" },
+        "baseline_study_date":   { "type": ["string", "null"], "format": "date" },
+        "overall_impression":    { "type": "string" },
+        "conclusion": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Ordered final-assessment sentences, mirroring the source report's Conclusion section."
+        },
+        "confidence":            { "type": "string", "enum": ["standard", "low"] },
+        "confidence_reasons":    { "type": "array", "items": { "type": "string" } },
+        "processing_notes":      { "type": "string" },
+        "longitudinal_analysis": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Auto-populated by the platform's generic LLM longitudinal service (infrastructure/queue/tasks.py), not written by this pipeline directly. Distinct from measurements.longitudinal_comparison, which holds this pipeline's own structured per-region comparison."
+        }
+      }
+    },
+    "measurements": {
+      "type": "object",
+      "required": ["findings"],
+      "properties": {
+        "findings": {
+          "type": "object",
+          "required": [
+            "right_parotid_region",
+            "lymphnodes_right_neck",
+            "lymphnodes_left_neck",
+            "mandible_and_maxilla",
+            "supra_glottic_region",
+            "oropharynx",
+            "laryngeal_structures",
+            "thyroid_gland",
+            "nasal_septum"
+          ],
+          "properties": {
+            "right_parotid_region": {
+              "type": "object",
+              "required": ["finding", "status"],
+              "properties": {
+                "finding":                { "type": "string" },
+                "status":                 { "type": "string", "enum": ["no_residual_recurrent_mass", "residual_mass", "recurrent_mass", "indeterminate", "not_evaluated"] },
+                "post_treatment_state":   { "type": "string", "enum": ["post_surgery", "post_radiation", "post_surgery_and_radiation", "none", "unknown"] },
+                "comparison_to_baseline": { "type": "string", "enum": ["stable", "regressed", "progressed", "new", "resolved", "not_applicable"] }
+              }
+            },
+            "lymphnodes_right_neck": {
+              "type": "object",
+              "required": ["finding", "status"],
+              "properties": {
+                "finding":                { "type": "string" },
+                "status":                 { "type": "string", "enum": ["normal", "subcentimeter_nodes", "enlarged_nodes", "not_evaluated"] },
+                "count":                  { "type": ["integer", "null"], "minimum": 0 },
+                "largest_short_axis_mm":  { "type": ["number", "null"], "minimum": 0 },
+                "comparison_to_baseline": { "type": "string", "enum": ["regression_in_size_and_number", "stable", "progression", "new", "resolved", "not_applicable"] }
+              }
+            },
+            "lymphnodes_left_neck": {
+              "type": "object",
+              "required": ["finding", "status"],
+              "properties": {
+                "finding":                { "type": "string" },
+                "status":                 { "type": "string", "enum": ["normal", "subcentimeter_nodes", "enlarged_nodes", "not_evaluated"] },
+                "count":                  { "type": ["integer", "null"], "minimum": 0 },
+                "largest_short_axis_mm":  { "type": ["number", "null"], "minimum": 0 },
+                "comparison_to_baseline": { "type": "string", "enum": ["regression_in_size_and_number", "stable", "progression", "new", "resolved", "not_applicable"] }
+              }
+            },
+            "mandible_and_maxilla": {
+              "type": "object",
+              "required": ["finding", "status"],
+              "properties": {
+                "finding": { "type": "string" },
+                "status":  { "type": "string", "enum": ["normal", "erosion", "destruction", "indeterminate", "not_evaluated"] }
+              }
+            },
+            "supra_glottic_region": {
+              "type": "object",
+              "required": ["finding", "status"],
+              "properties": {
+                "finding":            { "type": "string" },
+                "status":             { "type": "string", "enum": ["normal", "mass_present", "indeterminate", "not_evaluated"] },
+                "subsites_evaluated": {
+                  "type": "array",
+                  "items": { "type": "string", "enum": ["supraglottic", "glottic", "infraglottic"] },
+                  "description": "Preserves the source report's combined supra-glottic/glottic/infra-glottic statement."
+                }
+              }
+            },
+            "oropharynx": {
+              "type": "object",
+              "required": ["finding", "status"],
+              "properties": {
+                "finding":                      { "type": "string" },
+                "status":                       { "type": "string", "enum": ["normal", "abnormal", "indeterminate", "not_evaluated"] },
+                "parapharyngeal_spaces_status": { "type": "string", "enum": ["normal", "abnormal", "indeterminate", "not_evaluated"] }
+              }
+            },
+            "laryngeal_structures": {
+              "type": "object",
+              "required": ["finding", "status"],
+              "properties": {
+                "finding":              { "type": "string" },
+                "status":               { "type": "string", "enum": ["normal", "abnormal", "indeterminate", "not_evaluated"] },
+                "structures_evaluated": {
+                  "type": "array",
+                  "items": { "type": "string", "enum": ["laryngeal_cartilage", "arytenoid_cartilage", "cricoid_cartilage"] }
+                }
+              }
+            },
+            "thyroid_gland": {
+              "type": "object",
+              "required": ["finding", "status"],
+              "properties": {
+                "finding": { "type": "string" },
+                "status":  { "type": "string", "enum": ["normal", "diffusely_enlarged", "focal_nodule", "multinodular", "indeterminate", "not_evaluated"] },
+                "nodules": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "size_mm":  { "type": ["number", "null"], "minimum": 0 },
+                      "cystic":   { "type": "boolean" },
+                      "septated": { "type": "boolean" },
+                      "location": { "type": ["string", "null"] }
+                    }
+                  }
+                }
+              }
+            },
+            "nasal_septum": {
+              "type": "object",
+              "required": ["finding", "status"],
+              "properties": {
+                "finding":   { "type": "string" },
+                "status":    { "type": "string", "enum": ["normal", "abnormal", "indeterminate", "not_evaluated"] },
+                "deviation": { "type": "string", "enum": ["none", "left", "right", "s_shaped", "indeterminate"] }
+              }
+            }
+          }
+        },
+        "longitudinal_comparison": {
+          "type": "object",
+          "description": "This pipeline's own structured per-region comparison against the baseline study (distinct from summary.longitudinal_analysis, which is the platform-wide generic LLM narrative injected by infrastructure/queue/tasks.py).",
+          "properties": {
+            "comparison_performed": { "type": "boolean" },
+            "baseline_study_date":  { "type": ["string", "null"], "format": "date" },
+            "baseline_study_uid":   { "type": ["string", "null"] },
+            "trend":                { "type": "string", "enum": ["progression", "regression", "stable", "mixed", "not_applicable"] },
+            "region_changes": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["region", "metric", "direction"],
+                "properties": {
+                  "region":         { "type": "string" },
+                  "metric":         { "type": "string" },
+                  "baseline_value": { "type": ["number", "null"] },
+                  "current_value":  { "type": ["number", "null"] },
+                  "change_pct":     { "type": ["number", "null"] },
+                  "direction":      { "type": "string", "enum": ["increased", "decreased", "stable"] }
+                }
+              }
+            },
+            "narrative": { "type": "string" }
+          }
+        },
+        "voxel_spacing_mm": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "image_dimensions": {
+          "type": "array",
+          "items": { "type": "integer" },
+          "minItems": 3,
+          "maxItems": 3
+        }
+      }
+    },
+    "qa_flags":       { "type": "array",  "items": { "type": "string" } },
+    "qa_details":     { "type": "object", "additionalProperties": true },
+    "model_version":  { "type": "string" },
+    "model_checksum": { "type": "string" },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "artifact_type", "local_path"],
+        "properties": {
+          "name":          { "type": "string" },
+          "artifact_type": { "type": "string" },
+          "local_path":    { "type": "string" },
+          "content_type":  { "type": "string" }
+        }
+      }
+    }
+  }
+}

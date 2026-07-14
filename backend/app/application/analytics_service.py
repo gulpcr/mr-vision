@@ -22,8 +22,9 @@ def _since(days: int) -> datetime:
 
 
 class AnalyticsService:
-    def __init__(self, session: AsyncSession):
+    def __init__(self, session: AsyncSession, tenant_id: str | None = None):
         self._session = session
+        self._tenant_id = tenant_id
 
     # ── QA / Audit Metrics ────────────────────────────────────────────────────
 
@@ -47,6 +48,8 @@ class AnalyticsService:
         )
         if usecase_name:
             job_stmt = job_stmt.where(JobRunRecord.usecase_name == usecase_name)
+        if self._tenant_id:
+            job_stmt = job_stmt.where(JobRunRecord.tenant_id == self._tenant_id)
 
         job_result = await self._session.execute(job_stmt)
         jobs = job_result.scalars().all()
@@ -75,7 +78,9 @@ class AnalyticsService:
         for uc, vals in usecase_tat.items():
             tat_by_usecase[uc] = round(statistics.median(vals) / 60, 1)
 
-        # Review queue stats
+        # Review queue stats — review_queue has no tenant_id column yet, so this
+        # aggregate is platform-wide, not tenant-scoped (residual gap; low harm
+        # since it's counts-by-status, no patient-identifying detail).
         rq_stmt = (
             select(ReviewQueueRecord.status, func.count(ReviewQueueRecord.id).label("cnt"))
             .where(ReviewQueueRecord.created_at >= since)
@@ -92,6 +97,8 @@ class AnalyticsService:
         result_stmt = select(ResultRecord).where(ResultRecord.created_at >= since)
         if usecase_name:
             result_stmt = result_stmt.where(ResultRecord.usecase_name == usecase_name)
+        if self._tenant_id:
+            result_stmt = result_stmt.where(ResultRecord.tenant_id == self._tenant_id)
         result_res = await self._session.execute(result_stmt)
         all_results = result_res.scalars().all()
         total_results = len(all_results)
@@ -103,6 +110,8 @@ class AnalyticsService:
             JobRunRecord.status == "failed",
             JobRunRecord.created_at >= since,
         )
+        if self._tenant_id:
+            failed_stmt = failed_stmt.where(JobRunRecord.tenant_id == self._tenant_id)
         failed_res = await self._session.execute(failed_stmt)
         failed_count = failed_res.scalar_one() or 0
 
@@ -133,6 +142,8 @@ class AnalyticsService:
             )
             .order_by(JobRunRecord.created_at)
         )
+        if self._tenant_id:
+            stmt = stmt.where(JobRunRecord.tenant_id == self._tenant_id)
         result = await self._session.execute(stmt)
         jobs = result.scalars().all()
 
@@ -197,7 +208,12 @@ class AnalyticsService:
     async def get_patient_trend(self, patient_id: str, usecase_name: str) -> dict[str, Any]:
         from app.infrastructure.database.models import ResultRecord, StudyRecord
 
+        # patient_id is only unique within a tenant — without this filter, a
+        # patient_id collision across tenants would blend one tenant's clinical
+        # history into another's trend chart.
         study_stmt = select(StudyRecord).where(StudyRecord.patient_id == patient_id)
+        if self._tenant_id:
+            study_stmt = study_stmt.where(StudyRecord.tenant_id == self._tenant_id)
         study_res = await self._session.execute(study_stmt)
         studies = study_res.scalars().all()
 
@@ -216,6 +232,8 @@ class AnalyticsService:
             )
             .order_by(ResultRecord.created_at)
         )
+        if self._tenant_id:
+            result_stmt = result_stmt.where(ResultRecord.tenant_id == self._tenant_id)
         result_res = await self._session.execute(result_stmt)
         results = result_res.scalars().all()
 
@@ -255,14 +273,19 @@ class AnalyticsService:
             ResultRecord.study_instance_uid.in_(study_uids),
             ResultRecord.is_latest == True,
         )
+        job_stmt = select(JobRunRecord).where(JobRunRecord.study_instance_uid.in_(study_uids))
+        study_stmt = select(StudyRecord).where(StudyRecord.study_instance_uid.in_(study_uids))
+        if self._tenant_id:
+            result_stmt = result_stmt.where(ResultRecord.tenant_id == self._tenant_id)
+            job_stmt = job_stmt.where(JobRunRecord.tenant_id == self._tenant_id)
+            study_stmt = study_stmt.where(StudyRecord.tenant_id == self._tenant_id)
+
         result_res = await self._session.execute(result_stmt)
         results = result_res.scalars().all()
 
-        job_stmt = select(JobRunRecord).where(JobRunRecord.study_instance_uid.in_(study_uids))
         job_res = await self._session.execute(job_stmt)
         jobs = job_res.scalars().all()
 
-        study_stmt = select(StudyRecord).where(StudyRecord.study_instance_uid.in_(study_uids))
         study_res = await self._session.execute(study_stmt)
         studies = study_res.scalars().all()
 

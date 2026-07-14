@@ -1,0 +1,97 @@
+model:
+  architecture: gemini_vlm_structured_extraction
+  version: "1.0.0"
+  # No local segmentation/classification network for this use case. Structured
+  # findings are extracted by prompting a multimodal LLM (Gemini) with rendered
+  # CT slices (soft-tissue + bone window) plus prior-report text when available,
+  # following the per-region template: right_parotid_region,
+  # lymphnodes_right_neck, lymphnodes_left_neck, mandible_and_maxilla,
+  # supra_glottic_region, oropharynx, laryngeal_structures, thyroid_gland,
+  # nasal_septum. See outputs_schema.json for the exact contract.
+
+inference:
+  device: api  # hosted Gemini call — no local torch/GPU tensor inference
+  use_vlm_extraction: true
+  vlm:
+    provider: gemini
+    # Do NOT hardcode a model string here. Model name must be sourced from
+    # Settings.gemini_model (backend/app/config.py) at runtime, same as every
+    # other Gemini call-site (GeminiClient, vlm_qa_service, longitudinal_service).
+    # Current platform default (config.py) is "gemini-1.5-flash". Promote to
+    # "gemini-2.5-flash" by setting GEMINI_MODEL in .env once validated for
+    # structured-extraction accuracy on this use case, so every call-site
+    # upgrades together instead of forking a divergent per-plugin model.
+    model_source: settings.gemini_model
+    recommended_model: gemini-2.5-flash
+    fallback_model: gemini-1.5-flash
+    # CLAUDE.md rule: "Check config.py for feature flags. Add a new flag there
+    # before using it anywhere else." pipeline.py must gate this use case's
+    # Gemini calls behind Settings.llm_enabled (existing global flag) and
+    # should introduce a dedicated Settings.ct_face_neck_vlm_enabled flag
+    # before wiring the pipeline, matching the mammography_clip_enabled /
+    # vlm_qa_enabled pattern.
+    requires_settings_flags:
+      - llm_enabled
+    temperature: 0.1
+    max_output_tokens: 4096
+    max_slices_per_series: 24
+    slice_render_size_px: 512
+    retry_attempts: 2
+    retry_backoff_seconds: 2
+  # Confidence gating for the extracted findings (always_output pattern,
+  # matching usecases/mammography/model/inference_config.yaml): below
+  # min_confidence a finding is flagged low_confidence for radiologist review
+  # rather than suppressed.
+  always_output: true
+  min_confidence: 0.6
+
+preprocessing:
+  ct_series_patterns:
+    - "(?i)\\bct\\b"
+    - "(?i)face"
+    - "(?i)neck"
+    - "(?i)parotid"
+    - "(?i)maxillofacial"
+  contrast_series_patterns:
+    - "(?i)contrast"
+    - "(?i)\\bce\\b"
+    - "(?i)enhanc"
+  window_presets:
+    soft_tissue: { center: 40, width: 400 }
+    bone: { center: 700, width: 3000 }
+
+postprocessing:
+  regions_evaluated:
+    - right_parotid_region
+    - lymphnodes_right_neck
+    - lymphnodes_left_neck
+    - mandible_and_maxilla
+    - supra_glottic_region
+    - oropharynx
+    - laryngeal_structures
+    - thyroid_gland
+    - nasal_septum
+  # >=10mm short-axis is the standard CT threshold for a pathologically
+  # enlarged cervical lymph node; below this is reported as "subcentimeter".
+  lymph_node_short_axis_threshold_mm: 10.0
+  thyroid_nodule_min_reportable_size_mm: 5.0
+
+longitudinal:
+  # Gated by the existing global Settings.longitudinal_enabled flag — this
+  # section only tunes what this use case compares, not whether the platform
+  # runs the comparison at all.
+  enabled_flag: longitudinal_enabled
+  compare_regions:
+    - right_parotid_region
+    - lymphnodes_right_neck
+    - lymphnodes_left_neck
+  trend_values:
+    - progression
+    - regression
+    - stable
+    - mixed
+    - not_applicable
+
+quality_checks:
+  min_slices_for_extraction: 20
+  max_slice_thickness_mm: 5.0

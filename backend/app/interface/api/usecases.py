@@ -1,9 +1,13 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from app.application.usecase_registry import UseCaseRegistry
-from app.interface.api.dependencies import get_registry
+from app.interface.api.dependencies import (
+    get_registry,
+    require_usecase_feature,
+    tenant_has_usecase_access,
+)
 from app.interface.schemas.usecase import UseCaseListResponse, UseCaseResponse
 
 router = APIRouter(prefix="/usecases", tags=["usecases"])
@@ -28,6 +32,7 @@ async def list_usecases(
                 registered_at=uc.registered_at,
             )
             for uc in usecases.values()
+            if tenant_has_usecase_access(uc.name)
         ]
     )
 
@@ -37,9 +42,9 @@ async def get_ui_schema(
     usecase_name: str,
     registry: Annotated[UseCaseRegistry, Depends(get_registry)],
 ):
+    require_usecase_feature(usecase_name)
     schema = registry.get_ui_schema(usecase_name)
     if not schema:
-        from fastapi import HTTPException
         raise HTTPException(404, f"UI schema not found for {usecase_name}")
     return schema
 
@@ -49,8 +54,8 @@ async def get_output_schema(
     usecase_name: str,
     registry: Annotated[UseCaseRegistry, Depends(get_registry)],
 ):
+    require_usecase_feature(usecase_name)
     schema = registry.get_output_schema(usecase_name)
     if not schema:
-        from fastapi import HTTPException
         raise HTTPException(404, f"Output schema not found for {usecase_name}")
     return schema

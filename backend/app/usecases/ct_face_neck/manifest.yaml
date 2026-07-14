@@ -1,0 +1,29 @@
+name: ct_face_neck
+version: "1.0.0"
+description: >
+  CT of the Face & Neck pipeline for oncologic follow-up and structural
+  surveillance (e.g. parotid/salivary gland malignancy post-surgery and
+  radiation). Extracts a structured, per-region finding set — parotid region,
+  bilateral cervical lymph nodes, mandible/maxilla, supraglottic/glottic/
+  infraglottic airway, oropharynx, laryngeal cartilages, thyroid gland, and
+  nasal septum — via VLM-assisted structured extraction (no local segmentation
+  network), and compares against a prior CT when available to flag regression
+  or progression in lymphadenopathy and other tracked structures.
+supported_body_parts:
+  - HEAD
+  - NECK
+  # NOTE: domain/enums.py:BodyPart has no NECK member yet. StudyService wraps
+  # BodyPart(body_part_raw.upper()) in try/except, so a "NECK" DICOM
+  # BodyPartExamined tag currently degrades to body_part=None rather than
+  # crashing — routing still works off study/series description regex
+  # (routing_rules.yaml) but body_part-based routing evidence is unavailable
+  # for NECK until the enum is extended.
+required_sequences:
+  - CT
+model_type: Gemini VLM structured extraction (no local segmentation/classification network)
+# NOTE: pipeline.py is not implemented yet (see CLAUDE.md plugin contract — a
+# use case needs manifest + routing_rules + pipeline.py + inference_config +
+# outputs_schema + ui_schema before it can safely run). Keep this disabled so
+# the routing engine does not send real studies to a usecase with no
+# Pipeline(BasePipeline) behind it. Flip to true once pipeline.py lands.
+enabled: false
