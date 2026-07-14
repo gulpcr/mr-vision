@@ -1025,6 +1025,29 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
                         except Exception as exc:
                             logger.warning("abdomen_ct2_rich_read_failed", job_id=job_id, error=str(exc))
 
+                        # Tumour measurement (SAM-Med3D): localize the mass, segment it,
+                        # and store TS×AP×CC mm in summary["mass_measurement"] for the
+                        # report writer to weave in. Opt-in via measure.enabled; fully
+                        # non-blocking (needs SAM-Med3D weights + torchio in the worker).
+                        measure_cfg = scan_cfg.get("measure") or {}
+                        if measure_cfg.get("enabled"):
+                            try:
+                                from app.usecases.abdomen_ct2 import measurement as _abd_measure
+                                from app.usecases.abdomen_ct2 import sammed3d as _abd_sam
+
+                                _vol = os.path.join(working_dir, "nifti", "volume.nii.gz")
+                                _loc = _abd_measure.mass_localization(
+                                    _vol, result.get("flagged") or [], working_dir, measure_cfg
+                                )
+                                if _loc:
+                                    _meas = _abd_sam.segment_and_measure(
+                                        _vol, _loc, working_dir, measure_cfg
+                                    )
+                                    if _meas:
+                                        summ["mass_measurement"] = _meas
+                            except Exception as exc:
+                                logger.warning("abdomen_ct2_measure_failed", job_id=job_id, error=str(exc))
+
                         # Surface the reported-on slices as artifacts (append + dedup by
                         # name) so the UI shows exactly what MedGemma reported on.
                         arts = postprocessed.setdefault("artifacts", [])

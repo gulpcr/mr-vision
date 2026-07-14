@@ -38,6 +38,7 @@ class AbdomenReportService:
         flagged: list[dict[str, Any]],
         study_description: str | None = None,
         detail: str | None = None,
+        measurement: dict[str, Any] | None = None,
     ) -> dict[str, str] | None:
         """Return ``{findings, conclusions}`` written from the inputs only, or None.
 
@@ -57,10 +58,34 @@ class AbdomenReportService:
             return None
         parsed = self._parse(raw)
         if parsed:
+            # Inject the SANCTIONED computed size (SAM-Med3D) — this survives the VLM
+            # measurement-strip in _parse because it is added afterwards.
+            if measurement:
+                parsed["findings"] = self._inject_measurement(parsed.get("findings", ""), measurement)
             parsed["conclusions"] = self._ensure_tumour_marker_advice(
                 parsed.get("findings", ""), parsed.get("conclusions", "")
             )
         return parsed
+
+    @classmethod
+    def _inject_measurement(cls, findings: str, meas: dict[str, Any]) -> str:
+        """Weave the computed TS×AP×CC (mm) into the mass sentence, if not already sized."""
+        if not findings:
+            return findings
+        try:
+            ts, ap, cc = float(meas["ts_mm"]), float(meas["ap_mm"]), float(meas["cc_mm"])
+        except Exception:
+            return findings
+        if re.search(r"\d+(?:\.\d+)?\s*(?:mm|cm)\b", findings):  # already carries a size
+            return findings
+        dim = f"measuring approximately {ts:.0f} × {ap:.0f} × {cc:.0f} mm (TS × AP × CC)"
+        sents = re.split(r"(?<=[.!?])\s+", findings)
+        for i, s in enumerate(sents):
+            if cls._TUMOUR_RE.search(s):
+                s2 = re.sub(r"\s*([.!?])\s*$", rf", {dim}\1", s, count=1)
+                sents[i] = s2 if s2 != s else (s.rstrip(". ") + f", {dim}.")
+                return " ".join(sents)
+        return findings.rstrip() + f" The dominant mass is {dim}."
 
     # A mass/tumour warrants tumour-marker correlation; guarantee that line when the
     # findings describe one and name the SITE-SPECIFIC serum marker where possible.

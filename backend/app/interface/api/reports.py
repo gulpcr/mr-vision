@@ -70,6 +70,7 @@ async def get_consolidated_report(
             flagged=flagged,
             study_description=summary.get("study_description"),
             detail=(summary.get("ai_report") or {}).get("findings"),
+            measurement=summary.get("mass_measurement"),
         )
         if consolidated:
             used_model = model
@@ -381,6 +382,7 @@ async def generate_pdf_report(
                     flagged=summary_for_pdf.get("anomaly_findings") or [],
                     study_description=summary_for_pdf.get("study_description"),
                     detail=(summary_for_pdf.get("ai_report") or {}).get("findings"),
+                    measurement=summary_for_pdf.get("mass_measurement"),
                 )
             if _consolidated:
                 summary_for_pdf = {**summary_for_pdf, "ai_report": {

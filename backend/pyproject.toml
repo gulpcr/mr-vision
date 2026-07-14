@@ -52,6 +52,9 @@ dependencies = [
     "nilearn>=0.10",
     # MRI organ segmentation — nnU-Net based real model weights
     "totalsegmentator>=2.2.0",
+    # Abdomen CT tumour measurement (SAM-Med3D promptable segmentation)
+    "torchio>=0.19",
+    "edt>=2.3",
     # dicom2nifti is a TotalSegmentator dependency; >=2.5 imports
     # `pydicom.pixels` (pydicom>=3.0) and breaks under our pinned pydicom 2.4.4,
     # crashing every TotalSegmentator call. Pin to the last pydicom-2.x line.

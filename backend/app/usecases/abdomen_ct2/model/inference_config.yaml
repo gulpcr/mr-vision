@@ -55,6 +55,20 @@ report:
   # fit the context (~24 images at num_ctx 8192): 10 × 1 = 10 leaves ample headroom.
   max_report_levels: 10
 
+# Tumour measurement (SAM-Med3D promptable segmentation). Localizes the flagged mass
+# (TotalSegmentator organ-exclusion → residual core seed), segments it with SAM-Med3D
+# using multiple interior click prompts, trims organ/CC leakage, and reports the
+# bounding box × DICOM spacing as TS×AP×CC mm. AI-ESTIMATED (not caliper-grade); needs
+# the SAM-Med3D weights + torchio in the worker — non-blocking, omitted on any failure.
+measurement:
+  enabled: true
+  target_spacing: 1.0     # ROI isotropic mm; smaller bounds CC leak, larger adds context
+  n_clicks: 12            # positive click prompts spread across the mass core
+  mask_thresh: 0.45       # SAM-Med3D probability cut
+  z_area_frac: 0.3        # keep contiguous z where slice area >= this × peak (trims leaks)
+  hu_min: 20              # solid soft-tissue window for the seed (excludes ascites/fat)
+  hu_max: 200
+
 quality_checks:
   # Warn when the primary series has too few slices to scan meaningfully.
   min_slices: 10

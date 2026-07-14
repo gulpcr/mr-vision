@@ -275,6 +275,8 @@ class Pipeline(BasePipeline):
                 # Per-use-case model override (falls back to global MEDGEMMA_MODEL in
                 # the hook when empty).
                 "model": str(self._cfg_scan.get("model", "") or ""),
+                # SAM-Med3D tumour-measurement config (measurement: block).
+                "measure": self._cfg.get("measurement", {}) or {},
             },
         }
 
