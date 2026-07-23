@@ -61,7 +61,7 @@ services:
       - PYTHONPATH=/app
       - DATABASE_URL=postgresql://${POSTGRES_USER:-mri_admin}:${POSTGRES_PASSWORD}@postgres:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-mri_platform}
       # The /api/debug/medgemma endpoints call Ollama from the BACKEND container,
-      # so it needs the same host.docker.internal override as the worker (localhost
+      # so it needs the same host.docker.internal override as the worker (103.93.216.37
       # inside the container is the container itself). See worker service.
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
     extra_hosts:
@@ -105,8 +105,8 @@ services:
       - MONAI_HOME=/model_cache/monai
       - NVIDIA_VISIBLE_DEVICES=all
       # MedGemma runs on a LOCAL Ollama daemon on the host. Inside the container
-      # "localhost" is the container itself, so the worker must reach the host via
-      # host.docker.internal (verified: localhost → connection refused,
+      # "103.93.216.37" is the container itself, so the worker must reach the host via
+      # host.docker.internal (verified: 103.93.216.37 → connection refused,
       # host.docker.internal → 200). Overridable via OLLAMA_BASE_URL in .env.
       # NB: the Ollama daemon must listen on 0.0.0.0 (OLLAMA_HOST=0.0.0.0:11434),
       # not just 127.0.0.1, or the container connection is refused.
@@ -189,8 +189,8 @@ services:
     ports:
       - "3002:3000"
     environment:
-      - NEXT_PUBLIC_API_URL=http://localhost/api
-      - NEXT_PUBLIC_DICOMWEB_URL=http://localhost/dicom-web
+      - NEXT_PUBLIC_API_URL=http://103.93.216.37/api
+      - NEXT_PUBLIC_DICOMWEB_URL=http://103.93.216.37/dicom-web
     depends_on:
       - backend
 

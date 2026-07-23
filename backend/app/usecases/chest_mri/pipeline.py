@@ -1,19 +1,44 @@
 from __future__ import annotations
 
+"""MRI (region) → MedGemma MULTIPARAMETRIC two-pass read.
+
+Why this differs from the CT-report family: CT is a single acquisition, but MRI is
+inherently MULTIPARAMETRIC — the same lesion looks different on T1, T2, FLAIR, DWI,
+post-contrast T1 and SWI, and a radiologist *defines* a finding by its signal pattern
+ACROSS sequences (an acute infarct only restricts on DWI; enhancement only shows on
+post-contrast T1; blood blooms on SWI). Reading one sequence misses most brain/soft-tissue
+pathology. So this pipeline:
+
+  1. Classifies every series into a sequence (T1 / T1+C / T2 / FLAIR / DWI / SWI …) and
+     downloads each present sequence.
+  2. Co-registers them onto ONE reference grid. Same-session MR series share the DICOM
+     frame of reference, so an affine resample (nibabel affines + scipy sampling) aligns
+     them — the SAME voxel is the SAME anatomy across sequences. Series acquired in other
+     planes are reformatted to the reference's canonical-axial grid.
+  3. Renders ONE labeled PANEL MONTAGE per axial level: each tile is a sequence
+     (percentile-windowed, no HU), captioned with its name. MedGemma sees every sequence
+     of a level at once and compares signal.
+
+The montage is treated as a single "window" so the SHARED Celery task hook, report
+orchestration and report UI are reused unchanged. Pass 1 (scan the montages to flag
+levels) and Pass 2 (report on the flagged montages) run in the hook. This module owns
+series selection + co-registration + montage rendering only; it holds no infrastructure
+imports. NON-DIAGNOSTIC assistive output — full-study radiologist review remains required.
+
+Generic by design: ``USECASE_NAME`` comes from the directory; the sequence catalogue,
+montage layout and windows live in ``model/inference_config.yaml``; region phrasing lives
+in ``prompts.py`` (the ``REGION`` profile).
+"""
+
 import asyncio
-import hashlib
-import json
-import os
 import re
 from pathlib import Path
 from typing import Any
 
 import nibabel as nib
 import numpy as np
-import SimpleITK as sitk
 import structlog
 import yaml
-from scipy import ndimage
 
 from app.domain.interfaces import PACSClient
 from app.domain.models import Series, Study
@@ -22,301 +47,141 @@ from app.usecases.base import BasePipeline
 logger = structlog.get_logger(__name__)
 
 USECASE_DIR = Path(__file__).parent
+USECASE_NAME = USECASE_DIR.name
 CONFIG_PATH = USECASE_DIR / "model" / "inference_config.yaml"
 
-# Chest MRI sequence classification patterns.
-SEQUENCE_PATTERNS = {
-    "T2_HASTE": [
-        r"(?i)haste",
-        r"(?i)t2.*haste",
-        r"(?i)haste.*t2",
-        r"(?i)t2.*ss.*fse",
-        r"(?i)ssfse",
-        r"(?i)t2.*fiesta",
-    ],
-    "T1_GRE": [
-        r"(?i)t1.*gre",
-        r"(?i)gre.*t1",
-        r"(?i)t1.*flash",
-        r"(?i)flash.*t1",
-        r"(?i)t1.*vibe",
-        r"(?i)vibe",
-        r"(?i)t1.*spgr",
-        r"(?i)t1w.*3d",
-    ],
-    "STIR": [
-        r"(?i)stir",
-        r"(?i)t2.*stir",
-        r"(?i)short.*tau",
-        r"(?i)fat.*sat.*t2",
-        r"(?i)t2.*fat.*sat",
-    ],
-    "TRUE_FISP": [
-        r"(?i)true.*fisp",
-        r"(?i)truefisp",
-        r"(?i)fisp",
-        r"(?i)bssfp",
-        r"(?i)balanced.*ssfp",
-        r"(?i)fiesta",
-        r"(?i)trufi",
-    ],
+MONTAGE_WINDOW = "multi-sequence"
+
+# MR series selection: skip single-plane localizers / scouts / derived maps.
+_MR_SKIP_PATTERNS = [
+    r"(?i)localizer", r"(?i)localiser", r"(?i)scout", r"(?i)survey",
+    r"(?i)\bloc\b", r"(?i)3.?plane", r"(?i)tri.?planar", r"(?i)calibration",
+    r"(?i)smart.?brain", r"(?i)\bmap\b", r"(?i)\bref\b",
+    r"(?i)phoenix", r"(?i)report", r"(?i)view.?&.?go", r"(?i)\bmip\b", r"(?i)posdisp",
+]
+
+
+def _norm(text: str) -> str:
+    """Normalize separators (``_ - .``) to spaces so ``\\b``-anchored sequence patterns
+    match Siemens-style names (e.g. ``t1_se_tra``, ``t2_swi``, ``ep2d_diff_ADC``), which
+    otherwise fail because ``_`` is a regex word character (no boundary at ``t1_``)."""
+    return re.sub(r"[._\-]+", " ", str(text or "")).strip()
+
+
+# Reading plane → canonical (RAS) slice axis (0 = R/L, 1 = A/P, 2 = S/I). Slicing along the
+# axis gives the named 2-D plane: axial = fixed S/I, sagittal = fixed R/L, coronal = fixed A/P.
+_PLANE_AXIS = {"axial": 2, "sagittal": 0, "coronal": 1}
+
+# Series-description keywords used to prefer series ACQUIRED in a given plane (only applied
+# when a region reads more than one plane, so each plane's montages use its native series).
+_PLANE_KEYWORDS = {
+    "axial": [r"(?i)\btra\b", r"(?i)\bax\b", r"(?i)axial", r"(?i)transvers"],
+    "sagittal": [r"(?i)\bsag\b", r"(?i)sagittal"],
+    "coronal": [r"(?i)\bcor\b", r"(?i)coronal"],
 }
 
 
 class Pipeline(BasePipeline):
-    """Chest MRI segmentation pipeline.
+    """Classifies + co-registers MR sequences and renders per-level panel montages."""
 
-    Segments four structures: right lung, left lung, heart, and aorta.
-    When no trained model weights are available the pipeline falls back to
-    synthetic inference (intensity-thresholding + morphological operations).
+    def __init__(self) -> None:
+        with open(CONFIG_PATH) as fh:
+            self._cfg: dict[str, Any] = yaml.safe_load(fh) or {}
+        self._cfg_pre = self._cfg.get("preprocessing", {})
+        self._cfg_scan = self._cfg.get("scan", {})
+        self._cfg_report = self._cfg.get("report", {})
+        self._cfg_qa = self._cfg.get("quality_checks", {})
+        self._model_version = f"{USECASE_NAME}_medgemma_v2.0.0"
+        self._model_checksum = "n/a_no_model"
 
-    Performs:
-    - Sequence classification from DICOM series descriptions
-    - NIfTI download (primary T2 HASTE + supplementary sequences)
-    - QA checks for spacing, coverage, and motion artifacts
-    - Segmentation (real model or synthetic fallback)
-    - Volumetric measurements per organ and bilateral lung comparison
-    - Artifact generation: segmentation.nii.gz, report.json, optional previews
-    """
+    # ── reading planes ─────────────────────────────────────────────────────────
 
-    def __init__(self):
-        with open(CONFIG_PATH) as f:
-            self._config = yaml.safe_load(f)
-        self._model = None
-        self._device = None
-        self._model_checksum_cache: str | None = None
-        self._sw_model = None
-        self._sw_device = None
-        sw_cfg = self._config.get("swin_unetr", {})
-        sw_path = sw_cfg.get("custom_weights_path")
-        if sw_path:
-            try:
-                self._load_swin_unetr(sw_path, sw_cfg)
-            except Exception as exc:
-                logger.warning("swin_unetr_load_failed", weights=sw_path, error=str(exc))
+    def _reading_planes(self) -> list[str]:
+        """Planes this region reads. Defaults to a single axial plane (so every non-spine
+        region is unchanged); a region can set ``reading_planes: [sagittal, axial]`` (spine)."""
+        raw = self._cfg_pre.get("reading_planes")
+        if isinstance(raw, list) and raw:
+            planes = [str(p).lower() for p in raw if str(p).lower() in _PLANE_AXIS]
+            return planes or ["axial"]
+        one = str(self._cfg_pre.get("reading_plane", "axial")).lower()
+        return [one if one in _PLANE_AXIS else "axial"]
 
-        # Optional auxiliary models (Problems B & C). Both inert when their
-        # custom_weights_path is null — see inference_config.yaml.
-        self._cardiac_model, self._cardiac_device = self._load_aux_model(
-            self._config.get("cardiac_model", {})
-        )
-        self._lesion_model, self._lesion_device = self._load_aux_model(
-            self._config.get("lesion_detection", {})
-        )
+    # ── series → sequence classification ──────────────────────────────────────
 
-    def _load_aux_model(self, cfg: dict):
-        """Load an auxiliary single-channel SwinUNETR model from cfg.
+    def _sequence_catalogue(self) -> list[dict[str, Any]]:
+        seqs = self._cfg_pre.get("sequences") or []
+        return [s for s in seqs if isinstance(s, dict) and s.get("name") and s.get("patterns")]
 
-        Returns ``(model, device)`` or ``(None, None)`` when no weights are
-        configured or loading fails. Used for the optional supplementary cardiac
-        model (Problem B) and the optional lesion-detection model (Problem C);
-        both are non-intrusive and leave the primary segmentation intact when
-        absent.
+    def _classify_sequences(
+        self, series: list[Series], plane: str | None = None
+    ) -> dict[str, Series]:
+        """Map each series to a sequence label from the config catalogue.
+
+        First matching sequence (catalogue order) wins per series; the largest series is
+        kept per sequence. A series matching the ``base_t1`` sequence that also carries a
+        contrast marker (``contrast_patterns``) is promoted to ``contrast_t1`` so a
+        post-contrast T1 fills the enhancing panel instead of the plain-T1 panel.
         """
-        path = cfg.get("custom_weights_path")
-        if not path:
-            return None, None
-        try:
-            import torch
-            from monai.networks.nets import SwinUNETR
+        catalogue = self._sequence_catalogue()
+        contrast_patterns = self._cfg_pre.get("contrast_patterns") or []
+        base_t1 = self._cfg_pre.get("base_t1")
+        contrast_t1 = self._cfg_pre.get("contrast_t1")
 
-            device_str = self._config["inference"].get("device", "cuda")
-            if device_str == "auto":
-                device_str = "cuda" if torch.cuda.is_available() else "cpu"
-            device = torch.device(device_str)
-            model = SwinUNETR(
-                img_size=tuple(cfg.get("roi_size", [96, 96, 96])),
-                in_channels=cfg.get("in_channels", 1),
-                out_channels=cfg.get("out_channels", 2),
-                feature_size=cfg.get("feature_size", 48),
-                use_checkpoint=cfg.get("use_checkpoint", False),
-            )
-            state = torch.load(path, map_location="cpu", weights_only=True)
-            if isinstance(state, dict) and "state_dict" in state:
-                state = state["state_dict"]
-            elif isinstance(state, dict) and "model" in state:
-                state = state["model"]
-            model.load_state_dict(state, strict=False)
-            model.to(device)
-            model.eval()
-            logger.info("aux_model_loaded", path=path, out_channels=cfg.get("out_channels", 2))
-            return model, device
-        except Exception as exc:
-            logger.warning("aux_model_load_failed", path=path, error=str(exc))
-            return None, None
+        def _instances(s: Series) -> int:
+            return getattr(s, "num_instances", 0) or 0
 
-    def _run_aux_model(self, model, device, img_data: np.ndarray, cfg: dict) -> np.ndarray:
-        """Run a loaded auxiliary SwinUNETR → argmax label array (uint8)."""
-        import torch
-        from monai.inferers import sliding_window_inference
+        def _is_skip(s: Series) -> bool:
+            desc = _norm(s.series_description)
+            return any(re.search(p, desc) for p in _MR_SKIP_PATTERNS) or (0 < _instances(s) <= 2)
 
-        arr = img_data.copy()
-        nz = arr != 0
-        if np.any(nz):
-            m = float(np.mean(arr[nz]))
-            s = float(np.std(arr[nz]))
-            if s > 0:
-                arr = (arr - m) / s
-                arr[~nz] = 0.0
-        t = torch.from_numpy(arr).unsqueeze(0).unsqueeze(0).to(device)
-        with torch.no_grad():
-            out = sliding_window_inference(
-                t,
-                tuple(cfg.get("roi_size", [96, 96, 96])),
-                cfg.get("sw_batch_size", 1),
-                model,
-                overlap=cfg.get("overlap", 0.5),
-                mode=cfg.get("mode", "gaussian"),
-            )
-        return torch.argmax(out, dim=1)[0].cpu().numpy().astype(np.uint8)
+        # When a region reads more than one plane, restrict to series ACQUIRED in this
+        # plane (by description) so each plane's montages use its native series (e.g. spine
+        # sagittal montages use sag T1/T2/STIR, axial montages use the axial T1/T2). If no
+        # series matches the plane keyword, keep all (single-plane regions pass plane=None).
+        pool = series
+        if plane and plane in _PLANE_KEYWORDS:
+            kws = _PLANE_KEYWORDS[plane]
+            in_plane = [s for s in series if any(re.search(k, _norm(s.series_description)) for k in kws)]
+            if in_plane:
+                pool = in_plane
 
-    def _load_swin_unetr(self, weights_path: str, sw_cfg: dict) -> None:
-        import torch
-        from monai.networks.nets import SwinUNETR
+        chosen: dict[str, Series] = {}
+        for s in pool:
+            if _is_skip(s):
+                continue
+            protocol = getattr(s, "protocol_name", "") or ""
+            combined = _norm(f"{s.series_description or ''} {protocol}")
+            matched: str | None = None
+            for entry in catalogue:
+                if any(re.search(p, combined) for p in entry["patterns"]):
+                    matched = str(entry["name"])
+                    break
+            if not matched:
+                continue
+            # Promote contrast-enhanced T1.
+            if (
+                base_t1 and contrast_t1 and matched == base_t1
+                and any(re.search(p, combined) for p in contrast_patterns)
+            ):
+                matched = contrast_t1
+            if matched not in chosen or _instances(s) > _instances(chosen[matched]):
+                chosen[matched] = s
+        return chosen
 
-        in_channels = sw_cfg.get("in_channels", 1)
-        out_channels = sw_cfg.get("out_channels", 5)
-        feature_size = sw_cfg.get("feature_size", 48)
-        roi_size = tuple(sw_cfg.get("roi_size", [96, 96, 96]))
-        use_checkpoint = sw_cfg.get("use_checkpoint", False)
-        device_str = self._config["inference"].get("device", "cuda")
-        if device_str == "auto":
-            device_str = "cuda" if torch.cuda.is_available() else "cpu"
-        self._sw_device = torch.device(device_str)
+    def _fallback_series(self, series: list[Series]) -> Series | None:
+        """Largest non-localizer (MR-preferred) series, for studies nothing classifies."""
+        def _instances(s: Series) -> int:
+            return getattr(s, "num_instances", 0) or 0
 
-        model = SwinUNETR(
-            img_size=roi_size,  # required in MONAI 1.4; deprecated in 1.5+
-            in_channels=in_channels,
-            out_channels=out_channels,
-            feature_size=feature_size,
-            use_checkpoint=use_checkpoint,
-        )
-        state = torch.load(weights_path, map_location="cpu", weights_only=True)
-        if isinstance(state, dict) and "state_dict" in state:
-            state = state["state_dict"]
-        elif isinstance(state, dict) and "model" in state:
-            state = state["model"]
-        model.load_state_dict(state, strict=False)
-        model.to(self._sw_device)
-        model.eval()
-        self._sw_model = model
+        def _is_skip(s: Series) -> bool:
+            desc = _norm(s.series_description)
+            return any(re.search(p, desc) for p in _MR_SKIP_PATTERNS) or (0 < _instances(s) <= 2)
 
-        sha = hashlib.sha256()
-        with open(weights_path, "rb") as fh:
-            for chunk in iter(lambda: fh.read(65536), b""):
-                sha.update(chunk)
-        self._model_checksum_cache = sha.hexdigest()[:16]
-        logger.info("swin_unetr_loaded", path=weights_path, device=str(self._sw_device))
+        mr = [s for s in series if (s.modality or "").upper() in ("MR", "MRI") and not _is_skip(s)]
+        pool = mr or [s for s in series if not _is_skip(s)] or list(series)
+        return max(pool, key=_instances) if pool else None
 
-    def _run_swin_unetr(self, img_data: np.ndarray, sw_cfg: dict) -> np.ndarray:
-        import torch
-        from monai.inferers import sliding_window_inference
-
-        arr = img_data.copy()
-        nonzero_mask = arr != 0
-        if np.any(nonzero_mask):
-            mean_val = float(np.mean(arr[nonzero_mask]))
-            std_val = float(np.std(arr[nonzero_mask]))
-            if std_val > 0:
-                arr = (arr - mean_val) / std_val
-                arr[~nonzero_mask] = 0.0
-
-        img_tensor = torch.from_numpy(arr).unsqueeze(0).unsqueeze(0).to(self._sw_device)
-        roi_size = tuple(sw_cfg.get("roi_size", [96, 96, 96]))
-        sw_batch_size = sw_cfg.get("sw_batch_size", 1)
-        overlap = sw_cfg.get("overlap", 0.5)
-        mode = sw_cfg.get("mode", "gaussian")
-
-        with torch.no_grad():
-            output = sliding_window_inference(
-                img_tensor, roi_size, sw_batch_size, self._sw_model,
-                overlap=overlap, mode=mode,
-            )
-
-        return torch.argmax(output, dim=1)[0].cpu().numpy().astype(np.uint8)
-
-    def _get_device(self):
-        if self._device is not None:
-            return self._device
-        try:
-            import torch
-            device_config = self._config["inference"]["device"]
-            if device_config == "auto":
-                use_cuda = False
-                if torch.cuda.is_available():
-                    try:
-                        torch.cuda.get_device_name(0)
-                        use_cuda = True
-                    except Exception:
-                        pass
-                self._device = torch.device("cuda" if use_cuda else "cpu")
-            else:
-                self._device = torch.device(device_config)
-        except Exception:
-            self._device = None
-        logger.info("inference_device", device=str(self._device))
-        return self._device
-
-    def _load_model(self):
-        """Attempt to load real model weights; returns None to trigger synthetic fallback."""
-        if self._model is not None:
-            return self._model
-
-        custom_path = self._config["model"].get("custom_weights_path")
-        if not custom_path or not Path(custom_path).exists():
-            logger.info("no_custom_weights_found_using_synthetic_inference")
-            return None
-
-        try:
-            import torch
-            from monai.networks.nets import SegResNet
-
-            device = self._get_device()
-            logger.info("loading_custom_weights", path=custom_path)
-            model = SegResNet(
-                blocks_down=[1, 2, 2, 4],
-                blocks_up=[1, 1, 1],
-                init_filters=16,
-                in_channels=1,
-                out_channels=4,
-                dropout_prob=0.2,
-            )
-            state_dict = torch.load(custom_path, map_location="cpu", weights_only=False)
-            if "state_dict" in state_dict:
-                state_dict = state_dict["state_dict"]
-            if "model" in state_dict:
-                state_dict = state_dict["model"]
-            model.load_state_dict(state_dict, strict=False)
-            model = model.to(device)
-            model.eval()
-            self._model = model
-            logger.info("chest_model_loaded", path=custom_path, device=str(device))
-            return model
-        except Exception as exc:
-            logger.warning("custom_weights_load_failed", error=str(exc))
-            return None
-
-    def _get_model_checksum(self) -> str:
-        if self._model_checksum_cache:
-            return self._model_checksum_cache
-        arch = self._config["model"].get("architecture", "segresnet")
-        if arch == "totalsegmentator_mr":
-            self._model_checksum_cache = f"totalsegmentator_{self._config['model'].get('totalseg_task', 'total_mr')}"
-        else:
-            custom_path = self._config["model"].get("custom_weights_path")
-            if custom_path and Path(custom_path).exists():
-                sha = hashlib.sha256()
-                with open(custom_path, "rb") as f:
-                    for chunk in iter(lambda: f.read(65536), b""):
-                        sha.update(chunk)
-                self._model_checksum_cache = sha.hexdigest()[:16]
-            else:
-                self._model_checksum_cache = "synthetic"
-        return self._model_checksum_cache
-
-    # =====================================================================
-    # Pipeline Phases
-    # =====================================================================
+    # ── Phase 1: preprocess (download each classified sequence) ────────────────
 
     def preprocess(
         self,
@@ -326,885 +191,512 @@ class Pipeline(BasePipeline):
         pacs: PACSClient,
         event_loop: Any = None,
     ) -> dict[str, Any]:
-        logger.info(
-            "chest_mri_preprocess_start",
-            study_uid=study.study_instance_uid,
-            series_count=len(series),
-        )
-
-        classified = self._classify_sequences(series)
-        qa_flags = []
-        qa_details = {}
-
-        if "T2_HASTE" not in classified:
-            qa_flags.append("missing_sequence")
-            qa_details["missing_sequences"] = [
-                s for s in ["T2_HASTE"] if s not in classified
-            ]
-            logger.warning("missing_primary_sequence", classified=list(classified.keys()))
-
         loop = event_loop or asyncio.get_event_loop()
-        nifti_dir = os.path.join(working_dir, "nifti")
-        os.makedirs(nifti_dir, exist_ok=True)
 
-        downloaded_niftis: dict[str, str] = {}
-        for seq_name, seq_series in classified.items():
-            nifti_path = os.path.join(nifti_dir, f"{seq_name}.nii.gz")
-            try:
-                loop.run_until_complete(
-                    pacs.download_series_as_nifti(
-                        study.study_instance_uid,
-                        seq_series.series_instance_uid,
-                        nifti_path,
+        nifti_dir = Path(working_dir) / "nifti"
+        nifti_dir.mkdir(parents=True, exist_ok=True)
+
+        qa_flags: list[str] = []
+        qa_details: dict[str, Any] = {}
+        planes = self._reading_planes()
+        multi = len(planes) > 1
+
+        # Classify + download the sequences for EACH reading plane. Downloads are de-duped by
+        # series UID (a series shared across planes is fetched once). Single-plane regions
+        # (planes == ["axial"]) behave exactly as before (plane=None → no plane restriction).
+        downloaded: dict[str, str] = {}
+        plane_volumes: dict[str, dict[str, str]] = {}
+        plane_classified: dict[str, dict[str, str]] = {}
+        for plane in planes:
+            classified = self._classify_sequences(series, plane=plane if multi else None)
+            vp: dict[str, str] = {}
+            for seq_name, s in classified.items():
+                uid = s.series_instance_uid
+                if uid in downloaded:
+                    vp[seq_name] = downloaded[uid]
+                    continue
+                out = str(nifti_dir / f"{self._slug(plane)}_{self._slug(seq_name)}.nii.gz")
+                try:
+                    loop.run_until_complete(
+                        pacs.download_series_as_nifti(study.study_instance_uid, uid, out)
                     )
-                )
-                downloaded_niftis[seq_name] = nifti_path
-            except Exception as exc:
-                logger.warning("series_download_failed", seq=seq_name, error=str(exc))
+                    downloaded[uid] = out
+                    vp[seq_name] = out
+                except Exception as exc:
+                    logger.warning(
+                        f"{USECASE_NAME}_sequence_download_failed", plane=plane, seq=seq_name, error=str(exc)
+                    )
+            if vp:
+                plane_volumes[plane] = vp
+                plane_classified[plane] = {k: v.series_description for k, v in classified.items()}
 
-        # Fallback: grab the first series if nothing classified
-        if not downloaded_niftis and series:
-            fallback_path = os.path.join(nifti_dir, "FALLBACK.nii.gz")
+        # Nothing classified in any plane — fall back to the largest series as a single panel.
+        if not plane_volumes:
+            fb = self._fallback_series(series)
+            if fb is None:
+                raise ValueError(f"No series found for {USECASE_NAME} pipeline")
+            out = str(nifti_dir / "primary.nii.gz")
             loop.run_until_complete(
-                pacs.download_series_as_nifti(
-                    study.study_instance_uid,
-                    series[0].series_instance_uid,
-                    fallback_path,
-                )
+                pacs.download_series_as_nifti(study.study_instance_uid, fb.series_instance_uid, out)
             )
-            downloaded_niftis["FALLBACK"] = fallback_path
-            qa_flags.append("missing_sequence")
-            qa_details["fallback_series"] = series[0].series_description
+            plane_volumes[planes[0]] = {"MR": out}
+            qa_flags.append("series_region_unmatched")
+            qa_details["series_region_unmatched"] = (
+                f"No configured sequence matched; read '{fb.series_description}' as a single panel."
+            )
 
-        if not downloaded_niftis:
-            raise ValueError("No series could be downloaded for processing")
-
-        primary_seq = next(
-            (p for p in ["T2_HASTE", "STIR", "TRUE_FISP", "T1_GRE", "FALLBACK"]
-             if p in downloaded_niftis),
-            next(iter(downloaded_niftis)),
-        )
-        first_nifti = downloaded_niftis[primary_seq]
-
-        spacing_qa = self._check_spacing(first_nifti)
-        qa_flags.extend(spacing_qa.get("flags", []))
-        qa_details.update(spacing_qa.get("details", {}))
-
-        motion_qa = self._check_motion_artifacts(first_nifti)
-        qa_flags.extend(motion_qa.get("flags", []))
-        qa_details.update(motion_qa.get("details", {}))
-
-        preprocessed_dir = os.path.join(working_dir, "preprocessed")
-        os.makedirs(preprocessed_dir, exist_ok=True)
-        input_path = os.path.join(preprocessed_dir, "input_1ch.nii.gz")
-        self._build_single_channel_input(downloaded_niftis[primary_seq], input_path)
-
-        sequences_used = list(downloaded_niftis.keys())
+        prim = next(iter(plane_volumes))
+        if len(plane_volumes[prim]) == 1 and "series_region_unmatched" not in qa_flags:
+            qa_flags.append("single_sequence")
+            qa_details["single_sequence"] = (
+                f"Only one MR sequence was identified in the {prim} plane; multiparametric "
+                "comparison is limited."
+            )
 
         logger.info(
-            "chest_mri_preprocess_complete",
-            primary_sequence=primary_seq,
-            sequences_used=sequences_used,
-            qa_flags=qa_flags,
+            f"{USECASE_NAME}_preprocess_complete",
+            study_uid=study.study_instance_uid,
+            planes=list(plane_volumes.keys()),
+            classified=plane_classified,
         )
 
         return {
-            "input_path": input_path,
-            "original_nifti_path": first_nifti,
-            "primary_sequence": primary_seq,
-            "sequences_used": sequences_used,
-            "classified_sequences": {k: v.series_instance_uid for k, v in classified.items()},
+            "plane_volumes": plane_volumes,
+            "study_uid": study.study_instance_uid,
+            "modality": (study.modality or "MR").upper() or "MR",
+            "study_description": study.study_description,
             "qa_flags": qa_flags,
             "qa_details": qa_details,
-            "study_uid": study.study_instance_uid,
         }
 
-    def _run_totalsegmentator(self, input_path: str, working_dir: str) -> np.ndarray:
-        """Run TotalSegmentator MRI inference (nnU-Net, real trained weights)."""
-        from totalsegmentator.python_api import totalsegmentator as ts_run
+    def _pick_reference(self, volume_paths: dict[str, str], slice_axis: int = 2) -> str:
+        # Choose the reference that yields the BEST reformats IN THE READING PLANE: the largest
+        # in-plane sampling (the two axes other than the slice axis) after canonical
+        # reorientation. This deprioritizes series acquired in a different plane / thin-plane
+        # (e.g. a 4 mm coronal FLAIR would give degenerate strip-like axial slices), so the
+        # reference is a series natively sampled in the reading plane. reference_preference only
+        # breaks ties between comparable series.
+        inplane_axes = [a for a in (0, 1, 2) if a != slice_axis]
+        pref = [str(x) for x in (self._cfg_pre.get("reference_preference") or [])]
+        scored: list[tuple[int, int, str]] = []
+        for seq, path in volume_paths.items():
+            try:
+                sh = [int(d) for d in nib.as_closest_canonical(nib.load(path)).shape[:3]]
+                while len(sh) < 3:
+                    sh.append(1)
+                # in-plane pixels; require a few slices along the slice axis
+                inplane = sh[inplane_axes[0]] * sh[inplane_axes[1]] if sh[slice_axis] >= 3 else 0
+            except Exception:
+                inplane = 0
+            pref_rank = pref.index(seq) if seq in pref else len(pref)
+            scored.append((inplane, -pref_rank, seq))
+        scored.sort(reverse=True)
+        return scored[0][2] if scored else next(iter(volume_paths))
 
-        cfg_model = self._config["model"]
-        task = cfg_model.get("totalseg_task", "total_mr")
-        weights_dir = cfg_model.get("totalseg_weights_dir", "/model_cache/totalsegmentator")
-        organ_map: dict = cfg_model.get("organ_map", {})
-
-        import torch
-        device = "gpu" if torch.cuda.is_available() else "cpu"
-
-        ts_out = os.path.join(working_dir, "totalseg_output")
-        os.makedirs(ts_out, exist_ok=True)
-
-        logger.info("totalsegmentator_start", task=task, device=device)
-        ts_run(
-            input=Path(input_path),
-            output=Path(ts_out),
-            task=task,
-            device=device,
-            quiet=True,
-            weights_dir=Path(weights_dir) if weights_dir else None,
-        )
-
-        ref = nib.load(input_path)
-        seg_array = np.zeros(ref.shape[:3], dtype=np.uint8)
-
-        for organ_name, label_id in organ_map.items():
-            organ_path = os.path.join(ts_out, f"{organ_name}.nii.gz")
-            if os.path.exists(organ_path):
-                mask = nib.load(organ_path).get_fdata() > 0.5
-                seg_array[mask] = int(label_id)
-            else:
-                logger.warning("totalseg_organ_file_missing", organ=organ_name, path=organ_path)
-
-        logger.info("totalsegmentator_complete", labels=np.unique(seg_array).tolist())
-        return seg_array
+    # ── Phase 2: infer (no learned model — pass-through) ─────────────────────────
 
     def infer(self, preprocessed: dict[str, Any], working_dir: str) -> dict[str, Any]:
-        logger.info("chest_mri_inference_start")
+        logger.info(f"{USECASE_NAME}_infer_passthrough")
+        return dict(preprocessed)
 
-        img_nib = nib.load(preprocessed["input_path"])
-        affine = img_nib.affine
+    # ── Phase 3: postprocess (co-register + render per-level montages) ───────────
 
-        qa_flags = list(preprocessed.get("qa_flags", []))
-        architecture = self._config["model"].get("architecture", "segresnet")
-        sw_cfg = self._config.get("swin_unetr", {})
+    def postprocess(self, inference_output: dict[str, Any], working_dir: str) -> dict[str, Any]:
+        logger.info(f"{USECASE_NAME}_postprocess_start")
 
-        seg_array = None
-        inference_method = None
+        scan_dir = Path(working_dir) / "scan"
+        scan_dir.mkdir(parents=True, exist_ok=True)
 
-        if self._sw_model is not None:
-            try:
-                img_data = img_nib.get_fdata().astype(np.float32)
-                seg_array = self._run_swin_unetr(img_data, sw_cfg)
-                inference_method = "swin_unetr"
-            except Exception as exc:
-                logger.warning("swin_unetr_inference_failed_falling_back", error=str(exc))
+        qa_flags: list[str] = list(inference_output.get("qa_flags", []))
+        qa_details: dict[str, Any] = dict(inference_output.get("qa_details", {}))
 
-        if seg_array is None:
-            if architecture == "totalsegmentator_mr":
-                seg_array = self._run_totalsegmentator(preprocessed["input_path"], working_dir)
-                inference_method = "totalsegmentator" if inference_method is None else "totalsegmentator_fallback"
-            else:
-                img_data = img_nib.get_fdata().astype(np.float32)
-                model = self._load_model()
-                if model is not None:
-                    seg_array = self._run_model_inference(model, img_data)
-                    inference_method = "segresnet" if inference_method is None else "segresnet_fallback"
-                else:
-                    logger.info("using_synthetic_inference")
-                    seg_array = self._synthetic_inference(img_data)
-                    qa_flags.append("no_model_weights")
-                    inference_method = "synthetic" if inference_method is None else "synthetic_fallback"
+        plane_volumes: dict[str, dict[str, str]] = inference_output["plane_volumes"]
+        planes = list(plane_volumes.keys())
+        multi = len(planes) > 1
 
-        # ── (Problem B) Supplementary cardiac model: override ONLY the heart ──
-        # label, leaving lung (1,2) and aorta (4) labels untouched so the lung
-        # volume workflow is unaffected.
-        cardiac_method = "totalsegmentator"
-        if self._cardiac_model is not None:
-            try:
-                heart_pred = self._run_aux_model(
-                    self._cardiac_model, self._cardiac_device,
-                    img_nib.get_fdata().astype(np.float32),
-                    self._config.get("cardiac_model", {}),
-                )
-                heart_mask = heart_pred > 0
-                # Write heart only into background / existing-heart voxels.
-                placeable = heart_mask & ((seg_array == 0) | (seg_array == 3))
-                seg_array[(seg_array == 3) & ~heart_mask] = 0  # drop stale heart
-                seg_array[placeable] = 3
-                cardiac_method = "swin_unetr_override"
-                logger.info("cardiac_model_applied", heart_voxels=int(placeable.sum()))
-            except Exception as exc:
-                logger.warning("cardiac_model_failed_using_totalseg_heart", error=str(exc))
+        # Render each reading plane's montages (window = plane when >1 plane). z is offset per
+        # plane so sagittal/axial slice indices never collide in the shared report grouping.
+        scan_slices: list[dict[str, Any]] = []
+        planes_info: dict[str, Any] = {}
+        scan_windows: list[str] = []
+        for p_i, plane in enumerate(planes):
+            info = self._render_plane(plane, plane_volumes[plane], scan_dir, p_i * 100000, multi)
+            if info is None:
+                continue
+            scan_slices.extend(info["scan_slices"])
+            planes_info[plane] = info
+            if info["window"] not in scan_windows:
+                scan_windows.append(info["window"])
 
-        # ── (Problem C) Dedicated lesion detection (strictly modular) ─────────
-        lesion_active = self._lesion_model is not None
-        lesion_mask_array = None
-        if lesion_active:
-            try:
-                lesion_pred = self._run_aux_model(
-                    self._lesion_model, self._lesion_device,
-                    img_nib.get_fdata().astype(np.float32),
-                    self._config.get("lesion_detection", {}),
-                )
-                lesion_mask_array = (lesion_pred > 0).astype(np.uint8)
-                logger.info("lesion_model_applied", raw_lesion_voxels=int(lesion_mask_array.sum()))
-            except Exception as exc:
-                logger.warning("lesion_model_failed", error=str(exc))
-                lesion_active = False
-                lesion_mask_array = None
+        if not scan_slices:
+            qa_flags.append("no_slices_rendered")
+        prim = planes[0] if planes else None
+        prim_info = planes_info.get(prim, {}) if prim else {}
+        if prim_info and 0 < prim_info.get("n_candidates", 0) < int(self._cfg_qa.get("min_slices", 10)):
+            qa_flags.append("insufficient_slices")
 
-        seg_path = os.path.join(working_dir, "segmentation_raw.nii.gz")
-        seg_img = nib.Nifti1Image(seg_array, affine=affine)
-        nib.save(seg_img, seg_path)
+        # Preview artifacts: an even spread across all rendered montages (all planes).
+        preview_count = max(1, int(self._cfg_pre.get("preview_count", 6)))
+        artifacts: list[dict[str, Any]] = []
+        if scan_slices:
+            idxs = np.linspace(0, len(scan_slices) - 1, min(preview_count, len(scan_slices))).round().astype(int)
+            for i in sorted(set(int(x) for x in idxs)):
+                e = scan_slices[i]
+                artifacts.append({
+                    "name": e["name"],
+                    "artifact_type": f"{USECASE_NAME}_slice_png",
+                    "local_path": e["local_path"],
+                    "content_type": "image/png",
+                })
+
+        # Union of sequences used across planes (in montage order); primary plane ref + dims.
+        sequences_used: list[str] = []
+        for plane in planes:
+            for s in (planes_info.get(plane, {}).get("panel_order") or []):
+                if s not in sequences_used:
+                    sequences_used.append(s)
+        image_dimensions = prim_info.get("dims", [])
+        total_candidates = sum(i["n_candidates"] for i in planes_info.values())
+        report_windows = list(scan_windows)
+        planes_desc = "; ".join(
+            f"{p} [{', '.join(planes_info[p]['panel_order'])}] (ref {planes_info[p]['ref_seq']})"
+            for p in planes if p in planes_info
+        )
+
+        summary = {
+            "modality": inference_output.get("modality"),
+            "series_description": prim_info.get("ref_seq"),
+            "study_description": inference_output.get("study_description"),
+            "candidate_slices": total_candidates,
+            "image_dimensions": image_dimensions,
+            "sequences_used": sequences_used,
+            "reading_planes": planes,
+            "reference_sequence": prim_info.get("ref_seq"),
+            "hu_windows": scan_windows,              # kept key name for UI parity
+            "scan_windows": scan_windows,
+            "report_windows": report_windows,
+            "quantitative": False,
+            "slice_selection": "medgemma_full_volume_scan",
+            "inference_method": (
+                "medgemma_multiparametric_two_pass "
+                "(co-registered sequence montages → scan → report flagged levels)"
+            ),
+            "anomaly_slices": [],
+            "processing_notes": (
+                f"Rendered {total_candidates} montage(s) across plane(s) — {planes_desc}; per-sequence "
+                "percentile windows. MedGemma scans every montage to flag potential abnormalities by "
+                "their cross-sequence signal pattern, then reports on the flagged ones. NON-DIAGNOSTIC "
+                "assistive output — full radiologist review remains required."
+            ),
+        }
 
         logger.info(
-            "chest_mri_inference_complete",
-            seg_shape=list(seg_array.shape),
-            unique_labels=np.unique(seg_array).tolist(),
-            inference_method=inference_method,
-            cardiac_method=cardiac_method,
-            lesion_detection_active=lesion_active,
+            f"{USECASE_NAME}_postprocess_complete",
+            planes=planes, montages=len(scan_slices), sequences=sequences_used,
+            image_dimensions=image_dimensions, qa_flags=qa_flags,
         )
 
         return {
-            "segmentation_path": seg_path,
-            "segmentation_array": seg_array,
-            "affine": affine,
-            "image_shape": list(seg_array.shape),
-            "inference_method": inference_method,
-            "cardiac_method": cardiac_method,
-            "lesion_active": lesion_active,
-            "lesion_mask_array": lesion_mask_array,
-            **{**preprocessed, "qa_flags": qa_flags},
-        }
-
-    def postprocess(
-        self, inference_output: dict[str, Any], working_dir: str
-    ) -> dict[str, Any]:
-        logger.info("chest_mri_postprocess_start")
-
-        seg_array = inference_output["segmentation_array"]
-        affine = inference_output["affine"]
-        label_map = self._config["postprocessing"]["label_map"]
-        min_vol = self._config["postprocessing"].get("min_structure_volume_ml", 1.0)
-
-        if isinstance(affine, np.ndarray):
-            voxel_spacing = np.abs(np.diag(affine[:3, :3]))
-        else:
-            voxel_spacing = np.array([1.0, 1.0, 1.0])
-        voxel_volume_ml = float(np.prod(voxel_spacing)) / 1000.0
-
-        seg_clean = seg_array.copy()
-
-        if self._config["postprocessing"].get("apply_connected_components", False):
-            seg_clean = self._apply_connected_components(
-                seg_clean,
-                label_map,
-                self._config["postprocessing"].get("largest_component_only_labels", []),
-            )
-
-        # Remove fragments below volume threshold — driven by label_map, not hardcoded
-        non_bg_labels = sorted(int(k) for k in label_map if int(k) != 0)
-        for label_id in non_bg_labels:
-            if label_id not in np.unique(seg_clean):
-                continue
-            label_mask = (seg_clean == label_id).astype(np.int32)
-            labeled, num_features = ndimage.label(label_mask)
-            for comp_id in range(1, num_features + 1):
-                comp_volume = float(np.sum(labeled == comp_id)) * voxel_volume_ml
-                if comp_volume < min_vol:
-                    seg_clean[labeled == comp_id] = 0
-
-        # ---- Measurements ----
-        def vol_ml(label_id: int) -> float:
-            return round(float(np.sum(seg_clean == label_id)) * voxel_volume_ml, 1)
-
-        right_lung_vol = vol_ml(1)
-        left_lung_vol = vol_ml(2)
-        total_lung_vol = round(right_lung_vol + left_lung_vol, 1)
-        heart_vol = vol_ml(3)
-        aorta_vol = vol_ml(4)
-
-        bilateral_analysis = right_lung_vol > 0 and left_lung_vol > 0
-        lung_volume_ratio = (
-            round(right_lung_vol / left_lung_vol, 3) if left_lung_vol > 0 else 0.0
-        )
-
-        # Lung-volume asymmetry SCREENING (not lesion detection): significant
-        # left/right asymmetry or a very low total volume warrants review. This
-        # is intentionally separate from true lesion detection below.
-        lung_volume_asymmetry = (
-            bilateral_analysis and (lung_volume_ratio < 0.6 or lung_volume_ratio > 1.6)
-        ) or (
-            bilateral_analysis and total_lung_vol < 500.0
-        )
-
-        # Structured lung-volume characterization (screening — relative L/R
-        # comparison, robust to partial MRI coverage; not lesion detection).
-        chest_findings: list[dict[str, Any]] = []
-        if bilateral_analysis:
-            smaller, larger, side = (
-                (right_lung_vol, left_lung_vol, "right")
-                if right_lung_vol < left_lung_vol
-                else (left_lung_vol, right_lung_vol, "left")
-            )
-            if larger > 0:
-                reduction = (larger - smaller) / larger
-                if reduction >= 0.20:
-                    sev = "mild" if reduction < 0.35 else "moderate" if reduction < 0.5 else "marked"
-                    chest_findings.append({
-                        "finding": "unilateral_lung_volume_loss",
-                        "side": side,
-                        "severity": sev,
-                        "reduction_pct": round(reduction * 100, 1),
-                        "note": (
-                            f"{side.capitalize()} lung volume reduced {reduction * 100:.0f}% vs "
-                            f"contralateral ({sev}) — consider volume loss (atelectasis/collapse), "
-                            "pleural effusion, or consolidation. Clinical correlation recommended."
-                        ),
-                    })
-
-        # ── (Problem C) Dedicated lesion detection result ─────────────────────
-        # lesion_detected reflects the dedicated lesion model when active; with
-        # no lesion model we do NOT infer lesions from volume asymmetry — we only
-        # report the asymmetry screen above.
-        lesion_active = bool(inference_output.get("lesion_active", False))
-        lesion_mask_array = inference_output.get("lesion_mask_array")
-        lesion_count = 0
-        lesion_total_ml = 0.0
-        lesion_seg_clean = None
-        if lesion_active and lesion_mask_array is not None:
-            lcfg = self._config.get("lesion_detection", {})
-            min_les = lcfg.get("min_lesion_volume_ml", 0.5)
-            labeled, n_les = ndimage.label(lesion_mask_array)
-            kept = np.zeros_like(lesion_mask_array)
-            for cid in range(1, n_les + 1):
-                comp = labeled == cid
-                v = float(np.sum(comp)) * voxel_volume_ml
-                if v >= min_les:
-                    kept[comp] = 1
-                    lesion_count += 1
-                    lesion_total_ml += v
-            lesion_seg_clean = kept
-
-        if lesion_active:
-            lesion_detected = lesion_count > 0
-            lesion_detection_method = "swin_unetr"
-        else:
-            lesion_detected = False
-            lesion_detection_method = "not_active"
-
-        # Save artifacts
-        artifacts_dir = os.path.join(working_dir, "artifacts")
-        os.makedirs(artifacts_dir, exist_ok=True)
-
-        seg_nifti_path = os.path.join(artifacts_dir, "segmentation.nii.gz")
-        seg_img = nib.Nifti1Image(seg_clean.astype(np.uint8), affine=affine)
-        nib.save(seg_img, seg_nifti_path)
-
-        cardiac_method = inference_output.get("cardiac_method", "totalsegmentator")
-
-        report = {
-            "summary": {
-                "lesion_detected": lesion_detected,
-                "lesion_detection_method": lesion_detection_method,
-                "lesion_count": lesion_count,
-                "lung_volume_asymmetry": lung_volume_asymmetry,
-                "abnormal_findings": chest_findings,
-                "cardiac_segmentation_method": cardiac_method,
-                "bilateral_analysis": bilateral_analysis,
-                "lung_volume_ratio": lung_volume_ratio,
-                "segmentation_labels": {
-                    str(k): v for k, v in label_map.items() if int(k) != 0
-                },
-                "sequences_used": inference_output.get("sequences_used", []),
-                "inference_method": inference_output.get("inference_method", "unknown"),
-                "processing_notes": self._generate_processing_notes(
-                    inference_output.get("qa_flags", []),
-                    right_lung_vol,
-                    left_lung_vol,
-                    heart_vol,
-                    lung_volume_asymmetry,
-                    bilateral_analysis,
-                    lesion_active=lesion_active,
-                    lesion_count=lesion_count,
-                    cardiac_method=cardiac_method,
-                ),
-            },
+            "summary": summary,
             "measurements": {
-                "right_lung_volume_ml": right_lung_vol,
-                "left_lung_volume_ml": left_lung_vol,
-                "total_lung_volume_ml": total_lung_vol,
-                "heart_volume_ml": heart_vol,
-                "aorta_volume_ml": aorta_vol,
-                "lesion_count": lesion_count,
-                "lesion_volume_ml": round(lesion_total_ml, 1),
-                "lung_findings": chest_findings,
-                "voxel_spacing_mm": [round(float(s), 3) for s in voxel_spacing],
-                "image_dimensions": inference_output.get("image_shape", []),
+                "image_dimensions": image_dimensions,
+                "candidate_slices": total_candidates,
+                "scan_images_rendered": len(scan_slices),
+                "sequences_used": sequences_used,
             },
-        }
-
-        report_path = os.path.join(artifacts_dir, "report.json")
-        with open(report_path, "w") as f:
-            json.dump(report, f, indent=2)
-
-        inference_method = inference_output.get("inference_method", "")
-        model_version = self._config["model"].get("version", "1.0.0")
-        qa_flags = inference_output.get("qa_flags", [])
-        architecture = self._config["model"].get("architecture", "segresnet")
-        if inference_method and inference_method.startswith("swin_unetr"):
-            sw_path = self._config.get("swin_unetr", {}).get("custom_weights_path", "unknown")
-            model_version_str = f"chest_mri_swinunetr_{Path(sw_path).stem}"
-        elif architecture == "totalsegmentator_mr":
-            task = self._config["model"].get("totalseg_task", "total_mr")
-            model_version_str = f"totalsegmentator_{task}_v{model_version}"
-        elif "no_model_weights" in qa_flags:
-            model_version_str = f"chest_mri_synthetic_v{model_version}"
-        else:
-            model_version_str = f"chest_mri_v{model_version}"
-
-        model_checksum = self._get_model_checksum()
-
-        qa_details = dict(inference_output.get("qa_details", {}))
-        qa_details["segmentation_stats"] = {
-            "unique_labels": [int(x) for x in np.unique(seg_clean).tolist()],
-            "right_lung_volume_ml": right_lung_vol,
-            "left_lung_volume_ml": left_lung_vol,
-            "total_lung_volume_ml": total_lung_vol,
-            "heart_volume_ml": heart_vol,
-            "voxel_volume_ml": round(voxel_volume_ml, 6),
-        }
-
-        # Generate preview overlay images
-        preview_artifacts = []
-        try:
-            from app.services.preview_generator import generate_preview_pngs
-
-            bg_path = inference_output.get("input_path") or inference_output.get(
-                "original_nifti_path"
-            )
-            if bg_path and os.path.exists(bg_path):
-                preview_artifacts = generate_preview_pngs(
-                    background_nifti_path=bg_path,
-                    segmentation_nifti_path=seg_nifti_path,
-                    output_dir=artifacts_dir,
-                )
-                logger.info("preview_images_generated", count=len(preview_artifacts))
-        except Exception as exc:
-            logger.warning("preview_generation_failed", error=str(exc))
-
-        # Lesion mask artifact (only when the dedicated lesion model detected any).
-        lesion_artifacts = []
-        if lesion_seg_clean is not None and int(lesion_seg_clean.sum()) > 0:
-            lesion_path = os.path.join(artifacts_dir, "lesion_mask.nii.gz")
-            nib.save(nib.Nifti1Image(lesion_seg_clean.astype(np.uint8), affine), lesion_path)
-            lesion_artifacts = [{
-                "name": "lesion_mask.nii.gz",
-                "artifact_type": "segmentation_nifti",
-                "local_path": lesion_path,
-                "content_type": "application/gzip",
-            }]
-
-        result = {
-            "summary": report["summary"],
-            "measurements": report["measurements"],
             "qa_flags": qa_flags,
             "qa_details": qa_details,
-            "model_version": model_version_str,
-            "model_checksum": model_checksum,
-            "artifacts": [
-                {
-                    "name": "segmentation.nii.gz",
-                    "artifact_type": "segmentation_nifti",
-                    "local_path": seg_nifti_path,
-                    "content_type": "application/gzip",
-                },
-                {
-                    "name": "report.json",
-                    "artifact_type": "report_json",
-                    "local_path": report_path,
-                    "content_type": "application/json",
-                },
-                *preview_artifacts,
-                *lesion_artifacts,
-            ],
+            "model_version": self._model_version,
+            "model_checksum": self._model_checksum,
+            "artifacts": artifacts,
+            # Extra keys consumed by the Celery task hook only (not persisted):
+            "scan_slices": scan_slices,
+            "scan_config": {
+                "scan_windows": scan_windows,
+                "report_windows": report_windows,
+                "batch_size": int(self._cfg_scan.get("batch_size", 2)),
+                "max_report_levels": int(self._cfg_report.get("max_report_levels", 10)),
+                "model": str(self._cfg_scan.get("model", "") or ""),
+                "measure": self._cfg.get("measurement", {}) or {},
+            },
         }
 
-        logger.info(
-            "chest_mri_postprocess_complete",
-            right_lung_vol=right_lung_vol,
-            left_lung_vol=left_lung_vol,
-            heart_vol=heart_vol,
-            lesion_detected=lesion_detected,
-            bilateral_analysis=bilateral_analysis,
-            qa_flags=qa_flags,
-        )
+    def _render_plane(
+        self,
+        plane: str,
+        volume_paths: dict[str, str],
+        scan_dir: Path,
+        z_offset: int,
+        multi: bool,
+    ) -> dict[str, Any] | None:
+        """Co-register this plane's sequences and render one labeled montage per slice.
 
-        return result
-
-    # =====================================================================
-    # Inference helpers
-    # =====================================================================
-
-    def _run_model_inference(self, model, img_data: np.ndarray) -> np.ndarray:
-        """Run the loaded SegResNet model and return a uint8 label array."""
-        import torch
-        from monai.inferers import sliding_window_inference
-
-        device = self._get_device()
-        img_tensor = torch.from_numpy(img_data).unsqueeze(0).unsqueeze(0).to(device)
-
-        roi_size = tuple(self._config["inference"]["sliding_window"]["roi_size"])
-        sw_batch_size = self._config["inference"]["sliding_window"]["sw_batch_size"]
-        overlap = self._config["inference"]["sliding_window"]["overlap"]
-
-        with torch.no_grad():
-            if self._config["inference"].get("mixed_precision", True) and device.type == "cuda":
-                with torch.amp.autocast("cuda"):
-                    output = sliding_window_inference(
-                        img_tensor, roi_size, sw_batch_size, model,
-                        overlap=overlap, mode="gaussian",
-                    )
-            else:
-                output = sliding_window_inference(
-                    img_tensor, roi_size, sw_batch_size, model,
-                    overlap=overlap, mode="gaussian",
-                )
-
-        pred = torch.argmax(output, dim=1)[0].cpu().numpy().astype(np.uint8)
-        return pred
-
-    def _synthetic_inference(self, img_data: np.ndarray) -> np.ndarray:
-        """Intensity-thresholding synthetic segmentation for chest labels.
-
-        Labels:
-          1 = right_lung   (low signal, lateral right half of volume)
-          2 = left_lung    (low signal, lateral left half of volume)
-          3 = heart        (medium signal, central mediastinum)
-          4 = aorta        (small tubular structure adjacent to heart)
-
-        Strategy:
-        - Air-filled lungs appear dark; threshold below the 40th percentile.
-        - Heart is a large soft-tissue mass in the mediastinum (50th–80th pct).
-        - Split the lung mask left/right at the volume midpoint along axis 2
-          (left–right direction in RAS orientation).
-        - Aorta is a small high-signal structure near the heart.
+        Slices along the plane's canonical axis; ``window`` is the plane name when the region
+        reads several planes (so the shared hook scans each plane independently), else the
+        legacy ``multi-sequence``. Returns per-plane info, or None if the reference won't load.
         """
-        arr = img_data.copy()
-        seg = np.zeros(arr.shape, dtype=np.uint8)
-
-        nonzero = arr[arr > 0]
-        if nonzero.size == 0:
-            return seg
-
-        p20 = float(np.percentile(nonzero, 20))
-        p40 = float(np.percentile(nonzero, 40))
-        p55 = float(np.percentile(nonzero, 55))
-        p75 = float(np.percentile(nonzero, 75))
-        p88 = float(np.percentile(nonzero, 88))
-
-        mid_lr = arr.shape[2] // 2  # left–right split axis
-
-        # ------------------------------------------------------------------
-        # Label 1 & 2: Lungs — low signal regions, split left/right
-        # ------------------------------------------------------------------
-        lung_raw = (arr >= p20) & (arr < p40)
-        lung_labeled, n_lung = ndimage.label(lung_raw.astype(np.int32))
-        if n_lung > 0:
-            sizes = ndimage.sum(lung_raw.astype(np.int32), lung_labeled, range(1, n_lung + 1))
-            # Keep top 4 components to cover both lung lobes
-            n_keep = min(n_lung, 4)
-            top_ids = np.argsort(sizes)[::-1][:n_keep] + 1
-            for lid in top_ids:
-                comp_mask = lung_labeled == lid
-                # Determine laterality by centre of mass along left–right axis
-                com = ndimage.center_of_mass(comp_mask)
-                if com[2] >= mid_lr:
-                    seg[comp_mask] = 1  # right lung (high index = right in RAS)
-                else:
-                    seg[comp_mask] = 2  # left lung
-
-        # ------------------------------------------------------------------
-        # Label 3: Heart — medium-intensity central mass
-        # ------------------------------------------------------------------
-        heart_raw = ((arr >= p55) & (arr < p75) & (seg == 0)).astype(np.int32)
-        heart_labeled, n_heart = ndimage.label(heart_raw)
-        if n_heart > 0:
-            sizes = ndimage.sum(heart_raw, heart_labeled, range(1, n_heart + 1))
-            largest_id = int(np.argmax(sizes)) + 1
-            seg[heart_labeled == largest_id] = 3
-
-        # ------------------------------------------------------------------
-        # Label 4: Aorta — small bright tubular structure near the heart
-        # ------------------------------------------------------------------
-        aorta_raw = ((arr >= p75) & (arr < p88) & (seg == 0)).astype(np.int32)
-        aorta_labeled, n_aorta = ndimage.label(aorta_raw)
-        if n_aorta > 0:
-            sizes = ndimage.sum(aorta_raw, aorta_labeled, range(1, n_aorta + 1))
-            # Aorta is a relatively large structure; pick the largest candidate
-            largest_id = int(np.argmax(sizes)) + 1
-            # Erode to keep shape tubular
-            aorta_mask = (aorta_labeled == largest_id).astype(np.int32)
-            aorta_eroded = ndimage.binary_erosion(
-                aorta_mask, structure=np.ones((2, 2, 2)), iterations=1
-            )
-            seg[aorta_eroded] = 4
-
-        logger.info(
-            "synthetic_inference_complete",
-            unique_labels=np.unique(seg).tolist(),
-            shape=list(seg.shape),
-        )
-        return seg
-
-    # =====================================================================
-    # Preprocessing helpers
-    # =====================================================================
-
-    def _apply_bias_field_correction(self, img: "sitk.Image") -> "sitk.Image":
-        """Denoise-prefilter + N4 bias-field correction for MR input.
-
-        Returns the corrected image, or the original image unchanged when the
-        step is disabled or fails — the lung segmentation workflow must never be
-        broken by this augmentation.
-        """
-        cfg = self._config.get("preprocessing", {}).get("bias_field_correction", {})
-        if not cfg.get("enabled", False):
-            return img
+        axis = _PLANE_AXIS.get(plane, 2)
+        ref_seq = self._pick_reference(volume_paths, axis)
         try:
-            work = sitk.Cast(img, sitk.sitkFloat32)
-
-            # (1) Denoising prefilter applied BEFORE N4 to stabilise the fit.
-            prefilter = cfg.get("prefilter", "curvature_flow")
-            if prefilter == "curvature_flow":
-                work = sitk.CurvatureFlow(
-                    work,
-                    timeStep=float(cfg.get("prefilter_timestep", 0.0625)),
-                    numberOfIterations=int(cfg.get("prefilter_iterations", 5)),
-                )
-            elif prefilter == "median":
-                work = sitk.Median(work)
-
-            # (2) N4 bias-field correction (Otsu mask; optional shrink for speed).
-            mask = sitk.OtsuThreshold(work, 0, 1, 200)
-            shrink = int(cfg.get("shrink_factor", 4))
-            corrector = sitk.N4BiasFieldCorrectionImageFilter()
-            n4_iters = list(cfg.get("n4_iterations", [50, 50, 50, 50]))
-            corrector.SetMaximumNumberOfIterations(n4_iters)
-
-            if shrink > 1:
-                small = sitk.Shrink(work, [shrink] * work.GetDimension())
-                small_mask = sitk.Shrink(mask, [shrink] * mask.GetDimension())
-                corrector.Execute(small, small_mask)
-                # Apply the fitted log bias field at full resolution.
-                log_bias = corrector.GetLogBiasFieldAsImage(work)
-                corrected = work / sitk.Exp(log_bias)
-            else:
-                corrected = corrector.Execute(work, mask)
-
-            logger.info("bias_field_correction_applied", prefilter=prefilter, shrink=shrink)
-            return corrected
+            ref_img = self._load_canonical(volume_paths[ref_seq])
+            ref_arr = np.squeeze(np.asarray(ref_img.get_fdata(), dtype=np.float32))
         except Exception as exc:
-            logger.warning("bias_field_correction_failed_using_original", error=str(exc))
-            return img
+            logger.warning(f"{USECASE_NAME}_reference_load_failed", plane=plane, error=str(exc))
+            return None
+        while ref_arr.ndim > 3:
+            ref_arr = ref_arr[..., 0]
 
-    def _build_single_channel_input(self, nifti_path: str, output_path: str):
-        """Bias-correct (MR), resample to target spacing, z-score normalise, save NIfTI."""
-        target_spacing = self._config["preprocessing"]["target_spacing"]
-        img = sitk.ReadImage(nifti_path)
-        img = self._apply_bias_field_correction(img)
-        original_spacing = img.GetSpacing()
-        original_size = img.GetSize()
-        new_size = [
-            int(round(osz * osp / nsp))
-            for osz, osp, nsp in zip(original_size, original_spacing, target_spacing)
-        ]
-        resampler = sitk.ResampleImageFilter()
-        resampler.SetOutputSpacing(target_spacing)
-        resampler.SetSize(new_size)
-        resampler.SetOutputDirection(img.GetDirection())
-        resampler.SetOutputOrigin(img.GetOrigin())
-        resampler.SetInterpolator(sitk.sitkLinear)
-        resampler.SetDefaultPixelValue(0)
-        resampled = resampler.Execute(img)
+        order = self._display_order(list(volume_paths.keys()))
+        seq_arrays: dict[str, np.ndarray] = {}
+        seq_bounds: dict[str, tuple[float, float]] = {}
+        for seq in order:
+            arr = ref_arr if seq == ref_seq else self._resample_to_ref(volume_paths[seq], ref_img)
+            if arr is None:
+                continue
+            seq_arrays[seq] = arr
+            seq_bounds[seq] = self._window_bounds(arr)
+        panel_order = [s for s in order if s in seq_arrays]
 
-        arr = sitk.GetArrayFromImage(resampled).astype(np.float32)
-        nonzero_mask = arr > 0
-        if np.sum(nonzero_mask) > 0:
-            mean_val = float(np.mean(arr[nonzero_mask]))
-            std_val = float(np.std(arr[nonzero_mask]))
-            if std_val > 0:
-                arr = (arr - mean_val) / std_val
-                arr[~nonzero_mask] = 0.0
+        ref_lo, ref_hi = seq_bounds.get(ref_seq, self._window_bounds(ref_arr))
+        if ref_arr.ndim < 3:
+            candidates = [0] if ref_arr.ndim == 2 else []
+        else:
+            candidates = self._candidate_slices(ref_arr, ref_lo, ref_hi, axis)
 
-        direction = np.array(img.GetDirection()).reshape(3, 3)
-        spacing_arr = np.array(target_spacing)
-        origin = np.array(img.GetOrigin())
-        affine = np.eye(4)
-        affine[:3, :3] = direction * spacing_arr
-        affine[:3, 3] = origin
+        window = plane if multi else MONTAGE_WINDOW
+        scan_slices: list[dict[str, Any]] = []
+        for order_i, sidx in enumerate(candidates, 1):
+            z = z_offset + int(sidx)
+            name = f"{self._slug(window)}_{order_i:03d}_z{z:05d}_montage.png"
+            out_path = scan_dir / name
+            if self._render_montage(seq_arrays, seq_bounds, panel_order, int(sidx), str(out_path), axis):
+                scan_slices.append({
+                    "z": z,
+                    "window": window,
+                    "name": name,
+                    "local_path": str(out_path),
+                    "order": order_i,
+                    "plane": plane,
+                })
 
-        nib_img = nib.Nifti1Image(arr, affine=affine)
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        nib.save(nib_img, output_path)
-        logger.info("single_channel_input_built", shape=list(arr.shape))
+        return {
+            "scan_slices": scan_slices,
+            "panel_order": panel_order,
+            "ref_seq": ref_seq,
+            "window": window,
+            "dims": [int(d) for d in ref_arr.shape],
+            "n_candidates": len(candidates),
+        }
 
-    def _classify_sequences(self, series: list[Series]) -> dict[str, Series]:
-        classified: dict[str, Series] = {}
-        for s in series:
-            desc = (s.series_description or "").strip()
-            protocol = (s.protocol_name or "").strip() if hasattr(s, "protocol_name") else ""
-            combined = f"{desc} {protocol}"
-            for seq_name, patterns in SEQUENCE_PATTERNS.items():
-                if seq_name in classified:
+    # ── sequence ordering / resampling ─────────────────────────────────────────
+
+    def _display_order(self, present: list[str]) -> list[str]:
+        """Present sequences in the configured montage order (unknowns appended)."""
+        order = [str(x) for x in (self._cfg_pre.get("sequence_order") or [])]
+        ordered = [s for s in order if s in present]
+        ordered += [s for s in present if s not in ordered]
+        return ordered
+
+    def _resample_to_ref(self, moving_path: str, ref_img: Any) -> np.ndarray | None:
+        """Resample a moving sequence onto the reference grid via the DICOM affines.
+
+        Same-session MR series share the frame of reference, so mapping reference voxels →
+        world (reference affine) → moving voxels (inverse moving affine) and linearly
+        sampling aligns them without a registration algorithm. Volumes acquired in other
+        planes are thereby reformatted to the reference's canonical-axial grid.
+        """
+        try:
+            from scipy.ndimage import map_coordinates
+
+            mov = nib.load(moving_path)
+            mov_arr = np.squeeze(np.asarray(mov.get_fdata(), dtype=np.float32))
+            while mov_arr.ndim > 3:
+                mov_arr = mov_arr[..., 0]
+            if mov_arr.ndim != 3:
+                return None
+
+            ref_shape = tuple(int(d) for d in ref_img.shape[:3])
+            # Affine mapping reference voxel indices → moving voxel indices.
+            m = np.linalg.inv(mov.affine) @ ref_img.affine
+            ii, jj, kk = np.meshgrid(
+                np.arange(ref_shape[0], dtype=np.float32),
+                np.arange(ref_shape[1], dtype=np.float32),
+                np.arange(ref_shape[2], dtype=np.float32),
+                indexing="ij",
+            )
+            flat = np.stack([ii.ravel(), jj.ravel(), kk.ravel(), np.ones(ii.size, np.float32)], axis=0)
+            mov_vox = m @ flat  # 4 x N
+            sampled = map_coordinates(mov_arr, mov_vox[:3], order=1, mode="constant", cval=0.0)
+            return sampled.reshape(ref_shape).astype(np.float32)
+        except Exception as exc:
+            logger.warning(f"{USECASE_NAME}_resample_failed", moving=moving_path, error=str(exc))
+            return None
+
+    # ── montage rendering ──────────────────────────────────────────────────────
+
+    def _render_montage(
+        self,
+        seq_arrays: dict[str, np.ndarray],
+        seq_bounds: dict[str, tuple[float, float]],
+        panel_order: list[str],
+        z: int,
+        out_path: str,
+        axis: int = 2,
+    ) -> bool:
+        """Render a labeled grid of the sequence tiles at slice ``z`` along ``axis``."""
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+
+            tile = int(self._cfg_pre.get("tile_size", 448) or 448)
+            cols = max(1, int(self._cfg_pre.get("montage_cols", 3)))
+            label_h = max(16, tile // 16)
+
+            tiles: list[tuple[str, Image.Image]] = []
+            for seq in panel_order:
+                arr = seq_arrays.get(seq)
+                if arr is None:
                     continue
-                for pat in patterns:
-                    if re.search(pat, combined):
-                        classified[seq_name] = s
-                        break
-        logger.info(
-            "sequence_classification",
-            result={k: v.series_description for k, v in classified.items()},
-        )
-        return classified
+                sl = self._extract_slice(arr, z, axis)  # already display-oriented
+                if sl is None:
+                    continue
+                lo, hi = seq_bounds.get(seq, (0.0, 1.0))
+                norm = np.clip((np.asarray(sl, np.float32) - lo) / max(hi - lo, 1e-6), 0.0, 1.0)
+                img = Image.fromarray((norm * 255.0).astype(np.uint8), mode="L").convert("RGB")
+                # Scale the long edge to the tile size (UP or down) so anatomy fills the
+                # tile, then letterbox the short edge into a square, preserving aspect.
+                w, h = img.size
+                scale = tile / max(w, h) if max(w, h) else 1.0
+                img = img.resize((max(1, int(round(w * scale))), max(1, int(round(h * scale)))), Image.BILINEAR)
+                canvas = Image.new("RGB", (tile, tile), (0, 0, 0))
+                canvas.paste(img, ((tile - img.size[0]) // 2, (tile - img.size[1]) // 2))
+                tiles.append((seq, canvas))
 
-    def _check_spacing(self, nifti_path: str) -> dict[str, Any]:
-        flags = []
-        details = {}
-        img = sitk.ReadImage(nifti_path)
-        spacing = img.GetSpacing()
-        size = img.GetSize()
+            if not tiles:
+                return False
 
-        qc = self._config["quality_checks"]
+            n = len(tiles)
+            ncols = min(cols, n)
+            nrows = (n + ncols - 1) // ncols
+            cell_w, cell_h = tile, tile + label_h
+            montage = Image.new("RGB", (ncols * cell_w, nrows * cell_h), (0, 0, 0))
+            draw = ImageDraw.Draw(montage)
+            try:
+                font = ImageFont.truetype("DejaVuSans-Bold.ttf", max(12, label_h - 6))
+            except Exception:
+                font = ImageFont.load_default()
 
-        for i, sp in enumerate(spacing):
-            if sp < qc["min_expected_spacing_mm"] or sp > qc["max_expected_spacing_mm"]:
-                flags.append("spacing_inconsistency")
-                details["spacing_issue"] = (
-                    f"Axis {i} spacing {sp:.3f}mm outside range "
-                    f"[{qc['min_expected_spacing_mm']}, {qc['max_expected_spacing_mm']}]"
+            for idx, (seq, timg) in enumerate(tiles):
+                r, c = divmod(idx, ncols)
+                x0, y0 = c * cell_w, r * cell_h
+                # Label bar (black) with the sequence name in white.
+                draw.rectangle([x0, y0, x0 + cell_w, y0 + label_h], fill=(0, 0, 0))
+                draw.text((x0 + 4, y0 + 1), seq, fill=(255, 255, 255), font=font)
+                montage.paste(timg, (x0, y0 + label_h))
+
+            max_size = int(self._cfg_pre.get("montage_max_size", 1536) or 0)
+            long_edge = max(montage.size)
+            if max_size and long_edge > max_size:
+                scale = max_size / long_edge
+                montage = montage.resize(
+                    (max(1, int(montage.size[0] * scale)), max(1, int(montage.size[1] * scale))),
+                    Image.BILINEAR,
                 )
-                break
+            montage.save(out_path, format="PNG")
+            return True
+        except Exception as exc:
+            logger.warning(f"{USECASE_NAME}_montage_failed", error=str(exc))
+            return False
 
-        if min(size) < qc["min_slices"]:
-            flags.append("incomplete_coverage")
-            details["coverage_issue"] = (
-                f"Min dimension {min(size)} < threshold {qc['min_slices']}"
-            )
+    # ── volume / slice helpers ─────────────────────────────────────────────────
 
-        anisotropy = max(spacing) / (min(spacing) + 1e-8)
-        if anisotropy > qc["max_spacing_anisotropy"]:
-            flags.append("spacing_inconsistency")
-            details["anisotropy"] = round(anisotropy, 2)
+    @staticmethod
+    def _slug(name: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "-", str(name).lower()).strip("-") or "mr"
 
-        slice_gaps = [i for i in range(len(spacing)) if spacing[i] > 2 * min(spacing)]
-        if slice_gaps:
-            flags.append("slice_gap")
-            details["slice_gap_axes"] = slice_gaps
+    @staticmethod
+    def _load_canonical(volume_path: str) -> Any:
+        """Load NIfTI reoriented to closest-canonical (RAS) — axial along the last axis."""
+        img = nib.load(volume_path)
+        try:
+            img = nib.as_closest_canonical(img)
+        except Exception as exc:
+            logger.warning(f"{USECASE_NAME}_canonical_reorient_failed", error=str(exc))
+        return img
 
-        details["actual_spacing_mm"] = [round(s, 3) for s in spacing]
-        details["image_size"] = list(size)
-        return {"flags": flags, "details": details}
+    def _window_bounds(self, arr: np.ndarray) -> tuple[float, float]:
+        """Robust per-sequence intensity window from percentiles of the tissue voxels."""
+        finite = arr[np.isfinite(arr)]
+        tissue = finite[finite > 0]
+        if tissue.size < 100:
+            tissue = finite
+        if tissue.size == 0:
+            return 0.0, 1.0
+        lo = float(np.percentile(tissue, float(self._cfg_pre.get("window_low_pct", 1.0))))
+        hi = float(np.percentile(tissue, float(self._cfg_pre.get("window_high_pct", 99.0))))
+        if hi <= lo:
+            lo, hi = float(tissue.min()), float(tissue.max())
+            if hi <= lo:
+                hi = lo + 1.0
+        return lo, hi
 
-    def _check_motion_artifacts(self, nifti_path: str) -> dict[str, Any]:
-        flags = []
-        details = {}
-        img = sitk.ReadImage(nifti_path)
-        arr = sitk.GetArrayFromImage(img).astype(np.float32)
+    def _trim_bounds(self, nz: int) -> tuple[int, int]:
+        trim = float(self._cfg_pre.get("edge_trim_fraction", 0.05))
+        lo = int(nz * trim)
+        hi = int(nz * (1.0 - trim)) - 1
+        if hi <= lo:
+            lo, hi = 0, nz - 1
+        return lo, hi
 
+    def _candidate_slices(self, arr: np.ndarray, lo: float, hi: float, axis: int = 2) -> list[int]:
+        """Foreground slice indices along ``axis`` (descending), capped to max_scan_slices."""
         if arr.ndim < 3:
-            return {"flags": [], "details": {}}
+            return [0] if arr.ndim == 2 else []
 
-        mid = arr.shape[0] // 2
-        roi = arr[max(0, mid - 5):mid + 5]
-        if roi.size == 0:
-            return {"flags": [], "details": {}}
+        nz = int(arr.shape[axis])
+        lo_b, hi_b = self._trim_bounds(nz)
+        min_fg = float(self._cfg_pre.get("min_foreground_fraction", 0.05))
+        floor = lo + 0.02 * (hi - lo)
 
-        roi_flat = roi[roi > 0]
-        if roi_flat.size < 100:
-            return {"flags": [], "details": {}}
+        kept: list[int] = []
+        for z in range(hi_b, lo_b - 1, -1):
+            sl = np.take(arr, z, axis=axis)
+            if float((sl > floor).mean()) >= min_fg:
+                kept.append(z)
+        if not kept:
+            kept = list(range(hi_b, lo_b - 1, -1))
 
-        mean_signal = float(np.mean(roi_flat))
-        edge_energy = float(np.mean(np.abs(np.diff(roi_flat))))
-        normalized_edge = edge_energy / (mean_signal + 1e-8)
-
-        details["coefficient_of_variation"] = round(
-            float(np.std(roi_flat)) / (mean_signal + 1e-8), 4
-        )
-        details["normalized_edge_energy"] = round(normalized_edge, 4)
-
-        if normalized_edge > self._config["quality_checks"]["motion_artifact_threshold"]:
-            flags.append("motion_artifact")
-            details["motion_assessment"] = (
-                "Elevated edge energy suggesting possible motion"
-            )
-
-        return {"flags": flags, "details": details}
-
-    # =====================================================================
-    # Postprocessing helpers
-    # =====================================================================
+        cap = max(1, int(self._cfg_pre.get("max_scan_slices", 96)))
+        if len(kept) > cap:
+            picked = self._even_pick(kept, cap)
+            logger.info(f"{USECASE_NAME}_candidates_strided", available=len(kept), scanned=len(picked))
+            return picked
+        return kept
 
     @staticmethod
-    def _apply_connected_components(
-        seg: np.ndarray,
-        label_map: dict,
-        largest_only_labels: list[int],
-    ) -> np.ndarray:
-        result = seg.copy()
-        for label_id in largest_only_labels:
-            mask = (result == label_id).astype(np.int32)
-            if np.sum(mask) == 0:
-                continue
-            labeled, num = ndimage.label(mask)
-            if num <= 1:
-                continue
-            sizes = ndimage.sum(mask, labeled, range(1, num + 1))
-            largest = int(np.argmax(sizes)) + 1
-            result[np.logical_and(labeled != largest, labeled > 0)] = 0
-        return result
+    def _even_pick(items: list[int], k: int) -> list[int]:
+        if k <= 0 or not items:
+            return []
+        if len(items) <= k:
+            return list(items)
+        idx = np.linspace(0, len(items) - 1, k).round().astype(int)
+        seen: list[int] = []
+        for i in idx:
+            v = items[int(i)]
+            if v not in seen:
+                seen.append(v)
+        return seen
 
     @staticmethod
-    def _generate_processing_notes(
-        qa_flags: list[str],
-        right_lung_vol: float,
-        left_lung_vol: float,
-        heart_vol: float,
-        lung_volume_asymmetry: bool,
-        bilateral_analysis: bool,
-        lesion_active: bool = False,
-        lesion_count: int = 0,
-        cardiac_method: str = "totalsegmentator",
-    ) -> str:
-        notes = []
-        if bilateral_analysis:
-            notes.append(
-                f"Bilateral lung analysis completed "
-                f"(R: {right_lung_vol:.1f} mL, L: {left_lung_vol:.1f} mL)."
-            )
-        elif right_lung_vol > 0 or left_lung_vol > 0:
-            notes.append("Only unilateral lung could be segmented.")
+    def _extract_slice(arr: np.ndarray, idx: int, axis: int = 2) -> np.ndarray | None:
+        """Display-oriented 2-D slice at ``idx`` along ``axis`` (superior/anterior up).
+
+        ``np.flipud(sl.T)`` yields the radiological-ish orientation for axial (fixed S/I),
+        sagittal (fixed R/L) and coronal (fixed A/P) alike — superior/anterior toward the top.
+        """
+        if arr.ndim == 2:
+            sl = arr
+        elif arr.ndim == 3 and 0 <= idx < arr.shape[axis]:
+            sl = np.take(arr, idx, axis=axis)
         else:
-            notes.append("No lung parenchyma detected in this study.")
-        if heart_vol > 0:
-            heart_src = (
-                "dedicated cardiac model"
-                if cardiac_method == "swin_unetr_override"
-                else "TotalSegmentator whole-heart label"
-            )
-            notes.append(f"Heart volume: {heart_vol:.1f} mL ({heart_src}).")
-        # Lesion reporting: dedicated model vs. asymmetry-only screening.
-        if lesion_active:
-            if lesion_count > 0:
-                notes.append(
-                    f"Dedicated lesion model detected {lesion_count} lesion(s); "
-                    "clinical correlation recommended."
-                )
-            else:
-                notes.append("Dedicated lesion model found no lesions.")
-        else:
-            notes.append(
-                "No dedicated lesion-detection model active — only lung-volume "
-                "asymmetry screening was performed (not lesion detection)."
-            )
-        if lung_volume_asymmetry:
-            notes.append(
-                "Significant lung volume asymmetry detected; possible lesion, "
-                "effusion, or collapse. Clinical correlation recommended."
-            )
-        if "missing_sequence" in qa_flags:
-            notes.append(
-                "One or more expected sequences were missing; "
-                "available sequences were used as fallback."
-            )
-        if "motion_artifact" in qa_flags:
-            notes.append("Possible motion artifacts detected; review segmentation carefully.")
-        if "no_model_weights" in qa_flags:
-            notes.append(
-                "No trained model weights found; synthetic inference was used. "
-                "Results are illustrative only and must not be used clinically."
-            )
-        if not qa_flags and bilateral_analysis:
-            notes.append("Processing completed normally with no quality concerns.")
-        return " ".join(notes)
+            return None
+        return np.flipud(np.asarray(sl, dtype=np.float32).T)

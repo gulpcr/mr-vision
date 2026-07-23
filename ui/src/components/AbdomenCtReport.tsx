@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { api, Study, Result, ClinicalForStudy } from "@/lib/api";
+import { ctRegionMeta } from "@/lib/ctReport";
 import { Printer, FileDown } from "lucide-react";
 
 // Standalone formal Abdomen CT report. Mirrors the MRI / PET-CT report layout: a
@@ -10,12 +11,9 @@ import { Printer, FileDown } from "lucide-react";
 // pipeline (summary.ai_report), which reorganizes the per-slice flags into grouped,
 // non-redundant prose. NON-DIAGNOSTIC assistive output.
 
-const SIGNATORY_NAME = "Dr. Ammar-e-Yasir";
+const SIGNATORY_NAME = "Dr";
 const SIGNATORY_TITLE = "Consultant Radiologist";
 const SIGNATORY_QUALS = "MBBS, FCPS, M.Med";
-const EXAMINATION = "CT SCAN OF THE ABDOMEN AND PELVIS";
-const TECHNIQUE_DEFAULT =
-  "Axial CT images of the abdomen and pelvis were reviewed. Findings below are an AI-assisted read of soft-tissue-windowed axial levels sampled across the volume.";
 
 function fmtAge(raw: string | null): string {
   if (!raw) return "—";
@@ -52,6 +50,7 @@ function toParagraphs(text: string): string[] {
 
 export function AbdomenCtReport({ study, result }: { study: Study; result: Result }) {
   const summary: any = result.summary || {};
+  const region = ctRegionMeta(result.usecase_name);
   const aiReport: any = summary.ai_report || {};
   const flagged: Array<{ z: number; finding: string }> = Array.isArray(summary.anomaly_findings)
     ? summary.anomaly_findings
@@ -91,7 +90,6 @@ export function AbdomenCtReport({ study, result }: { study: Study; result: Resul
     : (report?.conclusions && report.conclusions.trim()) ||
       (aiReport.impression && String(aiReport.impression).trim()) ||
       (flagged.length ? "See findings above; correlation with clinical information advised." : "No acute focal abnormality flagged on the reviewed levels.");
-  const disclaimer: string = aiReport.disclaimer || "";
 
   const [pdfLoading, setPdfLoading] = useState(false);
 
@@ -174,30 +172,23 @@ export function AbdomenCtReport({ study, result }: { study: Study; result: Resul
           </span>
         </div>
 
-        {/* AI / non-diagnostic banner */}
-        <div className="no-print mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2 text-[12px] text-amber-800">
-          AI-assisted report. An AI model reviewed axial CT levels and flagged potential
-          abnormalities; the findings below were consolidated by a local language model.
-          NON-DIAGNOSTIC — requires radiologist verification of the full study.
-        </div>
-
         {/* Demographics */}
         <div className="grid grid-cols-2 gap-x-10 gap-y-1.5 mb-5">
           <div><span className="font-bold">PATIENT :</span> {study.patient_name || "—"}</div>
           <div><span className="font-bold">MR :</span> {study.patient_id || "—"}</div>
           <div><span className="font-bold">DATE :</span> {fmtDate(study.study_date)}</div>
           <div><span className="font-bold">AGE :</span> {ageDisplay}</div>
-          <div><span className="font-bold">GENDER :</span> {fmtSex(study.patient_sex)}</div>
+          <div><span className="font-bold">GENDER :</span> {fmtSex(study.patient_sex || clinical?.sex || null)}</div>
           <div><span className="font-bold">REF :</span> {refDr}</div>
         </div>
 
         <p className="mt-2">
           <span className="font-bold underline">EXAMINATION:&nbsp;</span>
-          <span className="font-bold">{EXAMINATION}</span>
+          <span className="font-bold">{region.examination}</span>
         </p>
 
         <p className="mt-3 text-justify">
-          <span className="font-bold underline">TECHNIQUE:</span> {TECHNIQUE_DEFAULT}
+          <span className="font-bold underline">TECHNIQUE:</span> {region.technique}
         </p>
 
         <Sec>CLINICAL FEATURES:</Sec>
@@ -217,10 +208,6 @@ export function AbdomenCtReport({ study, result }: { study: Study; result: Resul
           <p className="text-sm text-gray-400 italic animate-pulse">…</p>
         ) : (
           <p className="text-justify">{conclusions}</p>
-        )}
-
-        {disclaimer && (
-          <p className="text-[11px] italic text-gray-500 mt-4">{disclaimer}</p>
         )}
 
         {/* Signatory */}

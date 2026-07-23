@@ -1,82 +1,82 @@
-model:
-  architecture: totalsegmentator_mr
-  version: "2.2"  # informational — TotalSegmentator manages its own versioning; not passed to Python API
-  # TotalSegmentator task: total_mr segments 57 MRI structures
-  # nnU-Net 3D full-resolution, ~65M params, trained on multi-site MRI data
-  totalseg_task: total_mr
-  # Weights auto-download to totalseg_weights_dir on first run (~450 MB)
-  totalseg_weights_dir: /model_cache/totalsegmentator
-  # Organ file names TotalSegmentator outputs for this use case
-  organ_map:
-    liver: 1
-    spleen: 2
-    kidney_right: 3
-    kidney_left: 4
-    pancreas: 5
-
-inference:
-  device: auto   # selects cuda when GPU is present, cpu otherwise
-  mixed_precision: true
-
+# abdomen_mri configuration (MULTIPARAMETRIC MRI report family). No learned model. Every MR
+# sequence is classified, co-registered onto one reference grid, and rendered as a labeled
+# PANEL MONTAGE per axial level; MedGemma scans the montages to flag levels, then reports on
+# the flagged ones. MRI has no absolute intensity scale (unlike CT HU), so each sequence tile
+# uses a per-volume PERCENTILE window. Measurement is DISABLED (no validated MR segmentation).
 preprocessing:
-  target_spacing: [1.5, 1.5, 3.0]
-  orientation: RAS
-  intensity_normalization: z_score
-  crop_to_nonzero: true
+  edge_trim_fraction: 0.05
+  # Intensity-relative foreground: keep a level only if at least this fraction of the
+  # reference-sequence pixels sit above a low-percentile floor (drops near-empty air levels).
+  min_foreground_fraction: 0.05
+  max_scan_slices: 96
+  preview_count: 6
 
-postprocessing:
-  label_map:
-    0: background
-    1: liver
-    2: spleen
-    3: right_kidney
-    4: left_kidney
-    5: pancreas
-  min_structure_volume_ml: 0.5
-  apply_connected_components: true
-  largest_component_only_labels: [1, 2, 3, 4, 5]
+  # Per-sequence percentile window (no HU): clip each sequence to [low_pct, high_pct] of its
+  # own non-zero voxels so every tile is consistently windowed.
+  window_low_pct: 1.0
+  window_high_pct: 99.0
+
+  # Panel-montage layout.
+  tile_size: 448
+  montage_cols: 3
+  montage_max_size: 1536
+
+  # Sequence classification catalogue (first matching entry wins per series; largest series
+  # kept per sequence). A base_t1 series carrying a contrast marker is promoted to contrast_t1.
+  base_t1: "T1"
+  contrast_t1: "T1+C"
+  contrast_patterns:
+    - '(?i)post[\s_-]*contrast'
+    - '(?i)post[\s_-]*gad'
+    - '(?i)\+\s*c\b'
+    - '(?i)\bc\s*\+'
+    - '(?i)\bgad\b'
+    - '(?i)\+\s*gd'
+    - '(?i)\bgd\b'
+    - '(?i)\bce\b'
+    - '(?i)contrast'
+    - '(?i)\bpost\b'
+  sequences:
+    - name: "ADC"
+      patterns:
+        - '(?i)\badc\b'
+    - name: "DWI"
+      patterns:
+        - '(?i)\bdwi\b'
+        - '(?i)diffusion'
+        - '(?i)b[\s_-]?800'
+        - '(?i)b[\s_-]?1000'
+        - '(?i)tracew'
+    - name: "T2"
+      patterns:
+        - '(?i)haste'
+        - '(?i)\bt2\b'
+        - '(?i)t2w'
+        - '(?i)t2[\s_-]*tse'
+    - name: "T1"
+      patterns:
+        - '(?i)\bt1\b'
+        - '(?i)vibe'
+        - '(?i)lava'
+        - '(?i)in[\s_-]*phase'
+        - '(?i)t1w'
+  # Montage tile order (present sequences tiled + labeled in this order).
+  sequence_order: ["T1", "T1+C", "T2", "DWI", "ADC"]
+  # Co-registration reference (first present wins; else the sequence with most slices).
+  reference_preference: ["T2", "T1"]
+
+
+scan:
+  batch_size: 2
+  # MedGemma model tag for this use case (27B is more sensitive). Empty → global MEDGEMMA_MODEL.
+  model: "medgemma:27b"
+
+report:
+  max_report_levels: 10
+
+# Measurement DISABLED for MRI (no validated per-region segmentation seed).
+measurement:
+  enabled: false
 
 quality_checks:
-  min_expected_spacing_mm: 0.5
-  max_expected_spacing_mm: 8.0
-  min_slices: 20
-  max_spacing_anisotropy: 6.0
-  motion_artifact_threshold: 0.15
-
-reference_volumes_ml:
-  liver_normal_max: 1800.0
-  spleen_normal_max: 315.0
-
-swin_unetr:
-  # Set to a .pt file to activate SwinUNETR over TotalSegmentator.
-  # Leave null to use TotalSegmentator (default).
-  custom_weights_path: null
-  in_channels: 1              # single-channel MRI input
-  out_channels: 6             # background + 5 abdominal organ labels
-  feature_size: 48
-  use_checkpoint: false
-  roi_size: [96, 96, 96]
-  sw_batch_size: 1
-  overlap: 0.5
-  mode: gaussian
-  threshold: 0.5
-
-# ── Dedicated lesion detection (mirrors chest_mri) ────────────────────────────
-# Optional, strictly modular lesion-detection model. Inert while
-# custom_weights_path is null: the pipeline then performs ONLY per-organ
-# reference-range screening (reported as organ_findings / abnormal_findings, NOT
-# as a detected lesion). When weights are supplied, a binary lesion mask is
-# produced and lesion_detected reflects the model output, with a
-# lesion_mask.nii.gz artifact.
-lesion_detection:
-  custom_weights_path: null
-  in_channels: 1
-  out_channels: 2             # background + lesion
-  feature_size: 48
-  use_checkpoint: false
-  roi_size: [96, 96, 96]
-  sw_batch_size: 1
-  overlap: 0.5
-  mode: gaussian
-  threshold: 0.5
-  min_lesion_volume_ml: 0.5
+  min_slices: 10

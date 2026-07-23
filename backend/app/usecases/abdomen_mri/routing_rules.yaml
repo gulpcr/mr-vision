@@ -1,33 +1,37 @@
+# abdomen_mri is MANUAL-ONLY (like abdomen_ct and the report family): the rule below is
+# disabled so auto-classification never selects it. The multiparametric two-pass MedGemma
+# scan is expensive (many model calls per study), so it is opt-in — run it explicitly by
+# passing usecase_names=["abdomen_mri"] to POST /api/studies/{uid}/jobs.
+#
+# To enable auto-routing, flip `enabled: true` — the rule is already scoped to MR + this
+# region so it will only match relevant studies.
 rules:
-  - body_parts:
+  - modality: MR
+    body_parts:
       - ABDOMEN
+      - PELVIS
       - LIVER
       - PANCREAS
       - KIDNEY
     study_description_patterns:
-      - "(?i)abdomen"
-      - "(?i)abdominal"
-      - "(?i)liver"
-      - "(?i)pancreas"
-      - "(?i)kidney"
-      - "(?i)renal"
-      - "(?i)hepatic"
-      - "(?i)mrcp"
-      - "(?i)upper.*abdomen"
+      - '(?i)abdomen'
+      - '(?i)abdominal'
+      - '(?i)liver'
+      - '(?i)pancreas'
+      - '(?i)kidney'
+      - '(?i)renal'
+      - '(?i)hepatic'
+      - '(?i)mrcp'
+      - '(?i)upper.*abdomen'
+      - '(?i)\bpelvis\b'
     series_description_patterns:
-      - "(?i)t2.*haste"
-      - "(?i)haste"
-      - "(?i)t1.*ip"
-      - "(?i)in.*phase"
-      - "(?i)t1.*op"
-      - "(?i)out.*phase"
-      - "(?i)dwi"
-      - "(?i)diffusion"
-      - "(?i)dce"
-      - "(?i)dynamic"
-      - "(?i)t1.*vibe"
-      - "(?i)t1.*lava"
-      - "(?i)t2.*cor"
-    modality: MR
-    priority: 10
-    enabled: true
+      - '(?i)haste'
+      - '(?i)t2'
+      - '(?i)t1'
+      - '(?i)vibe'
+      - '(?i)lava'
+      - '(?i)dwi'
+      - '(?i)cor'
+      - '(?i)ax'
+    priority: 5
+    enabled: false

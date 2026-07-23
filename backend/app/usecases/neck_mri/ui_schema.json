@@ -1,0 +1,64 @@
+{
+  "title": "Neck MRI \u2014 Multiparametric MedGemma AI Report",
+  "description": "Co-registered sequence montages scanned level-by-level to flag abnormal levels, then reported",
+  "sections": [
+    {
+      "id": "summary",
+      "title": "Summary",
+      "type": "key_value",
+      "data_path": "summary",
+      "fields": [
+        {
+          "key": "modality",
+          "label": "Modality",
+          "format": "text"
+        },
+        {
+          "key": "sequences_used",
+          "label": "Sequences",
+          "format": "array"
+        },
+        {
+          "key": "candidate_slices",
+          "label": "Levels Scanned",
+          "format": "text"
+        },
+        {
+          "key": "anomaly_slices",
+          "label": "Flagged Levels (z)",
+          "format": "array"
+        },
+        {
+          "key": "ai_report_provider",
+          "label": "Report Author",
+          "format": "text"
+        },
+        {
+          "key": "processing_notes",
+          "label": "Notes",
+          "format": "text"
+        }
+      ]
+    },
+    {
+      "id": "flagged_slices",
+      "title": "Flagged Levels",
+      "type": "image",
+      "artifact_filter": "neck_mri_slice_png"
+    },
+    {
+      "id": "qa",
+      "title": "Quality Assurance",
+      "type": "qa_panel",
+      "flags_path": "qa_flags",
+      "details_path": "qa_details",
+      "severity_map": {
+        "insufficient_slices": "warning",
+        "no_slices_rendered": "error",
+        "not_a_volume": "warning",
+        "series_region_unmatched": "warning",
+        "single_sequence": "warning"
+      }
+    }
+  ]
+}

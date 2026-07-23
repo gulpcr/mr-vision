@@ -39,6 +39,10 @@ class AbdomenReportService:
         study_description: str | None = None,
         detail: str | None = None,
         measurement: dict[str, Any] | None = None,
+        clinical_history: str | None = None,
+        demographics: str | None = None,
+        region_label: str = "an ABDOMEN/PELVIS CT",
+        markers_enabled: bool = True,
     ) -> dict[str, str] | None:
         """Return ``{findings, conclusions}`` written from the inputs only, or None.
 
@@ -46,11 +50,17 @@ class AbdomenReportService:
         tag) — the authoritative list of abnormalities. ``detail`` is the pipeline's own
         per-slice narrative (``summary.ai_report.findings``), an OPTIONAL richer source
         the writer may draw fuller descriptions from — but it is still grounding, not a
-        licence to invent. The model is told these are its only sources of truth.
+        licence to invent. ``clinical_history`` (from patient intake) frames the read; it
+        is CONTEXT for interpretation, never a finding. The model is told these are its
+        only sources of truth. ``region_label`` frames the report body-region and
+        ``markers_enabled`` gates serum tumour-marker correlation (only oncologic
+        soft-tissue regions have site-specific markers).
         """
         if not self.available:
             return None
-        prompt = self._build_prompt(flagged, study_description, detail)
+        prompt = self._build_prompt(
+            flagged, study_description, detail, clinical_history, demographics, region_label
+        )
         try:
             raw = await self._client.generate_text(prompt)
         except Exception as exc:  # never propagate — report writing is best-effort
@@ -62,9 +72,10 @@ class AbdomenReportService:
             # measurement-strip in _parse because it is added afterwards.
             if measurement:
                 parsed["findings"] = self._inject_measurement(parsed.get("findings", ""), measurement)
-            parsed["conclusions"] = self._ensure_tumour_marker_advice(
-                parsed.get("findings", ""), parsed.get("conclusions", "")
-            )
+            if markers_enabled:
+                parsed["conclusions"] = self._ensure_tumour_marker_advice(
+                    parsed.get("findings", ""), parsed.get("conclusions", "")
+                )
         return parsed
 
     @classmethod
@@ -148,14 +159,31 @@ class AbdomenReportService:
         flagged: list[dict[str, Any]],
         study_description: str | None,
         detail: str | None = None,
+        clinical_history: str | None = None,
+        demographics: str | None = None,
+        region_label: str = "this radiology study",
     ) -> str:
         context = f' The study is described as "{study_description}".' if study_description else ""
+        if demographics and demographics.strip():
+            context += (
+                f' PATIENT: {demographics.strip()}. Use age and sex to inform interpretation '
+                '(sex-appropriate organs and age-appropriate differentials) — but do NOT invent '
+                'findings or state organs not visible.'
+            )
+        if clinical_history and clinical_history.strip():
+            context += (
+                f' CLINICAL HISTORY: {clinical_history.strip()}. Interpret the findings in this '
+                'clinical context (e.g. a known malignancy post-treatment → frame as assessment '
+                'for recurrence/residual disease and treatment response) and reflect it in the '
+                'CONCLUSIONS. This history is CONTEXT — do NOT turn it into a stated imaging '
+                'finding or invent anything not observed.'
+            )
 
         # Polish mode: when a detailed read is available it IS the observations — write it
         # up faithfully (findings incl. the systematic organ review) + a hedged impression.
         if detail and detail.strip():
             return f"""You are an experienced consultant radiologist finalizing the FINDINGS and \
-CONCLUSIONS of an ABDOMEN/PELVIS CT report.{context}
+CONCLUSIONS of {region_label} report.{context}
 
 Below is your detailed read of the study — these are the observations to write up:
 \"\"\"
@@ -173,9 +201,11 @@ dictating the study.
 - Do NOT add any finding, measurement, size, density, or organ comment that is NOT in the \
 observations above, and do NOT drop any stated finding.
 - CONCLUSIONS: a concise impression of the significant findings plus a brief, clearly-HEDGED \
-interpretation and recommendation that follows from them (e.g. "...concerning for recurrent/ \
-residual disease; recommend gynaecological correlation and tumour markers"). Keep it hedged; do \
-not assert a definitive diagnosis.
+interpretation and recommendation that follows from them (e.g. "...concerning for a neoplastic or \
+inflammatory process; recommend clinical correlation and appropriate further imaging or follow-up"). \
+Any recommended next step MUST pertain to {region_label} and the observed findings — do NOT recommend \
+imaging of an unrelated body part, or correlation with an organ/marker not relevant to this study. \
+Keep it hedged; do not assert a definitive diagnosis.
 
 Respond ONLY with a valid JSON object — no markdown fences, no extra text:
 {{
@@ -197,7 +227,7 @@ Respond ONLY with a valid JSON object — no markdown fences, no extra text:
                 "parentheses is internal bookkeeping only):\n"
                 f"{lines}\n\n"
                 "Rewrite these as the FINDINGS and CONCLUSIONS of a radiology report, dictated the "
-                "way an experienced abdominal radiologist would:\n"
+                "way an experienced radiologist would:\n"
                 "- Write fluent, natural clinical prose in full sentences — a flowing narrative, "
                 "NOT a list. Use standard radiological phrasing and describe each finding at its "
                 "anatomical location (e.g. \"There is a soft-tissue mass in the right adnexa. "
@@ -214,8 +244,12 @@ Respond ONLY with a valid JSON object — no markdown fences, no extra text:
                 "mentioned above and do not state that other structures are normal.\n"
                 "- In CONCLUSIONS, write like a radiologist: briefly synthesize the findings and "
                 "add a short, clearly-HEDGED clinical impression and recommendation that FOLLOWS "
-                "from them (e.g. \"...concerning for an ovarian neoplasm; recommend gynaecological "
-                "correlation and tumour markers\"). This interpretive impression is expected and is "
+                "from them (e.g. \"...concerning for a neoplastic or inflammatory process; recommend "
+                "clinical correlation and appropriate further imaging or follow-up\"). "
+                f"Any recommended next step MUST pertain to {region_label} and the observed findings "
+                "— do NOT recommend imaging of an unrelated body part, or correlation with an "
+                "organ/marker not relevant to this study. "
+                "This interpretive impression is expected and is "
                 "NOT a new finding — but keep it hedged (\"suspicious for\", \"may represent\") and "
                 "do not assert a definitive diagnosis."
             )
@@ -223,12 +257,12 @@ Respond ONLY with a valid JSON object — no markdown fences, no extra text:
             body = (
                 "The screening pass identified no focal abnormality. Write a brief FINDINGS "
                 "paragraph in natural radiological prose stating that no significant focal "
-                "abnormality is identified in the abdomen and pelvis, and a matching CONCLUSIONS "
+                "abnormality is identified on the reviewed levels, and a matching CONCLUSIONS "
                 "line. Do NOT mention slices, images, or an AI, and do not invent any finding."
             )
 
         return f"""You are an experienced consultant radiologist dictating the FINDINGS and \
-CONCLUSIONS of an ABDOMEN/PELVIS CT report.{context}
+CONCLUSIONS of {region_label} report.{context}
 
 {body}{detail_block}
 

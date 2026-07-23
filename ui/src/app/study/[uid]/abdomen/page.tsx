@@ -10,7 +10,7 @@ export default function AbdomenCtReportPage() {
   const params = useParams();
   const search = useSearchParams();
   const uid = params.uid as string;
-  const usecase = search.get("usecase") || "abdomen_ct2";
+  const usecase = search.get("usecase") || "abdomen_ct";
 
   const { data: study, isLoading: studyLoading } = useStudy(uid);
   const { data: result, isLoading: resultLoading, error } = useResult(uid, usecase);

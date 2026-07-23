@@ -1,18 +1,20 @@
 name: chest_mri
 version: "1.0.0"
 description: >
-  Chest MRI segmentation and volumetric analysis using TotalSegmentator
-  (total_mr): right lung, left lung, heart, and aorta, with per-lung and total
-  lung volumes plus heart volume. N4ITK bias-field correction is applied before
-  segmentation to improve lung-boundary accuracy. Optional supplementary cardiac
-  model and dedicated lesion-detection model; lung-volume asymmetry screening
-  otherwise. Supports HASTE, T1 GRE, STIR, and TrueFISP sequences.
+  Chest MRI screening by a local MedGemma vision-language model, MULTIPARAMETRIC and in
+  TWO passes, with NO segmentation and NO measurement. Every MR sequence (T1, post-contrast
+  T1, T2, FLAIR, DWI, SWI ...) is classified, co-registered onto one reference grid, and
+  rendered as a labeled PANEL MONTAGE per axial level so signal can be compared across
+  sequences. Pass 1: MedGemma scans every level montage to flag potentially abnormal levels
+  by their cross-sequence signal pattern. Pass 2: only the flagged levels are sent back for a
+  free-text multiparametric report. Requires medgemma_enabled (local Ollama). NON-DIAGNOSTIC
+  assistive output — full radiologist review remains required.
 supported_body_parts:
   - CHEST
   - THORAX
   - LUNG
 required_sequences:
-  - T2_HASTE
-  - T1_GRE
-model_type: TotalSegmentator (total_mr) + N4ITK
+  - T2
+  - T1
+model_type: MedGemma (local VLM) multiparametric two-pass full-volume anomaly scan + report
 enabled: true

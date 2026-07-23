@@ -10,7 +10,9 @@ from app.config import get_settings
 logger = structlog.get_logger(__name__)
 
 # Paths that never require authentication
-PUBLIC_PATHS = frozenset({"/health", "/docs", "/openapi.json", "/redoc", "/metrics"})
+PUBLIC_PATHS = frozenset(
+    {"/health", "/docs", "/openapi.json", "/redoc", "/metrics", "/api/cortex"}
+)
 # Internal paths called by Orthanc (within Docker network)
 INTERNAL_PATHS = frozenset({"/api/orthanc/notify-stable-study"})
 # Auth paths that must be public

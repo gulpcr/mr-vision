@@ -1,0 +1,11 @@
+name: ct_lower_limb
+version: "1.0.0"
+description: >
+  Lower limb CT screening by a local MedGemma vision-language model in TWO passes (whole-volume scan to flag abnormal levels, then a free-text report on the flagged levels) across bone and soft-tissue windows. Requires medgemma_enabled. NON-DIAGNOSTIC assistive output.
+supported_body_parts:
+  - LOWER_LIMB
+  - KNEE
+required_sequences:
+  - CT
+model_type: MedGemma (local VLM) two-pass full-volume anomaly scan + free-text report
+enabled: true

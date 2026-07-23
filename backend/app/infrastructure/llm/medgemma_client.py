@@ -38,13 +38,13 @@ class MedGemmaClient:
 
     def __init__(
         self,
-        base_url: str = "http://localhost:11434",
+        base_url: str = "http://103.93.216.37:11434",
         model_name: str = "medgemma1.5:latest",
         timeout_s: int = 300,
         force_json: bool = False,
         num_ctx: int = 8192,
     ) -> None:
-        self._base_url = (base_url or "http://localhost:11434").rstrip("/")
+        self._base_url = (base_url or "http://103.93.216.37:11434").rstrip("/")
         self._model = model_name or "medgemma1.5:latest"
         self._timeout_s = int(timeout_s) if timeout_s else 300
         self._force_json = force_json

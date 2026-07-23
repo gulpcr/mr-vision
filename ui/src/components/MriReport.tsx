@@ -10,7 +10,7 @@ import { Printer, FileDown } from "lucide-react";
 // PDF is generated server-side from the same result.
 
 // Defaults mirror the backend Settings (config.py).
-const SIGNATORY_NAME = "Dr. Ammar-e-Yasir";
+const SIGNATORY_NAME = "Dr";
 const SIGNATORY_TITLE = "Consultant Radiologist";
 const SIGNATORY_QUALS = "MBBS, FCPS, M.Med";
 const TECHNIQUE_DEFAULT =

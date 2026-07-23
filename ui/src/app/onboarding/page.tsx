@@ -9,6 +9,7 @@ const AGE_BANDS = ["0-17", "18-39", "40-64", "65+"];
 // Study / modality types selectable at intake. The first group mirrors the active
 // use-case plugins; the rest are general acquisition types.
 const MODALITIES = [
+  "Abdomen CT", "Brain CT", "Face CT", "Neck CT", "Chest CT", "Lumbar Spine CT", "Lower Limb CT",
   "Abdomen MRI", "Brain MRI", "Chest MRI", "Coronary CTA",
   "PET-CT", "PET-CT Brain", "Spine MRI",
   "Bilateral Mammogram", "Right Mammogram", "Left Mammogram",
@@ -255,7 +256,8 @@ export default function OnboardingPage() {
             <input className={inputCls} value={form.study_instance_uid} onChange={(e) => set("study_instance_uid", e.target.value)} placeholder="Leave blank to auto-link by MRN" />
           </div>
 
-          {/* Clinical detail that populates the PET-CT report */}
+          {/* Clinical detail that populates the PET-CT report — shown only for PET-CT. */}
+          {["PET-CT", "PET-CT Brain"].includes(form.modality) && (
           <div className="pt-2 border-t border-gray-100">
             <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-3">Report detail (PET-CT)</p>
             <div className="space-y-4">
@@ -280,6 +282,7 @@ export default function OnboardingPage() {
               </div>
             </div>
           </div>
+          )}
 
           <label className="flex items-center gap-2 text-sm text-gray-700">
             <input type="checkbox" checked={form.consent_ack} onChange={(e) => set("consent_ack", e.target.checked)} className="w-4 h-4" />

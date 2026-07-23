@@ -90,27 +90,27 @@ docker compose -f docker-compose.yml -f docker-compose.cpu.yml up -d --build
 
 | Service    | URL                          |
 |------------|------------------------------|
-| Platform   | http://localhost              |
-| API Docs   | http://localhost:8000/docs    |
-| Orthanc    | http://localhost:8042         |
-| MinIO      | http://localhost:9001         |
-| PostgreSQL | localhost:5432               |
+| Platform   | http://103.93.216.37              |
+| API Docs   | http://103.93.216.37:8000/docs    |
+| Orthanc    | http://103.93.216.37:8042         |
+| MinIO      | http://103.93.216.37:9001         |
+| PostgreSQL | 103.93.216.37:5432               |
 
 ### 4. Upload a DICOM Study to Orthanc
 
 **Option A: Orthanc Web UI**
-1. Open http://localhost:8042 (login: orthanc/orthanc)
+1. Open http://103.93.216.37:8042 (login: orthanc/orthanc)
 2. Click "Upload" and select DICOM files
 
 **Option B: DICOM C-STORE**
 ```bash
 # Using dcm4che storescu
-storescu localhost 4242 -aec MRI_AI /path/to/dicom/files/
+storescu 103.93.216.37 4242 -aec MRI_AI /path/to/dicom/files/
 ```
 
 **Option C: DICOMweb STOW-RS**
 ```bash
-curl -X POST http://localhost:8042/dicom-web/studies \
+curl -X POST http://103.93.216.37:8042/dicom-web/studies \
   -u orthanc:orthanc \
   -H "Content-Type: application/dicom" \
   --data-binary @study.dcm
@@ -120,25 +120,25 @@ curl -X POST http://localhost:8042/dicom-web/studies \
 
 ```bash
 # Ingest a study (fetches metadata from Orthanc into platform DB)
-curl -X POST http://localhost:8000/api/studies \
+curl -X POST http://103.93.216.37:8000/api/studies \
   -H "Content-Type: application/json" \
   -d '{"study_instance_uid": "1.2.3.4.5.6.7.8.9"}'
 
 # Trigger AI analysis (routing engine auto-selects use cases)
-curl -X POST http://localhost:8000/api/studies/1.2.3.4.5.6.7.8.9/jobs \
+curl -X POST http://103.93.216.37:8000/api/studies/1.2.3.4.5.6.7.8.9/jobs \
   -H "Content-Type: application/json" \
   -d '{}'
 
 # Or specify use case explicitly
-curl -X POST http://localhost:8000/api/studies/1.2.3.4.5.6.7.8.9/jobs \
+curl -X POST http://103.93.216.37:8000/api/studies/1.2.3.4.5.6.7.8.9/jobs \
   -H "Content-Type: application/json" \
   -d '{"usecase_names": ["brain_mri"]}'
 
 # Check job status
-curl http://localhost:8000/api/jobs/{job_id}
+curl http://103.93.216.37:8000/api/jobs/{job_id}
 
 # Get results
-curl http://localhost:8000/api/results/1.2.3.4.5.6.7.8.9/brain_mri
+curl http://103.93.216.37:8000/api/results/1.2.3.4.5.6.7.8.9/brain_mri
 ```
 
 ## API Reference
@@ -157,7 +157,7 @@ curl http://localhost:8000/api/results/1.2.3.4.5.6.7.8.9/brain_mri
 | GET | `/api/admin/routing-rules` | Get all routing rules |
 | PUT | `/api/admin/routing-rules` | Update site routing overrides |
 
-Full OpenAPI documentation: http://localhost:8000/docs
+Full OpenAPI documentation: http://103.93.216.37:8000/docs
 
 ## Adding a New Use Case
 
@@ -282,7 +282,7 @@ docker compose up -d --scale worker=3
 ```
 
 ### MinIO Console
-Access at http://localhost:9001 to browse stored artifacts.
+Access at http://103.93.216.37:9001 to browse stored artifacts.
 
 ### Backup
 - PostgreSQL: `docker compose exec postgres pg_dump -U mri_admin mri_platform > backup.sql`

@@ -97,7 +97,7 @@ class TestSiteConfig:
         mock_settings.return_value.site_config_path = mock_path
         mock_settings.return_value.site_id = "test_site"
         mock_settings.return_value.api_key = ""
-        mock_settings.return_value.allowed_origins = "http://localhost"
+        mock_settings.return_value.allowed_origins = "http://103.93.216.37"
 
         resp = client.get("/api/admin/site-config")
         assert resp.status_code == 200
@@ -113,7 +113,7 @@ class TestSiteConfig:
         mock_settings.return_value.site_config_path = mock_path
         mock_settings.return_value.site_id = "test_site"
         mock_settings.return_value.api_key = ""
-        mock_settings.return_value.allowed_origins = "http://localhost"
+        mock_settings.return_value.allowed_origins = "http://103.93.216.37"
 
         from unittest.mock import mock_open
 

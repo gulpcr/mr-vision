@@ -71,12 +71,29 @@ class StudyService:
         size_m = _to_float(ext(study_meta, "PatientSize"))
         height_cm = round(size_m * 100.0, 1) if size_m else None
 
+        # Patient age: prefer the DICOM PatientAge tag (0010,1010); if absent (common — many
+        # scanners omit it), compute it from PatientBirthDate (0010,0030) + StudyDate so age
+        # still flows to the reports. Stored in DICOM AS format ("022Y") for downstream parsing.
+        patient_age = ext(study_meta, "PatientAge")
+        if not patient_age:
+            birth_raw = ext(study_meta, "PatientBirthDate")
+            if birth_raw and study_date:
+                try:
+                    bdt = datetime.strptime(str(birth_raw), "%Y%m%d")
+                    years = study_date.year - bdt.year - (
+                        (study_date.month, study_date.day) < (bdt.month, bdt.day)
+                    )
+                    if 0 <= years < 130:
+                        patient_age = f"{years:03d}Y"
+                except (ValueError, TypeError):
+                    pass
+
         study = Study(
             study_instance_uid=study_instance_uid,
             patient_id=ext(study_meta, "PatientID"),
             patient_name=ext(study_meta, "PatientName"),
             patient_sex=ext(study_meta, "PatientSex"),
-            patient_age=ext(study_meta, "PatientAge"),
+            patient_age=patient_age,
             patient_weight_kg=weight_kg,
             patient_height_cm=height_cm,
             study_date=study_date,

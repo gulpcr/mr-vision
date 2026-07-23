@@ -171,7 +171,7 @@ export default function UploadPage() {
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
           {[
             { label: "AE Title",          value: "ORTHANC" },
-            { label: "Host / IP",         value: "localhost" },
+            { label: "Host / IP",         value: "103.93.216.37" },
             { label: "DICOM Port",        value: "4242" },
             { label: "HTTP (Orthanc UI)", value: "8042" },
           ].map(({ label, value }) => (
@@ -349,7 +349,7 @@ export default function UploadPage() {
           <div className="px-5 pb-5 border-t border-gray-100 pt-4">
             <p className="text-xs text-gray-500 mb-3">
               The <strong>Study Instance UID</strong> is a DICOM tag (0020,000D) that uniquely identifies the study. You can find it in the Orthanc web UI at{" "}
-              <code className="text-xs bg-gray-100 px-1 rounded">http://localhost:8042</code> or in the scanner's DICOM worklist.
+              <code className="text-xs bg-gray-100 px-1 rounded">http://103.93.216.37:8042</code> or in the scanner's DICOM worklist.
             </p>
             <form onSubmit={handleManualIngest} className="flex gap-3">
               <input

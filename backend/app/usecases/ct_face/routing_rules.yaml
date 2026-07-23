@@ -1,0 +1,21 @@
+# ct_face is MANUAL-ONLY: the rule below is disabled so auto-classification never
+# selects it. The two-pass full-volume MedGemma scan is expensive (many model calls per
+# study), so it is opt-in — run it explicitly by passing usecase_names=["ct_face"] to
+# POST /api/studies/{uid}/jobs. Flip `enabled: true` to allow auto-routing (the rule is
+# already scoped to CT + this region).
+rules:
+  - modality: CT
+    body_parts:
+      - FACE
+      - HEAD
+    study_description_patterns:
+      - "(?i)face"
+      - "(?i)facial"
+      - "(?i)maxillofacial"
+      - "(?i)\\bsinus"
+      - "(?i)orbit"
+      - "(?i)mandible"
+      - "(?i)\\bpns\\b"
+      - "(?i)nasal"
+    priority: 5
+    enabled: false

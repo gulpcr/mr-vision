@@ -1,20 +1,26 @@
+# brain_mri is MANUAL-ONLY (like abdomen_ct and the report family): the rule below is
+# disabled so auto-classification never selects it. The multiparametric two-pass MedGemma
+# scan is expensive (many model calls per study), so it is opt-in — run it explicitly by
+# passing usecase_names=["brain_mri"] to POST /api/studies/{uid}/jobs.
+#
+# To enable auto-routing, flip `enabled: true` — the rule is already scoped to MR + this
+# region so it will only match relevant studies.
 rules:
-  - body_parts:
+  - modality: MR
+    body_parts:
       - BRAIN
       - HEAD
     study_description_patterns:
-      - "(?i)brain"
-      - "(?i)head"
-      - "(?i)neuro"
-      - "(?i)cranial"
-      - "(?i)encephal"
+      - '(?i)brain'
+      - '(?i)head'
+      - '(?i)neuro'
+      - '(?i)cranial'
+      - '(?i)encephal'
     series_description_patterns:
-      - "(?i)t1"
-      - "(?i)t2"
-      - "(?i)flair"
-      - "(?i)mprage"
-      - "(?i)bravo"
-      - "(?i)sagittal.*ir"
-    modality: MR
-    priority: 10
-    enabled: true
+      - '(?i)flair'
+      - '(?i)t2'
+      - '(?i)t1'
+      - '(?i)dwi'
+      - '(?i)swi'
+    priority: 5
+    enabled: false

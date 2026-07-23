@@ -1,20 +1,19 @@
 name: abdomen_ct
 version: "1.0.0"
 description: >
-  Abdomen CT screening read by a local MedGemma vision-language model. It performs
-  NO segmentation and NO measurement: it picks the primary CT series and selects a
-  set of axial levels — when abdomen_ct_anomaly_enabled, a MONAI VQVAE+Transformer
-  (trained normal-only) scores every slice and the MOST ANOMALOUS levels are chosen;
-  otherwise levels are sampled EVENLY across the volume. Either way the RAW slices
-  are rendered in fixed HU windows (soft-tissue / liver / bone) and handed to
-  MedGemma, which identifies the anatomy and authors a free-text radiological report.
-  The VQVAE is a slice SELECTOR only — its reconstruction is never shown to MedGemma.
-  Requires medgemma_enabled (local Ollama). NON-DIAGNOSTIC assistive output — only
-  the selected slices are reviewed; full-volume radiologist review remains required.
+  Abdomen CT screening by a local MedGemma vision-language model in TWO passes, with
+  NO pre-selection of slices, NO segmentation and NO measurement. Pass 1: the whole
+  diagnostic CT volume is rendered slice-by-slice and fed to MedGemma in batches until
+  every slice has been reviewed; MedGemma flags the levels that look potentially
+  abnormal. Pass 2: only the flagged levels are sent back to MedGemma, which identifies
+  the anatomy and authors a free-text radiological report on them. Requires
+  medgemma_enabled (local Ollama). Differs from abdomen_ct, which pre-samples a few
+  levels instead of scanning the whole volume. NON-DIAGNOSTIC assistive output —
+  full-volume radiologist review remains required.
 supported_body_parts:
   - ABDOMEN
   - PELVIS
 required_sequences:
   - CT
-model_type: MedGemma (local VLM free-text report) + optional VQVAE/Transformer anomaly slice selection
+model_type: MedGemma (local VLM) two-pass full-volume anomaly scan + free-text report
 enabled: true

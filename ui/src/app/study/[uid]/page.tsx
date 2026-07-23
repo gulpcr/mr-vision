@@ -8,6 +8,7 @@ import { ReportView } from "@/components/ReportView";
 import { FusedViewer } from "@/components/FusedViewer";
 import { ComparePanel } from "@/components/ComparePanel";
 import { formatDate, formatPatientName } from "@/lib/format";
+import { isCtReportUsecase } from "@/lib/ctReport";
 import Link from "next/link";
 import {
   ArrowLeft, ExternalLink, ArrowLeftRight, FileDown, Share2, AlertTriangle,
@@ -636,20 +637,12 @@ export default function StudyPage() {
                       <FileText className="w-4 h-4" /> Mammography Report
                     </Link>
                   )}
-                  {["brain_mri", "spine_mri", "chest_mri", "abdomen_mri"].includes(selectedResult.usecase_name) && (
-                    <Link
-                      href={`/study/${uid}/mri?usecase=${selectedResult.usecase_name}`}
-                      className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-teal-700 border border-teal-200 rounded-lg hover:bg-teal-50 transition-colors"
-                    >
-                      <FileText className="w-4 h-4" /> MRI Report
-                    </Link>
-                  )}
-                  {["abdomen_ct", "abdomen_ct2", "abdomen_ct3", "abdomen_ct4"].includes(selectedResult.usecase_name) && (
+                  {isCtReportUsecase(selectedResult.usecase_name) && (
                     <Link
                       href={`/study/${uid}/abdomen?usecase=${selectedResult.usecase_name}`}
                       className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-cyan-700 border border-cyan-200 rounded-lg hover:bg-cyan-50 transition-colors"
                     >
-                      <FileText className="w-4 h-4" /> Abdomen CT Report
+                      <FileText className="w-4 h-4" /> AI Report
                     </Link>
                   )}
                   <button

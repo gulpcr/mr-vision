@@ -81,7 +81,7 @@ class Settings(BaseSettings):
     api_key: str = ""
 
     # CORS
-    allowed_origins: str = "http://localhost,http://localhost:3000,http://localhost:80"
+    allowed_origins: str = "http://103.93.216.37,http://103.93.216.37:3000,http://103.93.216.37:80"
 
     # Auth / RBAC (F1)
     jwt_secret_key: str = "changeme"
@@ -161,37 +161,11 @@ class Settings(BaseSettings):
     medgemma_enabled: bool = False
     # Host-run default; the containerised worker overrides this to
     # http://host.docker.internal:11434 (see docker-compose.yml) because inside a
-    # container "localhost" is the container itself, not the host running Ollama.
-    ollama_base_url: str = "http://localhost:11434"
+    # container "103.93.216.37" is the container itself, not the host running Ollama.
+    ollama_base_url: str = "http://103.93.216.37:11434"
     medgemma_model: str = "medgemma1.5:latest"   # Ollama model tag; must be `ollama pull`ed
     medgemma_max_images: int = 6          # token budget: cap images sent per study
     medgemma_timeout_s: int = 300         # local inference can be slow on CPU
-
-    # abdomen_ct anomaly-guided slice selection (MONAI VQVAE + autoregressive
-    # Transformer, trained normal-only). When enabled AND the weights exist, the
-    # abdomen_ct pipeline scores each axial slice by the transformer's negative
-    # log-likelihood over the VQVAE codes and sends only the MOST anomalous slices
-    # (raw, re-rendered in the MedGemma HU windows) to MedGemma — the VQVAE is a
-    # slice SELECTOR only; its reconstruction is never shown to the model. Falls
-    # back to even-across-volume sampling when disabled, weights missing, or on any
-    # error (fully non-blocking). Architecture/normalization live in the plugin's
-    # model/inference_config.yaml (anomaly:) — the flag is the on/off switch.
-    abdomen_ct_anomaly_enabled: bool = False
-
-    # abdomen_ct4 two-stage multi-agent screening is HYBRID (gated by medgemma_enabled
-    # above — no dedicated flag). Stage 1 (multi-image triage) runs the 4B multimodal
-    # MedGemma in local Hugging Face transformers — Ollama's /api/generate cannot template
-    # multi-image prompts for the Gemma-3 vision stack (2+ images derail it), so real
-    # N-slice blocks require the HF path. The model is loaded ONCE per worker and kept
-    # resident (see HFMedGemmaVisionClient). Stage 2 (text report) stays on the Ollama
-    # 27B tag (scan.report_model in the plugin's inference_config.yaml, falling back to
-    # medgemma_model). Both stages are non-blocking (degrade to "" on any failure), so the
-    # deterministic postprocess() summary and previews stay intact.
-    #   abdomen_ct4_hf_triage_model: HF repo id or local weights dir for the 4B vision model.
-    #   abdomen_ct4_hf_triage_device: device_map for that model (e.g. "cuda:0"); "auto" and
-    #     "cpu" also work. Keep it off the GPU(s) the segmentation models need if VRAM is tight.
-    abdomen_ct4_hf_triage_model: str = "google/medgemma-1.5-4b-it"
-    abdomen_ct4_hf_triage_device: str = "cuda:0"
 
     # Coronary CTA AI-authored report narrative (Gemini reads calcium-overlay images +
     # the deterministic Agatston/stenosis findings and writes a synthesized narrative;
@@ -267,7 +241,7 @@ class Settings(BaseSettings):
         "Multiplanar, multi-sequential MRI images of brain acquired with and "
         "without contrast."
     )
-    mri_report_signatory_name: str = "Dr. Ammar-e-Yasir"
+    mri_report_signatory_name: str = "Dr"
     mri_report_signatory_title: str = "Consultant Radiologist"
     mri_report_signatory_qualifications: str = "MBBS, FCPS, M.Med"
 

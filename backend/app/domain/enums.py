@@ -54,6 +54,9 @@ class BodyPart(str, enum.Enum):
     CHEST = "CHEST"
     THORAX = "THORAX"
     BREAST = "BREAST"
+    NECK = "NECK"
+    LOWER_LIMB = "LOWER_LIMB"
+    FACE = "FACE"
 
 
 class AuditAction(str, enum.Enum):

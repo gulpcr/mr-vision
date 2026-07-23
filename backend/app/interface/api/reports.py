@@ -57,8 +57,10 @@ async def get_consolidated_report(
     used_model: str | None = None
     if settings.medgemma_enabled:
         from app.application.abdomen_report_service import AbdomenReportService
+        from app.application.ct_report_regions import region_meta
         from app.infrastructure.llm.medgemma_client import MedGemmaClient
 
+        _region = region_meta(usecase)
         model = summary.get("medgemma_model") or settings.medgemma_model
         client = MedGemmaClient(
             base_url=settings.ollama_base_url,
@@ -66,11 +68,24 @@ async def get_consolidated_report(
             timeout_s=settings.medgemma_timeout_s,
             force_json=True,
         )
+        _clin = None
+        try:
+            from app.application.onboarding_service import OnboardingService
+
+            _clin = (await OnboardingService(service._result_repo._session)
+                     .get_clinical_for_study(study_uid)) or {}
+        except Exception:
+            _clin = {}
+        _demo = ", ".join(str(v) for v in [(_clin or {}).get("sex"), (_clin or {}).get("age_band")] if v) or None
         consolidated = await AbdomenReportService(client).consolidate(
             flagged=flagged,
             study_description=summary.get("study_description"),
             detail=(summary.get("ai_report") or {}).get("findings"),
             measurement=summary.get("mass_measurement"),
+            clinical_history=(_clin or {}).get("clinical_history"),
+            demographics=_demo,
+            region_label=_region["region_label"],
+            markers_enabled=bool(_region["markers_enabled"]),
         )
         if consolidated:
             used_model = model
@@ -361,8 +376,10 @@ async def generate_pdf_report(
     # Abdomen CT: write FINDINGS/CONCLUSIONS with the separate report-writer model (same
     # as the /consolidated-report endpoint) so the PDF matches the report view. The
     # pipeline flow is untouched — this only reorganizes the stored per-level flags.
-    if usecase in ("abdomen_ct", "abdomen_ct2", "abdomen_ct3", "abdomen_ct4") and settings.medgemma_enabled:
+    from app.application.ct_report_regions import is_ct_report_usecase, region_meta
+    if is_ct_report_usecase(usecase) and settings.medgemma_enabled:
         try:
+            _region = region_meta(usecase)
             # Prefer the cached report (written when the web report was first opened) so the
             # PDF is identical to the on-screen report; only generate if not cached yet.
             _cached = summary_for_pdf.get("consolidated_report") or {}
@@ -378,11 +395,16 @@ async def generate_pdf_report(
                     base_url=settings.ollama_base_url, model_name=_model,
                     timeout_s=settings.medgemma_timeout_s, force_json=True,
                 )
+                _demo = ", ".join(str(v) for v in [(clinical or {}).get("sex"), (clinical or {}).get("age_band")] if v) or None
                 _consolidated = await AbdomenReportService(_client).consolidate(
                     flagged=summary_for_pdf.get("anomaly_findings") or [],
                     study_description=summary_for_pdf.get("study_description"),
                     detail=(summary_for_pdf.get("ai_report") or {}).get("findings"),
                     measurement=summary_for_pdf.get("mass_measurement"),
+                    clinical_history=(clinical or {}).get("clinical_history"),
+                    demographics=_demo,
+                    region_label=_region["region_label"],
+                    markers_enabled=bool(_region["markers_enabled"]),
                 )
             if _consolidated:
                 summary_for_pdf = {**summary_for_pdf, "ai_report": {
@@ -428,9 +450,11 @@ async def generate_pdf_report(
                 patient_info["patient_height"] = f"{clinical['height_cm']:g}"
             if clinical.get("weight_kg") and not patient_info.get("patient_weight"):
                 patient_info["patient_weight"] = f"{clinical['weight_kg']:g}"
-            # Fall back to coarse age band when DICOM age is absent.
+            # Fall back to intake demographics when DICOM lacks them.
             if clinical.get("age_band") and not patient_info.get("patient_age"):
                 patient_info["patient_age"] = clinical["age_band"]
+            if clinical.get("sex") and not patient_info.get("patient_sex"):
+                patient_info["patient_sex"] = clinical["sex"]
             for _k in ("priority", "region_profile", "body_part"):
                 if clinical.get(_k):
                     patient_info[_k] = clinical[_k]

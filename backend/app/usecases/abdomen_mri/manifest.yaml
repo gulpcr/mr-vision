@@ -1,17 +1,22 @@
 name: abdomen_mri
 version: "1.0.0"
 description: >
-  Abdominal MRI organ segmentation and volumetry using TotalSegmentator
-  (total_mr): liver, spleen, right kidney, left kidney, and pancreas, with
-  per-organ volumes, total parenchymal volume, and hepatomegaly / splenomegaly
-  flags. Supports T2 HASTE, T1 in-phase/out-of-phase, DWI, and DCE sequences.
+  Abdomen MRI screening by a local MedGemma vision-language model, MULTIPARAMETRIC and in
+  TWO passes, with NO segmentation and NO measurement. Every MR sequence (T1, post-contrast
+  T1, T2, FLAIR, DWI, SWI ...) is classified, co-registered onto one reference grid, and
+  rendered as a labeled PANEL MONTAGE per axial level so signal can be compared across
+  sequences. Pass 1: MedGemma scans every level montage to flag potentially abnormal levels
+  by their cross-sequence signal pattern. Pass 2: only the flagged levels are sent back for a
+  free-text multiparametric report. Requires medgemma_enabled (local Ollama). NON-DIAGNOSTIC
+  assistive output — full radiologist review remains required.
 supported_body_parts:
   - ABDOMEN
+  - PELVIS
   - LIVER
   - PANCREAS
   - KIDNEY
 required_sequences:
-  - T2_HASTE
-  - T1_IP
-model_type: TotalSegmentator (total_mr)
+  - T2
+  - T1
+model_type: MedGemma (local VLM) multiparametric two-pass full-volume anomaly scan + report
 enabled: true

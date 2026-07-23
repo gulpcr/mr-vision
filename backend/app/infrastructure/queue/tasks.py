@@ -22,6 +22,7 @@ from app.infrastructure.database.models import (
     ResultRecord,
     StudyRecord,
 )
+from app.application.ct_report_regions import CT_REPORT_USECASES as _CT_REPORT_USECASES
 from app.infrastructure.orthanc.client import OrthancPACSClient
 from app.infrastructure.queue.celery_app import celery_app
 from app.infrastructure.storage.client import MinIOArtifactStore
@@ -95,6 +96,60 @@ def _is_job_cancelled(session: Session, job_id: str) -> bool:
     """Check if a job has been cancelled (e.g. by the cancel endpoint)."""
     record = session.query(JobRunRecord).filter(JobRunRecord.id == job_id).first()
     return record is not None and record.status == JobStatus.CANCELLED.value
+
+
+def _fmt_dicom_age(raw: str | None) -> str | None:
+    """'055Y' → '55 years'; pass through age bands like '40-64'; None → None."""
+    if not raw:
+        return None
+    import re as _re
+
+    m = _re.match(r"^\s*0*(\d+)\s*([YMWD])\s*$", str(raw), _re.IGNORECASE)
+    if m:
+        unit = {"Y": "years", "M": "months", "W": "weeks", "D": "days"}[m.group(2).upper()]
+        return f"{int(m.group(1))} {unit}"
+    return str(raw).strip() or None
+
+
+def _report_context_for_study(session: Session, study_uid: str) -> dict[str, Any]:
+    """Report context from the study (DICOM) + linked patient intake (sync). Returns
+    ``{clinical_history, sex, age, demographics}`` — demographics is a ready 'sex, age'
+    string for the model. Sex/age prefer DICOM, fall back to intake."""
+    from sqlalchemy import select
+
+    from app.infrastructure.database.models import OrderRecord, PatientRecord, StudyRecord
+
+    ctx: dict[str, Any] = {"clinical_history": None, "sex": None, "age": None, "demographics": None}
+    try:
+        st = session.execute(
+            select(StudyRecord).where(StudyRecord.study_instance_uid == study_uid)
+        ).scalar_one_or_none()
+        order = session.execute(
+            select(OrderRecord).where(OrderRecord.study_instance_uid == study_uid)
+            .order_by(OrderRecord.created_at.desc())
+        ).scalars().first()
+        patient = None
+        if order is None and st and st.patient_id:
+            order = session.execute(
+                select(OrderRecord).join(PatientRecord, OrderRecord.patient_id == PatientRecord.id)
+                .where(PatientRecord.patient_ref == st.patient_id)
+                .order_by(OrderRecord.created_at.desc())
+            ).scalars().first()
+        if order is not None:
+            patient = session.execute(
+                select(PatientRecord).where(PatientRecord.id == order.patient_id)
+            ).scalar_one_or_none()
+            ctx["clinical_history"] = (order.clinical_history or order.indication or "").strip() or None
+
+        sex = (getattr(st, "patient_sex", None) or (patient.sex if patient else None) or "").strip() or None
+        if sex:
+            sex = {"m": "male", "f": "female", "o": "other"}.get(sex.lower(), sex)
+        age = _fmt_dicom_age(getattr(st, "patient_age", None)) or (patient.age_band if patient else None)
+        ctx["sex"], ctx["age"] = sex, age
+        ctx["demographics"] = ", ".join(p for p in [sex, age] if p) or None
+    except Exception:
+        pass
+    return ctx
 
 
 def _save_result(session: Session, result_data: dict[str, Any]):
@@ -841,70 +896,8 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
                 except Exception as exc:
                     logger.warning("coronary_cta_ai_report_failed", job_id=job_id, error=str(exc))
 
-            # ── Abdomen CT use case: local MedGemma free-text report ──────────
-            # The abdomen_ct pipeline renders soft-tissue-windowed slices sampled
-            # across the volume (abdomen_ct_slice_png, still on local disk here).
-            # Feed them to the local MedGemma VLM and store the free-text
-            # findings/impression in summary["ai_report"]. Gated by medgemma_enabled;
-            # non-blocking — any failure leaves the deterministic summary intact.
-            if usecase_name == "abdomen_ct" and settings.medgemma_enabled:
-                try:
-                    _update_job_status(
-                        session, job_id, JobStatus.POSTPROCESSING, progress=0.84,
-                        message="Generating AI radiology report",
-                    )
-                    from app.infrastructure.llm.medgemma_client import MedGemmaClient
-                    from app.usecases.abdomen_ct import prompts as abdomen_ct_prompts
-
-                    summ = postprocessed.get("summary", {}) or {}
-                    arts = postprocessed.get("artifacts", []) or []
-                    imgs: list[tuple[str, bytes]] = []
-                    for a in sorted(
-                        (a for a in arts if a.get("artifact_type") == "abdomen_ct_slice_png"),
-                        key=lambda a: a.get("name", ""),
-                    ):
-                        lp = a.get("local_path")
-                        if lp and os.path.exists(lp):
-                            with open(lp, "rb") as f:
-                                imgs.append((a.get("name", ""), f.read()))
-
-                    if imgs:
-                        # Send ALL rendered images — the pipeline's slice_count × windows
-                        # already governs the count (max_images=0 = no extra cap), unlike
-                        # pet_ct which caps at the generic medgemma_max_images.
-                        payload = abdomen_ct_prompts.build_payload(
-                            images=imgs,
-                            windows=summ.get("hu_windows") or ["soft-tissue"],
-                            study_description=summ.get("study_description"),
-                            max_images=0,
-                            selection=summ.get("slice_selection") or "even",
-                        )
-                        client = MedGemmaClient(
-                            base_url=settings.ollama_base_url,
-                            model_name=settings.medgemma_model,
-                            timeout_s=settings.medgemma_timeout_s,
-                            force_json=True,
-                        )
-                        if client.ready:
-                            raw = loop.run_until_complete(
-                                client.generate_from_images(payload["prompt"], payload["images"])
-                            )
-                            ai_report = abdomen_ct_prompts.parse_report(raw) if raw else None
-                            if ai_report:
-                                postprocessed.setdefault("summary", {})
-                                postprocessed["summary"]["ai_report"] = ai_report
-                                postprocessed["summary"]["ai_report_provider"] = (
-                                    f"medgemma:{settings.medgemma_model}"
-                                )
-                                logger.info(
-                                    "abdomen_ct_ai_report_stored",
-                                    job_id=job_id, images_sent=len(payload["images"]),
-                                )
-                except Exception as exc:
-                    logger.warning("abdomen_ct_ai_report_failed", job_id=job_id, error=str(exc))
-
             # ── Abdomen CT (v2): MedGemma two-pass full-volume scan → report ──
-            # The abdomen_ct2 pipeline renders EVERY foreground axial slice into the
+            # The abdomen_ct pipeline renders EVERY foreground axial slice into the
             # working dir and returns a `scan_slices` manifest (+ `scan_config`) as
             # extra keys (not persisted). Pass 1: MedGemma scans the whole volume in
             # batches to flag potentially-abnormal levels. Pass 2: it reports on the
@@ -912,14 +905,22 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
             # exactly what MedGemma reported on is uploaded/shown. Gated by
             # medgemma_enabled; non-blocking — any failure leaves the deterministic
             # summary and preview artifacts intact.
-            if usecase_name == "abdomen_ct2" and settings.medgemma_enabled:
+            if usecase_name in _CT_REPORT_USECASES and settings.medgemma_enabled:
                 try:
                     _update_job_status(
                         session, job_id, JobStatus.POSTPROCESSING, progress=0.84,
                         message="Scanning volume for abnormalities (MedGemma)",
                     )
+                    import importlib
                     from app.infrastructure.llm.medgemma_client import MedGemmaClient
-                    from app.usecases.abdomen_ct2 import report as abdomen_ct2_report
+                    from app.application.ct_report_regions import region_meta
+
+                    _region = region_meta(usecase_name)
+                    # Each CT-report plugin owns its own region-specific report/prompts
+                    # module (self-contained); the shared hook drives whichever is running.
+                    abdomen_ct_report = importlib.import_module(
+                        f"app.usecases.{usecase_name}.report"
+                    )
 
                     manifest = postprocessed.get("scan_slices") or []
                     scan_cfg = postprocessed.get("scan_config") or {}
@@ -969,8 +970,27 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
                                     {"name": name, "window": win, "bytes": _read_png(lp)}
                                 )
 
+                        # MRI plugins report the exact sequences present in each montage so
+                        # the prompts can forbid the model inventing signal on absent
+                        # sequences. CT summaries carry no `sequences_used`, so this stays
+                        # empty and the CT report modules (no `sequences` param) are unaffected.
+                        _seqs = summ.get("sequences_used") or None
+                        _seq_kw = {"sequences": _seqs} if _seqs else {}
+
+                        # Report context (demographics + clinical history), computed BEFORE the
+                        # scan so an age-sensitive MRI region (brain_mri) can weight patient age
+                        # when flagging. CT summaries have no `sequences_used`, so `_scan_kw` stays
+                        # empty and CT's scan_and_report (no sequences/demographics params) is
+                        # unaffected; non-age-sensitive MRI regions receive it but ignore it.
+                        _ctx = _report_context_for_study(session, study_instance_uid)
+                        _demo = _ctx.get("demographics")
+                        _clin_hist = _ctx.get("clinical_history")
+                        if _clin_hist:
+                            summ["clinical_history"] = _clin_hist
+                        _scan_kw = {**_seq_kw, "demographics": _demo} if _seqs else {}
+
                         result = loop.run_until_complete(
-                            abdomen_ct2_report.scan_and_report(
+                            abdomen_ct_report.scan_and_report(
                                 client=client,
                                 scan_images_by_window=scan_images_by_window,
                                 report_images_by_z=report_images_by_z,
@@ -978,6 +998,7 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
                                 windows=report_windows,
                                 batch_size=int(scan_cfg.get("batch_size", 2)),
                                 max_report_levels=int(scan_cfg.get("max_report_levels", 6)),
+                                **_scan_kw,
                             )
                         )
 
@@ -1012,10 +1033,12 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
                             _pick = sorted(set(anomaly_z) | _cov, reverse=True)[:16]
                             _rr = [{"z": z, "bytes": _read_png(_by_z[z])} for z in _pick if z in _by_z]
                             rich = loop.run_until_complete(
-                                abdomen_ct2_report.rich_read(
+                                abdomen_ct_report.rich_read(
                                     client=client, images=_rr,
                                     flagged=result.get("flagged") or [],
                                     study_description=summ.get("study_description"),
+                                    demographics=_demo,
+                                    **_seq_kw,
                                 )
                             )
                             if rich:
@@ -1023,17 +1046,41 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
                                 summ["ai_report_provider"] = f"medgemma:{ct2_model}"
                                 summ["medgemma_model"] = ct2_model
                         except Exception as exc:
-                            logger.warning("abdomen_ct2_rich_read_failed", job_id=job_id, error=str(exc))
+                            logger.warning("abdomen_ct_rich_read_failed", job_id=job_id, error=str(exc))
 
                         # Tumour measurement (SAM-Med3D): localize the mass, segment it,
                         # and store TS×AP×CC mm in summary["mass_measurement"] for the
                         # report writer to weave in. Opt-in via measure.enabled; fully
                         # non-blocking (needs SAM-Med3D weights + torchio in the worker).
                         measure_cfg = scan_cfg.get("measure") or {}
-                        if measure_cfg.get("enabled"):
+                        if measure_cfg.get("enabled") and measure_cfg.get("kind") == "spine_geometry":
+                            # Level-identification pass (spine): TotalSegmentator-MR labels the
+                            # lumbar vertebrae so the report carries a segmentation-verified level
+                            # enumeration (objective; the VLM keeps signal/severity description).
+                            # Non-blocking — any failure leaves the narrative untouched.
                             try:
-                                from app.usecases.abdomen_ct2 import measurement as _abd_measure
-                                from app.usecases.abdomen_ct2 import sammed3d as _abd_sam
+                                _spine_measure = importlib.import_module(
+                                    f"app.usecases.{usecase_name}.measurement"
+                                )
+                                _mvol = scan_cfg.get("measure_volume")
+                                if _mvol and os.path.exists(_mvol):
+                                    _lm = _spine_measure.measure_levels(_mvol, working_dir, measure_cfg)
+                                    if _lm:
+                                        summ["level_measurements"] = _lm
+                                        _mf = _lm.get("measured_findings")
+                                        if _mf and summ.get("ai_report"):
+                                            _imp = summ["ai_report"].get("impression") or ""
+                                            summ["ai_report"]["impression"] = f"{_mf} {_imp}".strip()
+                            except Exception as exc:
+                                logger.warning("lumbar_spine_measure_failed", job_id=job_id, error=str(exc))
+                        elif measure_cfg.get("enabled"):
+                            try:
+                                _abd_measure = importlib.import_module(
+                                    f"app.usecases.{usecase_name}.measurement"
+                                )
+                                _abd_sam = importlib.import_module(
+                                    f"app.usecases.{usecase_name}.sammed3d"
+                                )
 
                                 _vol = os.path.join(working_dir, "nifti", "volume.nii.gz")
                                 _loc = _abd_measure.mass_localization(
@@ -1046,7 +1093,34 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
                                     if _meas:
                                         summ["mass_measurement"] = _meas
                             except Exception as exc:
-                                logger.warning("abdomen_ct2_measure_failed", job_id=job_id, error=str(exc))
+                                logger.warning("abdomen_ct_measure_failed", job_id=job_id, error=str(exc))
+
+                        # Pre-generate the consolidated Findings/Conclusions report NOW so
+                        # opening the report is instant (the /consolidated-report endpoint
+                        # returns this cached value instead of writing on first open).
+                        try:
+                            from app.application.abdomen_report_service import AbdomenReportService
+
+                            _cons = loop.run_until_complete(
+                                AbdomenReportService(client).consolidate(
+                                    flagged=result.get("flagged") or [],
+                                    study_description=summ.get("study_description"),
+                                    detail=(summ.get("ai_report") or {}).get("findings"),
+                                    measurement=summ.get("mass_measurement"),
+                                    clinical_history=_clin_hist,
+                                    demographics=_demo,
+                                    region_label=_region["region_label"],
+                                    markers_enabled=bool(_region["markers_enabled"]),
+                                )
+                            )
+                            if _cons:
+                                summ["consolidated_report"] = {
+                                    "findings": _cons["findings"],
+                                    "conclusions": _cons["conclusions"],
+                                    "model": ct2_model,
+                                }
+                        except Exception as exc:
+                            logger.warning("abdomen_ct_consolidate_failed", job_id=job_id, error=str(exc))
 
                         # Surface the reported-on slices as artifacts (append + dedup by
                         # name) so the UI shows exactly what MedGemma reported on.
@@ -1061,227 +1135,21 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
                                 continue
                             arts.append({
                                 "name": name,
-                                "artifact_type": "abdomen_ct2_slice_png",
+                                "artifact_type": f"{usecase_name}_slice_png",
                                 "local_path": e.get("local_path"),
                                 "content_type": "image/png",
                             })
                             existing_names.add(name)
 
                         logger.info(
-                            "abdomen_ct2_ai_report_stored",
+                            "abdomen_ct_ai_report_stored",
                             job_id=job_id, scan_windows=scan_windows,
                             scanned=sum(len(v) for v in scan_images_by_window.values()),
                             flagged=len(anomaly_z), batches=result.get("batches"),
                             has_report=bool(result.get("ai_report")),
                         )
                 except Exception as exc:
-                    logger.warning("abdomen_ct2_ai_report_failed", job_id=job_id, error=str(exc))
-
-            # ── Abdomen CT (v3): MedGemma single-pass full-volume flag → synthesize ──
-            # Like abdomen_ct2 the pipeline renders the whole volume and returns a
-            # `scan_slices` manifest + `scan_config`. ct3 scans in LARGE batches (per
-            # scan window), flagging levels WITH a reason at flag time, then SYNTHESIZES
-            # the report from those flags in one text-only call (no image report pass).
-            # Uses a per-use-case model override (scan_config["model"], e.g. 27b) so
-            # ct3 can be more sensitive without changing the global MEDGEMMA_MODEL.
-            # Gated by medgemma_enabled; non-blocking.
-            if usecase_name == "abdomen_ct3" and settings.medgemma_enabled:
-                try:
-                    _update_job_status(
-                        session, job_id, JobStatus.POSTPROCESSING, progress=0.84,
-                        message="Scanning volume for abnormalities (MedGemma)",
-                    )
-                    from app.infrastructure.llm.medgemma_client import MedGemmaClient
-                    from app.usecases.abdomen_ct3 import report as abdomen_ct3_report
-
-                    manifest = postprocessed.get("scan_slices") or []
-                    scan_cfg = postprocessed.get("scan_config") or {}
-                    summ = postprocessed.setdefault("summary", {})
-
-                    client = MedGemmaClient(
-                        base_url=settings.ollama_base_url,
-                        model_name=(scan_cfg.get("model") or settings.medgemma_model),
-                        timeout_s=settings.medgemma_timeout_s,
-                        force_json=True,
-                    )
-                    if manifest and client.ready:
-                        scan_windows = scan_cfg.get("scan_windows") or []
-
-                        _bytes_cache: dict[str, bytes] = {}
-
-                        def _read_png(path: str) -> bytes:
-                            if path not in _bytes_cache:
-                                with open(path, "rb") as fh:
-                                    _bytes_cache[path] = fh.read()
-                            return _bytes_cache[path]
-
-                        scan_images_by_window: dict[str, list[dict[str, Any]]] = {
-                            w: [] for w in scan_windows
-                        }
-                        seen_z: dict[str, set[int]] = {w: set() for w in scan_windows}
-                        for e in manifest:
-                            lp = e.get("local_path")
-                            if not (lp and os.path.exists(lp)):
-                                continue
-                            z, win, name = int(e["z"]), e.get("window"), e.get("name", "")
-                            if win in scan_images_by_window and z not in seen_z[win]:
-                                scan_images_by_window[win].append(
-                                    {"z": z, "name": name, "bytes": _read_png(lp)}
-                                )
-                                seen_z[win].add(z)
-
-                        result = loop.run_until_complete(
-                            abdomen_ct3_report.scan_and_synthesize(
-                                client=client,
-                                scan_images_by_window=scan_images_by_window,
-                                study_description=summ.get("study_description"),
-                                batch_size=int(scan_cfg.get("batch_size", 10)),
-                                max_report_levels=int(scan_cfg.get("max_report_levels", 24)),
-                            )
-                        )
-
-                        anomaly_z = result.get("anomaly_z") or []
-                        summ["anomaly_slices"] = anomaly_z
-                        summ["anomaly_findings"] = result.get("flagged") or []
-                        summ["scan_batches"] = result.get("batches")
-                        summ["medgemma_model"] = scan_cfg.get("model") or settings.medgemma_model
-                        if result.get("ai_report"):
-                            summ["ai_report"] = result["ai_report"]
-                            summ["ai_report_provider"] = (
-                                f"medgemma:{scan_cfg.get('model') or settings.medgemma_model}"
-                            )
-
-                        # Surface the flagged slices (scan-window image) as artifacts.
-                        arts = postprocessed.setdefault("artifacts", [])
-                        existing_names = {a.get("name") for a in arts}
-                        report_z = set(result.get("report_z") or [])
-                        primary_win = scan_windows[0] if scan_windows else None
-                        for e in manifest:
-                            if int(e["z"]) not in report_z or e.get("window") != primary_win:
-                                continue
-                            name = e.get("name", "")
-                            if name in existing_names:
-                                continue
-                            arts.append({
-                                "name": name,
-                                "artifact_type": "abdomen_ct3_slice_png",
-                                "local_path": e.get("local_path"),
-                                "content_type": "image/png",
-                            })
-                            existing_names.add(name)
-
-                        logger.info(
-                            "abdomen_ct3_ai_report_stored",
-                            job_id=job_id, scan_windows=scan_windows,
-                            model=scan_cfg.get("model") or settings.medgemma_model,
-                            scanned=sum(len(v) for v in scan_images_by_window.values()),
-                            flagged=len(anomaly_z), batches=result.get("batches"),
-                            has_report=bool(result.get("ai_report")),
-                        )
-                except Exception as exc:
-                    logger.warning("abdomen_ct3_ai_report_failed", job_id=job_id, error=str(exc))
-
-            # ── Abdomen CT (v4): hybrid two-stage multi-agent engine ──
-            # The abdomen_ct4 pipeline renders the ordered scannable volume and returns a
-            # `scan_slices` manifest (0-based `order` == the engine's absolute index) plus
-            # `scan_config` (Stage 2 tag + batching knobs). Stage 1 (multi-image triage)
-            # runs the 4B multimodal MedGemma in local HuggingFace transformers — Ollama's
-            # /api/generate cannot template multi-image prompts for the Gemma-3 vision
-            # stack, so real N-slice blocks need the HF path (the model is loaded once and
-            # kept resident). A coordination layer merges the flags into pathology zones;
-            # Stage 2 (Ollama 27B tag, text-only) synthesizes one unified report. Flagged
-            # slices are appended as artifacts. Gated by medgemma_enabled; non-blocking —
-            # any failure leaves the deterministic summary and preview artifacts intact.
-            if usecase_name == "abdomen_ct4" and settings.medgemma_enabled:
-                try:
-                    _update_job_status(
-                        session, job_id, JobStatus.POSTPROCESSING, progress=0.84,
-                        message="Screening volume (HF triage → MedGemma report)",
-                    )
-                    from app.infrastructure.llm.hf_medgemma_client import HFMedGemmaVisionClient
-                    from app.infrastructure.llm.medgemma_client import MedGemmaClient
-                    from app.usecases.abdomen_ct4 import CTAbdomen4Pipeline
-
-                    manifest = postprocessed.get("scan_slices") or []
-                    scan_cfg = postprocessed.get("scan_config") or {}
-                    summ = postprocessed.setdefault("summary", {})
-                    triage_model = settings.abdomen_ct4_hf_triage_model
-                    report_tag = scan_cfg.get("report_model") or settings.medgemma_model
-
-                    # Ordered PNG paths (superior→inferior) that survive on disk; keep the
-                    # index→z map so engine absolute indices map back to axial levels.
-                    ordered = [
-                        e for e in sorted(manifest, key=lambda x: int(x.get("order", 0)))
-                        if e.get("local_path") and os.path.exists(e["local_path"])
-                    ]
-                    z_by_index = {i: int(e["z"]) for i, e in enumerate(ordered)}
-                    name_by_index = {i: e.get("name", "") for i, e in enumerate(ordered)}
-
-                    # Stage 1: HF 4B multimodal (resident, correct multi-image templating).
-                    # Stage 2: Ollama 27B, text-only.
-                    triage_client = HFMedGemmaVisionClient(
-                        triage_model, device_map=settings.abdomen_ct4_hf_triage_device,
-                    )
-                    report_client = MedGemmaClient(
-                        base_url=settings.ollama_base_url, model_name=report_tag,
-                        timeout_s=settings.medgemma_timeout_s, force_json=False,
-                    )
-
-                    if ordered and triage_client.ready:
-                        slice_bytes = [open(e["local_path"], "rb").read() for e in ordered]
-                        engine = CTAbdomen4Pipeline(
-                            triage_client, report_client,
-                            batch_size=int(scan_cfg.get("batch_size", 40)),
-                            overlap=int(scan_cfg.get("overlap", 5)),
-                            merge_gap=int(scan_cfg.get("merge_gap", 0)),
-                        )
-                        report = loop.run_until_complete(engine.run(slice_bytes))
-
-                        summ["normal"] = report.normal
-                        summ["num_batches"] = report.num_batches
-                        summ["final_report"] = report.final_report
-                        summ["malformed_batches"] = sum(t.malformed for t in report.triage_results)
-                        summ["ai_report_provider"] = f"hf:{triage_model}+ollama:{report_tag}"
-
-                        # Map engine absolute-index zones back to axial z-levels for the UI.
-                        flagged_indices: set[int] = set()
-                        zones_out: list[dict[str, Any]] = []
-                        for zone in report.pathology_zones:
-                            idxs = list(range(zone.absolute_start, zone.absolute_end + 1))
-                            flagged_indices.update(i for i in idxs if i in z_by_index)
-                            zs = [z_by_index[i] for i in idxs if i in z_by_index]
-                            zones_out.append({
-                                "start_index": zone.absolute_start,
-                                "end_index": zone.absolute_end,
-                                "start_z": max(zs) if zs else None,   # superior→inferior
-                                "end_z": min(zs) if zs else None,
-                                "reasons": zone.reasons,
-                            })
-                        summ["pathology_zones"] = zones_out
-
-                        # Surface the flagged slices as artifacts (append + dedup by name).
-                        arts = postprocessed.setdefault("artifacts", [])
-                        existing_names = {a.get("name") for a in arts}
-                        for i in sorted(flagged_indices):
-                            name = name_by_index.get(i, "")
-                            if not name or name in existing_names:
-                                continue
-                            arts.append({
-                                "name": name,
-                                "artifact_type": "abdomen_ct4_slice_png",
-                                "local_path": ordered[i]["local_path"],
-                                "content_type": "image/png",
-                            })
-                            existing_names.add(name)
-
-                        logger.info(
-                            "abdomen_ct4_ai_report_stored",
-                            job_id=job_id, normal=report.normal, batches=report.num_batches,
-                            zones=len(zones_out), flagged_slices=len(flagged_indices),
-                            malformed=summ["malformed_batches"], has_report=bool(report.final_report),
-                        )
-                except Exception as exc:
-                    logger.warning("abdomen_ct4_ai_report_failed", job_id=job_id, error=str(exc))
+                    logger.warning("abdomen_ct_ai_report_failed", job_id=job_id, error=str(exc))
 
             _update_job_status(
                 session, job_id, JobStatus.POSTPROCESSING, progress=0.85,

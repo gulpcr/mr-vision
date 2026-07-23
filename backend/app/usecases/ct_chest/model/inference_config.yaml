@@ -1,0 +1,55 @@
+# ct_chest configuration (CT-report family). No learned model: the whole diagnostic
+# volume is rendered slice-by-slice and MedGemma decides which slices are abnormal in a
+# first pass, then reports only on the flagged slices in a second pass. Windows below are
+# tuned for this body region. Measurement is DISABLED until validation studies are added.
+preprocessing:
+  edge_trim_fraction: 0.05
+  min_foreground_fraction: 0.05
+  max_scan_slices: 96
+  out_size: 768
+  preview_count: 6
+  # Region-appropriate series selection (multi-series studies). TAG-FIRST: match DICOM
+  # BodyPartExamined (0018,0015) against body_part_tags; fall back to SeriesDescription
+  # regexes (series_patterns) since BodyPartExamined is DICOM Type 3 (optional) and often
+  # blank. Falls back to the largest non-scout series (+ series_region_unmatched QA flag).
+  body_part_tags:
+    - CHEST
+    - THORAX
+    - LUNG
+  series_patterns:
+    - "(?i)chest"
+    - "(?i)thorax"
+    - "(?i)thoracic"
+    - "(?i)\\blung"
+    - "(?i)hrct"
+  # HU windows each scanned slice is rendered in (one PNG per slice x window).
+  windows:
+    - {name: lung, level: -600.0, width: 1500.0}
+    - {name: mediastinal, level: 40.0, width: 400.0}
+    - {name: bone, level: 500.0, width: 2500.0}
+
+scan:
+  # Windows scanned in the first (anomaly-flagging) pass. Subset of preprocessing.windows.
+  scan_windows:
+    - lung
+    - mediastinal
+  batch_size: 2
+  # MedGemma model tag for this use case (27B is more sensitive for the scan pass).
+  model: "medgemma:27b"
+
+report:
+  # HU windows of the flagged slices sent to the second (reporting) pass.
+  windows:
+    - lung
+    - mediastinal
+    - bone
+  max_report_levels: 6
+
+# Tumour measurement (SAM-Med3D) — DISABLED for this region until validation studies are
+# supplied. When enabled, add measurement.py + sammed3d.py to this plugin and a region-
+# appropriate localization seed (the abdomen seed is soft-tissue-organ-exclusion based).
+measurement:
+  enabled: false
+
+quality_checks:
+  min_slices: 10

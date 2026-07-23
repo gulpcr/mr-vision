@@ -1,0 +1,777 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Cortex Radiology — AI-Assisted Imaging Platform</title>
+<style>
+  :root {
+    /* Dark is the primary world; light theme redefines these tokens below. */
+    --bg: #070B14;
+    --bg-elev: #0D1424;
+    --bg-elev-2: #121C31;
+    --line: rgba(120, 200, 220, 0.12);
+    --line-strong: rgba(140, 210, 230, 0.28);
+    --text: #E9F0F8;
+    --text-dim: #A2B4CC;
+    --text-faint: #61748F;
+    --accent: #2DE1E6;
+    --accent-2: #8B7BFF;
+    --accent-ink: #04121A;
+    --signal: #FFB020;
+    --grid-dot: rgba(45, 225, 230, 0.55);
+    --scrim: rgba(7, 11, 20, 0.82);
+    --card-glow: 0 0 0 1px var(--line), 0 24px 60px -30px rgba(0,0,0,0.9);
+
+    --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --font-mono: ui-monospace, "Cascadia Code", "Cascadia Mono", "SF Mono", "Segoe UI Mono", Consolas, "Liberation Mono", monospace;
+
+    --maxw: 1180px;
+    --pad: clamp(1.25rem, 4vw, 2.5rem);
+    --r: 14px;
+  }
+
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #EEF3F9; --bg-elev: #FFFFFF; --bg-elev-2: #F4F8FC;
+      --line: rgba(12, 40, 70, 0.12); --line-strong: rgba(8, 120, 150, 0.35);
+      --text: #0B1526; --text-dim: #47596F; --text-faint: #8091A6;
+      --accent: #0894AB; --accent-2: #6A4CE0; --accent-ink: #FFFFFF; --signal: #B87400;
+      --grid-dot: rgba(8, 148, 171, 0.5); --scrim: rgba(238, 243, 249, 0.7);
+      --card-glow: 0 0 0 1px var(--line), 0 18px 40px -28px rgba(20, 50, 90, 0.45);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #070B14; --bg-elev: #0D1424; --bg-elev-2: #121C31;
+    --line: rgba(120, 200, 220, 0.12); --line-strong: rgba(140, 210, 230, 0.28);
+    --text: #E9F0F8; --text-dim: #A2B4CC; --text-faint: #61748F;
+    --accent: #2DE1E6; --accent-2: #8B7BFF; --accent-ink: #04121A; --signal: #FFB020;
+    --grid-dot: rgba(45, 225, 230, 0.55); --scrim: rgba(7, 11, 20, 0.82);
+    --card-glow: 0 0 0 1px var(--line), 0 24px 60px -30px rgba(0,0,0,0.9);
+  }
+  :root[data-theme="light"] {
+    --bg: #EEF3F9; --bg-elev: #FFFFFF; --bg-elev-2: #F4F8FC;
+    --line: rgba(12, 40, 70, 0.12); --line-strong: rgba(8, 120, 150, 0.35);
+    --text: #0B1526; --text-dim: #47596F; --text-faint: #8091A6;
+    --accent: #0894AB; --accent-2: #6A4CE0; --accent-ink: #FFFFFF; --signal: #B87400;
+    --grid-dot: rgba(8, 148, 171, 0.5); --scrim: rgba(238, 243, 249, 0.7);
+    --card-glow: 0 0 0 1px var(--line), 0 18px 40px -28px rgba(20, 50, 90, 0.45);
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: var(--font-sans); font-size: 16px; line-height: 1.6;
+    -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; overflow-x: hidden;
+  }
+  img { max-width: 100%; }
+
+  .wrap { max-width: var(--maxw); margin: 0 auto; padding-inline: var(--pad); }
+
+  .eyebrow {
+    font-family: var(--font-mono); font-size: 0.72rem; letter-spacing: 0.24em;
+    text-transform: uppercase; color: var(--accent); margin: 0;
+  }
+
+  h1, h2, h3 { text-wrap: balance; margin: 0; }
+  h2 { font-size: clamp(1.9rem, 4vw, 3rem); font-weight: 750; letter-spacing: -0.025em; line-height: 1.05; }
+  h3 { font-size: 1.1rem; font-weight: 650; letter-spacing: -0.01em; }
+  p { margin: 0; }
+  a { color: inherit; text-decoration: none; }
+
+  .lead { font-size: clamp(1.05rem, 1.6vw, 1.25rem); color: var(--text-dim); max-width: 60ch; }
+
+  /* ── buttons ────────────────────────────────────────── */
+  .btn {
+    display: inline-flex; align-items: center; gap: 0.5rem;
+    font-family: var(--font-mono); font-size: 0.82rem; letter-spacing: 0.04em;
+    padding: 0.78rem 1.35rem; border-radius: 100px; border: 1px solid transparent; cursor: pointer;
+    transition: transform .18s ease, box-shadow .18s ease, background .18s ease, border-color .18s ease;
+    white-space: nowrap;
+  }
+  .btn-primary { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+  .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 10px 34px -10px var(--accent); }
+  .btn-ghost { border-color: var(--line-strong); color: var(--text); background: transparent; }
+  .btn-ghost:hover { border-color: var(--accent); color: var(--accent); transform: translateY(-2px); }
+  .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+  /* ── nav ────────────────────────────────────────────── */
+  .nav {
+    position: sticky; top: 0; z-index: 50;
+    backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+    background: color-mix(in srgb, var(--bg) 72%, transparent); border-bottom: 1px solid var(--line);
+  }
+  .nav-inner { display: flex; align-items: center; justify-content: space-between; height: 64px; }
+  .brand { display: flex; align-items: center; gap: 0.6rem; font-weight: 700; letter-spacing: -0.01em; }
+  .brand .mark { width: 26px; height: 26px; flex: none; }
+  .brand b { font-weight: 750; }
+  .brand span { color: var(--text-dim); font-weight: 500; }
+  .nav-links { display: flex; align-items: center; gap: 1.5rem; }
+  .nav-links a { font-size: 0.9rem; color: var(--text-dim); transition: color .15s ease; }
+  .nav-links a:hover { color: var(--text); }
+  .nav-links a.nav-cta { color: var(--accent); font-family: var(--font-mono); font-size: 0.8rem; letter-spacing: 0.04em; }
+  @media (max-width: 900px) { .nav-links .hide-sm { display: none; } }
+
+  /* ── hero ───────────────────────────────────────────── */
+  .hero { position: relative; overflow: hidden; border-bottom: 1px solid var(--line); }
+  #detector { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 0; opacity: 0.9; }
+  .hero-veil {
+    position: absolute; inset: 0; z-index: 1; pointer-events: none;
+    background:
+      radial-gradient(120% 90% at 78% 12%, color-mix(in srgb, var(--accent) 14%, transparent), transparent 55%),
+      radial-gradient(90% 80% at 8% 90%, color-mix(in srgb, var(--accent-2) 12%, transparent), transparent 50%),
+      linear-gradient(180deg, transparent 40%, var(--bg) 99%);
+  }
+  .hero-grid {
+    position: relative; z-index: 2;
+    display: grid; grid-template-columns: 1.05fr 0.95fr; gap: clamp(2rem, 5vw, 4.5rem);
+    align-items: center; padding-block: clamp(3.5rem, 8vw, 6.5rem);
+  }
+  @media (max-width: 900px) { .hero-grid { grid-template-columns: 1fr; } }
+
+  .hero h1 { font-size: clamp(2.6rem, 6.4vw, 4.9rem); font-weight: 800; line-height: 0.98; letter-spacing: -0.035em; margin: 1.1rem 0 1.3rem; }
+  .hero h1 em { font-style: normal; color: transparent; background: linear-gradient(100deg, var(--accent), var(--accent-2)); -webkit-background-clip: text; background-clip: text; }
+  .hero-cta { display: flex; flex-wrap: wrap; gap: 0.8rem; margin-top: 2rem; }
+  .hero-stats {
+    margin-top: 2.4rem; padding-top: 1.5rem; border-top: 1px solid var(--line);
+    font-family: var(--font-mono); font-size: 0.74rem; letter-spacing: 0.12em; color: var(--text-faint);
+    text-transform: uppercase; display: flex; flex-wrap: wrap; gap: 0.35rem 1rem;
+  }
+  .hero-stats b { color: var(--accent); font-weight: 600; }
+
+  /* ── study preview card (hero visual, the thesis) ────── */
+  .study {
+    background: linear-gradient(180deg, var(--bg-elev), var(--bg-elev-2));
+    border: 1px solid var(--line-strong); border-radius: 18px; overflow: hidden;
+    box-shadow: var(--card-glow); transform: rotate(-0.6deg);
+  }
+  .study-top {
+    display: flex; align-items: center; gap: 0.5rem; padding: 0.7rem 1rem;
+    border-bottom: 1px solid var(--line); font-family: var(--font-mono); font-size: 0.7rem;
+    letter-spacing: 0.06em; color: var(--text-faint); background: color-mix(in srgb, var(--bg) 40%, transparent);
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 10px var(--accent); }
+  .study-top .grow { margin-left: auto; color: var(--accent); }
+  .viewer { position: relative; aspect-ratio: 16 / 10; background: radial-gradient(60% 60% at 50% 45%, color-mix(in srgb, var(--accent) 8%, #0a1220), #05080f 78%); }
+  .viewer .slice { position: absolute; inset: 12%; border-radius: 50%; background: radial-gradient(circle at 45% 40%, rgba(150,180,210,0.16), rgba(90,120,160,0.06) 55%, transparent 72%); filter: blur(0.4px); }
+  .viewer .scanline { position: absolute; left: 0; right: 0; height: 2px; top: 0; background: linear-gradient(90deg, transparent, var(--accent), transparent); box-shadow: 0 0 14px var(--accent); opacity: 0.8; animation: sweepY 4.2s ease-in-out infinite; }
+  .reticle { position: absolute; top: 33%; left: 62%; width: 62px; height: 62px; transform: translate(-50%,-50%); }
+  .reticle::before, .reticle::after { content: ""; position: absolute; background: var(--signal); }
+  .reticle::before { left: 50%; top: 0; bottom: 0; width: 1px; transform: translateX(-0.5px); }
+  .reticle::after { top: 50%; left: 0; right: 0; height: 1px; transform: translateY(-0.5px); }
+  .reticle .ring { position: absolute; inset: 18px; border: 1.5px solid var(--signal); border-radius: 50%; animation: pulse 2.4s ease-out infinite; }
+  .reticle .tag { position: absolute; top: -8px; left: 68px; white-space: nowrap; font-family: var(--font-mono); font-size: 0.62rem; letter-spacing: 0.05em; color: var(--signal); border: 1px solid color-mix(in srgb, var(--signal) 40%, transparent); border-radius: 4px; padding: 2px 6px; background: color-mix(in srgb, #000 35%, transparent); }
+  .report { padding: 1rem 1.15rem 1.2rem; display: grid; gap: 0.55rem; }
+  .report .row { display: flex; align-items: baseline; gap: 0.6rem; }
+  .report .k { font-family: var(--font-mono); font-size: 0.62rem; letter-spacing: 0.14em; color: var(--accent); text-transform: uppercase; min-width: 78px; flex: none; }
+  .report .v { font-size: 0.86rem; color: var(--text-dim); line-height: 1.45; }
+  .chip { display: inline-flex; align-items: center; gap: 0.35rem; font-family: var(--font-mono); font-size: 0.62rem; letter-spacing: 0.08em; text-transform: uppercase; padding: 3px 8px; border-radius: 5px; }
+  .chip.crit { color: var(--signal); background: color-mix(in srgb, var(--signal) 14%, transparent); border: 1px solid color-mix(in srgb, var(--signal) 35%, transparent); }
+
+  /* ── section rhythm ─────────────────────────────────── */
+  .section { padding-block: clamp(3.5rem, 8vw, 6rem); }
+  .section-head { max-width: 62ch; display: grid; gap: 0.9rem; margin-bottom: clamp(2rem, 4vw, 3rem); }
+  .band { border-block: 1px solid var(--line); background: var(--bg-elev); }
+
+  /* ── stat band ──────────────────────────────────────── */
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); }
+  .stats > div { padding: clamp(1.5rem, 3vw, 2.4rem) var(--pad); border-left: 1px solid var(--line); }
+  .stats > div:first-child { border-left: none; }
+  .stats .num { font-size: clamp(2rem, 4vw, 2.9rem); font-weight: 780; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; line-height: 1; background: linear-gradient(120deg, var(--accent), var(--accent-2)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .stats .cap { margin-top: 0.5rem; font-size: 0.82rem; color: var(--text-dim); }
+  @media (max-width: 720px) { .stats { grid-template-columns: repeat(2, 1fr); } .stats > div:nth-child(3) { border-left: none; } }
+
+  /* ── image frames (photos embed here) ───────────────── */
+  .shot {
+    position: relative; border-radius: 16px; overflow: hidden; border: 1px solid var(--line-strong);
+    box-shadow: var(--card-glow); background:
+      var(--shot, none),
+      radial-gradient(80% 100% at 30% 0%, color-mix(in srgb, var(--accent) 16%, transparent), transparent 60%),
+      linear-gradient(150deg, var(--bg-elev-2), #05080f);
+    background-size: cover, auto, auto; background-position: center;
+    min-height: 240px; display: grid; place-items: center;
+  }
+  .shot .watermark { width: 92px; height: 92px; color: var(--accent); opacity: 0.22; }
+  .shot.has-img .watermark { display: none; }
+  .shot .cap {
+    position: absolute; left: 0; right: 0; bottom: 0; padding: 0.7rem 1rem;
+    font-family: var(--font-mono); font-size: 0.64rem; letter-spacing: 0.08em; text-transform: uppercase;
+    color: #dff; background: linear-gradient(transparent, rgba(3,8,14,0.82)); z-index: 2;
+  }
+  .shot .cap b { color: var(--accent); font-weight: 600; }
+
+  /* ── modality grid ──────────────────────────────────── */
+  .mods { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1rem; }
+  .mod { background: var(--bg-elev); border: 1px solid var(--line); border-radius: var(--r); padding: 1.4rem; display: grid; gap: 0.9rem; align-content: start; transition: transform .2s ease, border-color .2s ease, background .2s ease; }
+  .mod:hover { transform: translateY(-4px); border-color: var(--line-strong); background: var(--bg-elev-2); }
+  .mod-top { display: flex; align-items: center; justify-content: space-between; }
+  .mod-mod { font-family: var(--font-mono); font-size: 0.68rem; letter-spacing: 0.16em; color: var(--accent); text-transform: uppercase; }
+  .mod-ico { width: 30px; height: 30px; color: var(--accent); opacity: 0.9; }
+  .mod h3 { font-size: 1.02rem; }
+  .tags { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+  .tag { font-size: 0.74rem; color: var(--text-dim); border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px; background: color-mix(in srgb, var(--bg) 30%, transparent); }
+
+  /* ── HU window divider motif ────────────────────────── */
+  .hu { display: grid; gap: 0.5rem; margin-top: 2.5rem; }
+  .hu-bar { height: 12px; border-radius: 6px; overflow: hidden; display: flex; border: 1px solid var(--line); }
+  .hu-bar i { flex: 1; }
+  .hu-bar .lung { background: linear-gradient(90deg, #0a0f18, #1a2740); }
+  .hu-bar .soft { background: linear-gradient(90deg, #26364f, #5b7392); }
+  .hu-bar .bone { background: linear-gradient(90deg, #8ea6c4, #eef4fb); }
+  .hu-labels { display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 0.62rem; letter-spacing: 0.14em; color: var(--text-faint); text-transform: uppercase; }
+
+  /* ── VISUAL FLOW DIAGRAM ────────────────────────────── */
+  .flow-panel { background: var(--bg-elev); border: 1px solid var(--line-strong); border-radius: 18px; padding: clamp(1.3rem, 3vw, 2rem); box-shadow: var(--card-glow); }
+  .flow-scroll { overflow-x: auto; padding-bottom: 0.5rem; }
+  .flow-track { display: flex; align-items: center; min-width: max-content; padding: 0.5rem 0; }
+  .fnode {
+    flex: 0 0 auto; width: 138px; background: var(--bg-elev-2); border: 1px solid var(--line);
+    border-radius: 12px; padding: 0.9rem 0.7rem; text-align: center; display: grid; gap: 0.4rem; align-content: start;
+  }
+  .fnode svg { width: 26px; height: 26px; margin: 0 auto; color: var(--accent); }
+  .fnode .t { font-size: 0.82rem; font-weight: 650; letter-spacing: -0.01em; }
+  .fnode .s { font-family: var(--font-mono); font-size: 0.58rem; letter-spacing: 0.06em; color: var(--text-faint); text-transform: uppercase; line-height: 1.4; }
+  .fnode .pills { display: flex; flex-wrap: wrap; gap: 3px; justify-content: center; margin-top: 2px; }
+  .fnode .pill { font-family: var(--font-mono); font-size: 0.52rem; letter-spacing: 0.04em; color: var(--accent-2); border: 1px solid color-mix(in srgb, var(--accent-2) 40%, transparent); border-radius: 4px; padding: 1px 4px; }
+  .fnode.alert { border-color: color-mix(in srgb, var(--signal) 48%, transparent); background: color-mix(in srgb, var(--signal) 8%, var(--bg-elev-2)); }
+  .fnode.alert svg { color: var(--signal); }
+  .fnode.alert .s { color: color-mix(in srgb, var(--signal) 80%, var(--text-faint)); }
+  .fnode.end { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 0 34px -12px var(--accent); }
+  .fedge {
+    flex: 0 0 38px; align-self: center; height: 2px; position: relative; margin: 0 2px;
+    background: repeating-linear-gradient(90deg, var(--accent) 0 6px, transparent 6px 13px);
+    background-size: 26px 100%; animation: flowdash 0.9s linear infinite; opacity: 0.75;
+  }
+  .fedge::after { content: ""; position: absolute; right: -2px; top: 50%; transform: translateY(-50%); border-left: 7px solid var(--accent); border-top: 4px solid transparent; border-bottom: 4px solid transparent; }
+  .flow-return {
+    margin-top: 1rem; display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;
+    font-family: var(--font-mono); font-size: 0.66rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-faint);
+    padding-top: 1rem; border-top: 1px dashed var(--line-strong);
+  }
+  .flow-return b { color: var(--accent); font-weight: 600; }
+  .flow-return .loop { color: var(--accent-2); }
+  @media (prefers-reduced-motion: reduce) { .fedge { animation: none; } }
+
+  /* ── steps (concise, under the diagram) ─────────────── */
+  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; counter-reset: step; margin-top: 2rem; }
+  @media (max-width: 900px) { .steps { grid-template-columns: 1fr; } }
+  .step { position: relative; background: var(--bg-elev); border: 1px solid var(--line); border-radius: var(--r); padding: 1.3rem; display: grid; gap: 0.5rem; align-content: start; overflow: hidden; }
+  .step::before { counter-increment: step; content: counter(step, decimal-leading-zero); font-family: var(--font-mono); font-size: 0.72rem; letter-spacing: 0.1em; color: var(--accent); }
+  .step::after { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: linear-gradient(var(--accent), var(--accent-2)); opacity: 0.5; }
+  .step h3 { font-size: 1rem; }
+  .step p { font-size: 0.88rem; color: var(--text-dim); }
+
+  /* ── two-column media rows ──────────────────────────── */
+  .media { display: grid; grid-template-columns: 1fr 1fr; gap: clamp(1.5rem, 4vw, 3rem); align-items: center; }
+  .media.rev > .media-txt { order: 2; }
+  @media (max-width: 860px) { .media, .media.rev { grid-template-columns: 1fr; } .media.rev > .media-txt { order: 0; } }
+
+  /* ── feature (intelligence) grid ────────────────────── */
+  .feats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem; }
+  @media (max-width: 760px) { .feats { grid-template-columns: 1fr; } }
+  .feat { background: linear-gradient(180deg, var(--bg-elev), var(--bg-elev-2)); border: 1px solid var(--line); border-radius: var(--r); padding: 1.5rem; display: grid; gap: 0.6rem; align-content: start; transition: border-color .2s ease, transform .2s ease; }
+  .feat:hover { border-color: var(--line-strong); transform: translateY(-3px); }
+  .feat .ph { font-family: var(--font-mono); font-size: 0.66rem; letter-spacing: 0.16em; color: var(--accent-2); text-transform: uppercase; }
+  .feat p { font-size: 0.9rem; color: var(--text-dim); }
+
+  /* ── advisory board ─────────────────────────────────── */
+  .board { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
+  @media (max-width: 820px) { .board { grid-template-columns: 1fr; } }
+  .doc {
+    background: linear-gradient(180deg, var(--bg-elev), var(--bg-elev-2)); border: 1px solid var(--line);
+    border-radius: var(--r); padding: 1.6rem; display: grid; gap: 0.85rem; align-content: start;
+    transition: transform .2s ease, border-color .2s ease;
+  }
+  .doc:hover { transform: translateY(-4px); border-color: var(--line-strong); }
+  .doc .ava {
+    position: relative; width: 66px; height: 66px; border-radius: 50%; display: grid; place-items: center;
+    font-family: var(--font-mono); font-weight: 600; font-size: 1.15rem; letter-spacing: 0.02em; color: var(--accent);
+    background: radial-gradient(circle at 40% 35%, color-mix(in srgb, var(--accent) 22%, transparent), transparent 70%);
+    border: 1px solid var(--line-strong);
+  }
+  .doc .ava::after { content: ""; position: absolute; inset: -5px; border-radius: 50%; border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); }
+  .doc .name { font-size: 1.06rem; font-weight: 700; letter-spacing: -0.01em; }
+  .doc .role { font-family: var(--font-mono); font-size: 0.68rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--accent); }
+  .doc .org { font-size: 0.85rem; color: var(--text-dim); }
+
+  /* ── trust grid ─────────────────────────────────────── */
+  .trust { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
+  @media (max-width: 860px) { .trust { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 560px) { .trust { grid-template-columns: 1fr; } }
+  .tcard { background: var(--bg-elev); border: 1px solid var(--line); border-radius: var(--r); padding: 1.3rem; display: grid; gap: 0.5rem; align-content: start; }
+  .tcard .ti { display: flex; align-items: center; gap: 0.6rem; }
+  .tcard svg { width: 20px; height: 20px; color: var(--accent); flex: none; }
+  .tcard h3 { font-size: 0.98rem; }
+  .tcard p { font-size: 0.85rem; color: var(--text-dim); }
+
+  /* ── deploy strip ───────────────────────────────────── */
+  .deploy { display: grid; grid-template-columns: 1.1fr 1fr; gap: clamp(2rem,4vw,3.5rem); align-items: center; }
+  @media (max-width: 860px) { .deploy { grid-template-columns: 1fr; } }
+  .deploy ul { list-style: none; margin: 1.4rem 0 0; padding: 0; display: grid; gap: 0.8rem; }
+  .deploy li { display: flex; gap: 0.7rem; font-size: 0.92rem; color: var(--text-dim); }
+  .deploy li b { color: var(--text); font-weight: 600; }
+  .deploy li::before { content: "▸"; color: var(--accent); flex: none; }
+  .stack { font-family: var(--font-mono); font-size: 0.78rem; color: var(--text-dim); line-height: 1.9; background: var(--bg-elev); border: 1px solid var(--line); border-radius: var(--r); padding: 1.3rem 1.5rem; }
+  .stack .c { color: var(--accent); }
+  .stack .p { color: var(--text-faint); }
+
+  /* ── final CTA ──────────────────────────────────────── */
+  .final { position: relative; overflow: hidden; border-top: 1px solid var(--line); background: var(--bg-elev); }
+  .final::before { content: ""; position: absolute; inset: 0; background: radial-gradient(70% 120% at 50% 0%, color-mix(in srgb, var(--accent) 14%, transparent), transparent 60%); pointer-events: none; }
+  .final-in { position: relative; text-align: center; display: grid; gap: 1.3rem; justify-items: center; padding-block: clamp(4rem, 9vw, 7rem); }
+  .final h2 { font-size: clamp(2rem, 5vw, 3.4rem); }
+
+  /* ── footer ─────────────────────────────────────────── */
+  footer { border-top: 1px solid var(--line); }
+  .foot { display: flex; flex-wrap: wrap; gap: 1rem; justify-content: space-between; align-items: center; padding-block: 2rem; color: var(--text-faint); font-size: 0.82rem; }
+  .disclaimer { max-width: 72ch; font-size: 0.78rem; color: var(--text-faint); padding-bottom: 2.5rem; line-height: 1.6; }
+
+  /* ── reveal animation ───────────────────────────────── */
+  .reveal { opacity: 0; transform: translateY(22px); transition: opacity .7s ease, transform .7s cubic-bezier(.2,.7,.2,1); }
+  .reveal.is-in { opacity: 1; transform: none; }
+  @media (prefers-reduced-motion: reduce) {
+    .reveal { opacity: 1 !important; transform: none !important; transition: none; }
+    .scanline, .reticle .ring, .study { animation: none !important; }
+    .study { transform: none; }
+  }
+
+  @keyframes sweepY { 0%,100% { top: 8%; } 50% { top: 88%; } }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--signal) 55%, transparent); }
+    70% { box-shadow: 0 0 0 16px color-mix(in srgb, var(--signal) 0%, transparent); }
+    100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--signal) 0%, transparent); }
+  }
+  @keyframes flowdash { to { background-position: 26px 0; } }
+</style>
+</head>
+<body>
+
+<!-- ─────────────── NAV ─────────────── -->
+<nav class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="#top" aria-label="Cortex Radiology home">
+      <svg class="mark" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+        <circle cx="16" cy="16" r="13" stroke="var(--accent)" stroke-width="1.6" opacity="0.5"/>
+        <circle cx="16" cy="16" r="4.4" stroke="var(--accent)" stroke-width="1.6"/>
+        <path d="M16 1.5V9M16 23v7.5M1.5 16H9M23 16h7.5" stroke="var(--accent)" stroke-width="1.6" stroke-linecap="round"/>
+      </svg>
+      <span><b>CORTEX</b> Radiology</span>
+    </a>
+    <div class="nav-links">
+      <a class="hide-sm" href="#modalities">Modalities</a>
+      <a class="hide-sm" href="#workflow">Workflow</a>
+      <a class="hide-sm" href="#intelligence">Intelligence</a>
+      <a class="hide-sm" href="#advisory">Clinicians</a>
+      <a class="nav-cta" href="#demo">Request a demo →</a>
+    </div>
+  </div>
+</nav>
+
+<!-- ─────────────── HERO ─────────────── -->
+<header class="hero" id="top">
+  <canvas id="detector" aria-hidden="true"></canvas>
+  <div class="hero-veil" aria-hidden="true"></div>
+  <div class="wrap hero-grid">
+    <div>
+      <p class="eyebrow">AI-Assisted Diagnostic Imaging Platform</p>
+      <h1>AI that reads <em>every scan</em> with you.</h1>
+      <p class="lead">Cortex Radiology turns your PACS into an intelligent reading room — automatically triaging, analyzing, and drafting structured reports across MRI, CT, PET/CT, mammography and cardiac studies, so your radiologists spend their attention where it matters.</p>
+      <div class="hero-cta">
+        <a class="btn btn-primary" href="#demo">Request a demo</a>
+        <a class="btn btn-ghost" href="#workflow">See how it works</a>
+      </div>
+      <div class="hero-stats">
+        <span><b>5</b> modalities</span><span aria-hidden="true">·</span>
+        <span><b>14</b> reading pipelines</span><span aria-hidden="true">·</span>
+        <span><b>100%</b> DICOM-native</span><span aria-hidden="true">·</span>
+        <span><b>Clinician</b>-supervised</span>
+      </div>
+    </div>
+
+    <!-- The thesis: an AI pre-read study card -->
+    <div class="study reveal" role="img" aria-label="Example AI pre-read: a chest CT with a flagged right upper lobe nodule and a drafted report.">
+      <div class="study-top">
+        <span class="dot" aria-hidden="true"></span>
+        CORTEX · ct_chest
+        <span class="grow">pre-read complete · 47s</span>
+      </div>
+      <div class="viewer" aria-hidden="true">
+        <div class="slice"></div>
+        <div class="scanline"></div>
+        <div class="reticle"><span class="ring"></span><span class="tag">FLAGGED · z-142</span></div>
+      </div>
+      <div class="report">
+        <div class="row"><span class="k">Findings</span><span class="v">8 mm spiculated nodule, right upper lobe. No pleural effusion. Mediastinum within normal limits.</span></div>
+        <div class="row"><span class="k">Impression</span><span class="v">Indeterminate pulmonary nodule — short-interval CT follow-up recommended.</span></div>
+        <div class="row"><span class="k">Status</span><span class="v"><span class="chip crit">◆ Critical finding · radiologist notified</span></span></div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<!-- ─────────────── STAT BAND ─────────────── -->
+<section class="band" aria-label="Platform at a glance">
+  <div class="wrap" style="padding-inline:0;">
+    <div class="stats">
+      <div class="reveal"><div class="num">5</div><div class="cap">Imaging modalities — MRI, CT, PET/CT, Mammography, Cardiac CTA</div></div>
+      <div class="reveal"><div class="num">14</div><div class="cap">Region-specific reading pipelines, each independently versioned</div></div>
+      <div class="reveal"><div class="num">4</div><div class="cap">Phases of AI-augmented reporting on every study</div></div>
+      <div class="reveal"><div class="num">24/7</div><div class="cap">Autonomous triage — studies pre-read the moment they arrive</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ─────────────── VALUE ─────────────── -->
+<section class="section wrap">
+  <div class="section-head reveal">
+    <p class="eyebrow">Why Cortex</p>
+    <h2>Study volume keeps rising. The reading day doesn't.</h2>
+    <p class="lead">Cortex sits quietly beside your PACS and pre-reads incoming studies before a radiologist opens them — surfacing what's abnormal, drafting the report, and flagging anything critical for immediate attention. It doesn't replace the read. It gets you to it faster.</p>
+  </div>
+  <div class="feats">
+    <div class="feat reveal"><span class="ph">Reads the whole study</span><h3>Not a black box on one slice</h3><p>Cortex scans the full diagnostic volume slice-by-slice, flags the levels that look abnormal, then writes a detailed read on them — the way a radiologist works through a study, not a single-frame classifier.</p></div>
+    <div class="feat reveal"><span class="ph">Speaks radiology</span><h3>Reports in your department's language</h3><p>Structured Findings and Impression, phrased the way your team dictates, delivered in your report template — ready to review, edit, and sign.</p></div>
+    <div class="feat reveal"><span class="ph">Fits your workflow</span><h3>Nothing new to learn</h3><p>Studies flow in from your existing PACS and results return as standard DICOM. Radiologists keep their viewer and their routine; Cortex works underneath it.</p></div>
+    <div class="feat reveal"><span class="ph">Never misses the urgent</span><h3>Critical findings escalate on their own</h3><p>A suspected critical result raises a real-time alert with an escalation chain — so the acute study doesn't wait in a worklist.</p></div>
+  </div>
+</section>
+
+<!-- ─────────────── MODALITIES ─────────────── -->
+<section class="section wrap" id="modalities">
+  <div class="section-head reveal">
+    <p class="eyebrow">Coverage</p>
+    <h2>One platform. Every reading room.</h2>
+    <p class="lead">Cortex ships with region-specific pipelines across five modalities — each with its own tuned windows, models, and reporting profile. Add a body region without touching the rest of the platform.</p>
+  </div>
+
+  <!-- IMAGE 1 → MRI brain grid -->
+  <figure class="shot reveal" id="shot-mri" style="margin:0 0 1.5rem;aspect-ratio:21/9;" data-caption="Multiplanar MRI review — sagittal &amp; axial brain series">
+    <svg class="watermark" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3a9 9 0 100 18 9 9 0 000-18z" stroke="currentColor" stroke-width="1.2"/><path d="M12 6v12M8 8v8M16 8v8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+    <figcaption class="cap"><b>Fig. 1</b> — Multiplanar MRI review · sagittal &amp; axial brain series</figcaption>
+  </figure>
+
+  <div class="mods">
+    <div class="mod reveal">
+      <div class="mod-top"><span class="mod-mod">MRI</span><svg class="mod-ico" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3a9 9 0 100 18 9 9 0 000-18z" stroke="currentColor" stroke-width="1.5"/><path d="M12 7v10M8 9.5v5M16 9.5v5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></div>
+      <h3>Magnetic Resonance</h3>
+      <div class="tags"><span class="tag">Brain</span><span class="tag">Spine</span><span class="tag">Chest</span><span class="tag">Abdomen</span></div>
+    </div>
+    <div class="mod reveal">
+      <div class="mod-top"><span class="mod-mod">CT</span><svg class="mod-ico" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.5"/><circle cx="12" cy="12" r="3.4" stroke="currentColor" stroke-width="1.5"/><path d="M12 3v3.6M12 17.4V21M3 12h3.6M17.4 12H21" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></div>
+      <h3>Computed Tomography</h3>
+      <div class="tags"><span class="tag">Brain</span><span class="tag">Neck</span><span class="tag">Chest</span><span class="tag">Abdomen</span><span class="tag">Lumbar Spine</span><span class="tag">Lower Limb</span></div>
+    </div>
+    <div class="mod reveal">
+      <div class="mod-top"><span class="mod-mod">PET / CT</span><svg class="mod-ico" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.5"/><circle cx="12" cy="12" r="5" fill="currentColor" opacity="0.18"/><circle cx="12" cy="12" r="2" fill="currentColor"/></svg></div>
+      <h3>Molecular Imaging</h3>
+      <div class="tags"><span class="tag">Whole-body FDG</span><span class="tag">Brain</span></div>
+    </div>
+    <div class="mod reveal">
+      <div class="mod-top"><span class="mod-mod">Mammography</span><svg class="mod-ico" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 6h16M6 6c0 7 3 12 6 12s6-5 6-12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/></svg></div>
+      <h3>Breast Imaging</h3>
+      <div class="tags"><span class="tag">Density</span><span class="tag">Mass</span><span class="tag">Calcification</span><span class="tag">Risk</span></div>
+    </div>
+    <div class="mod reveal">
+      <div class="mod-top"><span class="mod-mod">Cardiac CTA</span><svg class="mod-ico" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 20s-7-4.5-7-10a4 4 0 017-2.6A4 4 0 0119 10c0 5.5-7 10-7 10z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg></div>
+      <h3>Coronary</h3>
+      <div class="tags"><span class="tag">Agatston Calcium Score</span><span class="tag">CAD assessment</span></div>
+    </div>
+    <div class="mod reveal" style="border-style:dashed;">
+      <div class="mod-top"><span class="mod-mod">Extensible</span><svg class="mod-ico" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></div>
+      <h3>Your next use case</h3>
+      <p style="font-size:0.85rem;color:var(--text-dim);margin:0;">Each pipeline is a self-contained plugin — a manifest, a model, a report profile. Bring a new region online without disrupting the platform.</p>
+    </div>
+  </div>
+
+  <div class="hu reveal" aria-hidden="true">
+    <div class="hu-bar"><i class="lung"></i><i class="soft"></i><i class="bone"></i></div>
+    <div class="hu-labels"><span>Lung window</span><span>Soft-tissue</span><span>Bone</span></div>
+  </div>
+</section>
+
+<!-- ─────────────── WORKFLOW + FLOW DIAGRAM ─────────────── -->
+<section class="section band" id="workflow">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <p class="eyebrow">The pipeline</p>
+      <h2>From scan to signed report.</h2>
+      <p class="lead">Every study runs the same governed lifecycle — automatic from ingestion to a draft report waiting in the worklist, with the radiologist in control at the end.</p>
+    </div>
+
+    <!-- Visual flow diagram -->
+    <div class="flow-panel reveal" role="img" aria-label="Data flow: PACS to auto-router to GPU inference to the four-phase intelligence layer, branching to a critical-finding alert, then DICOM SR/SEG export, and finally radiologist review and sign-off. Results also return to PACS and render in the OHIF viewer.">
+      <div class="flow-scroll">
+        <div class="flow-track">
+          <div class="fnode">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="4" width="18" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/><rect x="3" y="13" width="18" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/><circle cx="7" cy="7.5" r="1" fill="currentColor"/><circle cx="7" cy="16.5" r="1" fill="currentColor"/></svg>
+            <div class="t">PACS</div><div class="s">DICOM studies in</div>
+          </div>
+          <div class="fedge"></div>
+          <div class="fnode">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 4v6a4 4 0 004 4h8M18 10l3-3-3-3M18 20l3-3-3-3M6 14v0a4 4 0 004 4h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <div class="t">Auto-route</div><div class="s">modality + region</div>
+          </div>
+          <div class="fedge"></div>
+          <div class="fnode">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            <div class="t">AI inference</div><div class="s">GPU · full volume</div>
+          </div>
+          <div class="fedge"></div>
+          <div class="fnode">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9 3a3 3 0 00-3 3 3 3 0 00-2 5 3 3 0 001 5 3 3 0 004 3 3 3 0 002-1M15 3a3 3 0 013 3 3 3 0 012 5 3 3 0 01-1 5 3 3 0 01-4 3 3 3 0 01-2-1V4a1 1 0 011-1z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>
+            <div class="t">Intelligence</div><div class="s">4-phase report</div>
+            <div class="pills"><span class="pill">Report</span><span class="pill">QA</span><span class="pill">CDS</span><span class="pill">Prior</span></div>
+          </div>
+          <div class="fedge"></div>
+          <div class="fnode alert">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3a6 6 0 00-6 6c0 5-2 6-2 6h16s-2-1-2-6a6 6 0 00-6-6zM10 20a2 2 0 004 0" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <div class="t">Critical alert</div><div class="s">escalate if urgent</div>
+          </div>
+          <div class="fedge"></div>
+          <div class="fnode">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 3h9l5 5v13a1 1 0 01-1 1H6a1 1 0 01-1-1V4a1 1 0 011-1z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M14 3v5h5M8 13h8M8 17h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            <div class="t">DICOM SR / SEG</div><div class="s">results out</div>
+          </div>
+          <div class="fedge"></div>
+          <div class="fnode end">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="8" r="3.4" stroke="currentColor" stroke-width="1.5"/><path d="M5 20c0-3.6 3.1-6 7-6s7 2.4 7 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            <div class="t">Radiologist</div><div class="s">review &amp; sign</div>
+          </div>
+        </div>
+      </div>
+      <div class="flow-return">
+        <span class="loop">↺ closes the loop</span>
+        <span>Results return to <b>PACS</b></span><span aria-hidden="true">·</span>
+        <span>render in the <b>OHIF viewer</b></span><span aria-hidden="true">·</span>
+        <span>every step written to the <b>audit trail</b></span>
+      </div>
+    </div>
+
+    <div class="steps">
+      <div class="step reveal"><h3>Ingest</h3><p>Studies flow in from your PACS over DICOMweb. Cortex mirrors your Orthanc or any standard DICOM node — no export, no manual upload.</p></div>
+      <div class="step reveal"><h3>Auto-route</h3><p>Each study is classified by modality and body region and dispatched to the correct reading pipeline. A dry-run preview shows exactly why, before anything runs.</p></div>
+      <div class="step reveal"><h3>Analyze</h3><p>GPU inference reads the full volume — segmentation, measurement, and detection tuned to that region's anatomy and windows.</p></div>
+      <div class="step reveal"><h3>Augment</h3><p>The intelligence layer drafts a structured report, screens image quality, adds clinical context, and compares against the patient's priors.</p></div>
+      <div class="step reveal"><h3>Alert</h3><p>Suspected critical findings raise a real-time alert with an escalation chain, so acute studies never sit unseen in a queue.</p></div>
+      <div class="step reveal"><h3>Return</h3><p>Results post back to PACS as DICOM SR and Segmentation objects — and render in the built-in OHIF viewer alongside the images.</p></div>
+    </div>
+
+    <!-- IMAGE 3 → PET/CT viewer -->
+    <figure class="shot reveal" id="shot-viewer" style="margin:2.2rem 0 0;aspect-ratio:16/9;" data-caption="Fused PET/CT multiplanar review in the integrated viewer">
+      <svg class="watermark" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="3" width="8" height="8" rx="1" stroke="currentColor" stroke-width="1.2"/><rect x="13" y="3" width="8" height="8" rx="1" stroke="currentColor" stroke-width="1.2"/><rect x="3" y="13" width="8" height="8" rx="1" stroke="currentColor" stroke-width="1.2"/><rect x="13" y="13" width="8" height="8" rx="1" stroke="currentColor" stroke-width="1.2"/></svg>
+      <figcaption class="cap"><b>Fig. 3</b> — Fused PET/CT multiplanar review in the integrated viewer</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- ─────────────── INTELLIGENCE ─────────────── -->
+<section class="section wrap" id="intelligence">
+  <div class="section-head reveal">
+    <p class="eyebrow">The intelligence layer</p>
+    <h2>Reads like a radiologist. Documents like one too.</h2>
+    <p class="lead">Beyond detection, Cortex layers four phases of language-and-vision intelligence on top of every result — each one non-blocking, so a hiccup in the smart layer never delays the underlying read.</p>
+  </div>
+
+  <div class="media">
+    <!-- IMAGE 2 → AI / holographic organs -->
+    <figure class="shot reveal" id="shot-ai" style="margin:0;aspect-ratio:4/3;" data-caption="Vision-and-language models reading anatomy in context">
+      <svg class="watermark" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9 3a3 3 0 00-3 3 3 3 0 00-2 5 3 3 0 001 5 3 3 0 004 3 3 3 0 002-1M15 3a3 3 0 013 3 3 3 0 012 5 3 3 0 01-1 5 3 3 0 01-4 3 3 3 0 01-2-1V4a1 1 0 011-1z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>
+      <figcaption class="cap"><b>Fig. 2</b> — Vision-and-language models reading anatomy in context</figcaption>
+    </figure>
+
+    <div class="media-txt">
+      <div class="feats" style="grid-template-columns:1fr;">
+        <div class="feat reveal"><span class="ph">Phase 01 · Reporting</span><h3>Narrative report generation</h3><p>Structured Findings and Impression drafted for each study in your template — a first draft on the radiologist's desk, not a blank page.</p></div>
+        <div class="feat reveal"><span class="ph">Phase 02 · Quality</span><h3>Vision-model image QA</h3><p>A vision model screens each study for motion, artifact, and coverage before the read — quality problems surface up front, not at sign-off.</p></div>
+        <div class="feat reveal"><span class="ph">Phase 03 · Decision support</span><h3>Risk-stratified clinical context</h3><p>Findings are placed in clinical context with risk stratification and suggested next steps — evidence for the read, not a verdict.</p></div>
+        <div class="feat reveal"><span class="ph">Phase 04 · Longitudinal</span><h3>Automatic prior comparison</h3><p>Cortex pulls the patient's priors and summarizes what changed — using RANO, PERCIST, or Pfirrmann as the exam demands.</p></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─────────────── CLINICAL ADVISORY BOARD ─────────────── -->
+<section class="section band" id="advisory">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <p class="eyebrow">Clinical oversight</p>
+      <h2>Designed with the doctors who read the scans.</h2>
+      <p class="lead">Cortex is built under the direction of practicing radiologists, nuclear-medicine physicians, and clinical leadership — so every windowing choice, report template, and safety guardrail reflects how real reads are done, not how software assumes they are.</p>
+    </div>
+    <div class="board">
+      <div class="doc reveal">
+        <div class="ava" aria-hidden="true">MI</div>
+        <div>
+          <div class="name">Dr. Muhammad Imran</div>
+          <div class="role">Director, IMT</div>
+        </div>
+        <div class="org">Jinnah Sindh Medical University</div>
+      </div>
+      <div class="doc reveal">
+        <div class="ava" aria-hidden="true">SH</div>
+        <div>
+          <div class="name">Dr. Salman Habib</div>
+          <div class="role">Consultant · Nuclear Medicine</div>
+        </div>
+        <div class="org">Molecular imaging &amp; PET/CT reporting oversight</div>
+      </div>
+      <div class="doc reveal">
+        <div class="ava" aria-hidden="true">FH</div>
+        <div>
+          <div class="name">Dr. Fida Hussain</div>
+          <div class="role">Consultant · Radiology</div>
+        </div>
+        <div class="org">Diagnostic radiology &amp; report-quality review</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─────────────── TRUST ─────────────── -->
+<section class="section wrap" id="trust">
+  <div class="section-head reveal">
+    <p class="eyebrow">Trust &amp; governance</p>
+    <h2>Built for the hospital, not the demo.</h2>
+    <p class="lead">Everything a clinical and IT team asks in procurement — designed in from the first commit, because in radiology every output is potentially patient-affecting.</p>
+  </div>
+  <div class="trust">
+    <div class="tcard reveal"><div class="ti"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 8l8-4 8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V8z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M9 12l2 2 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><h3>Human-in-the-loop</h3></div><p>Assistive and non-diagnostic by design. Cortex drafts; the radiologist verifies and signs. Every report carries that provenance.</p></div>
+    <div class="tcard reveal"><div class="ti"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M3 9h18M8 4v16" stroke="currentColor" stroke-width="1.5"/></svg><h3>PACS-native</h3></div><p>DICOMweb in, DICOM SR and Segmentation out. Cortex adds intelligence to your imaging stack without becoming another silo.</p></div>
+    <div class="tcard reveal"><div class="ti"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="8" r="3.4" stroke="currentColor" stroke-width="1.5"/><path d="M5 20c0-3.6 3.1-6 7-6s7 2.4 7 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg><h3>Role-based access</h3></div><p>Five clinical roles and a permissioned reading lifecycle — claim, report, sign — so responsibility and access map to your department.</p></div>
+    <div class="tcard reveal"><div class="ti"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.5"/><path d="M12 7v5l3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg><h3>PHI de-identification</h3></div><p>Configurable de-identification at the data boundary keeps protected health information contained to where it belongs.</p></div>
+    <div class="tcard reveal"><div class="ti"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="4" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/></svg><h3>Multi-tenant</h3></div><p>Cleanly isolate sites, departments, or research cohorts on one deployment — separate data, shared platform.</p></div>
+    <div class="tcard reveal"><div class="ti"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 3h9l5 5v13a1 1 0 01-1 1H6a1 1 0 01-1-1V4a1 1 0 011-1z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M14 3v5h5M8 13h8M8 17h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg><h3>Full audit trail</h3></div><p>Every state-changing action is logged and traceable — who did what, when — the record clinical governance requires.</p></div>
+  </div>
+</section>
+
+<!-- ─────────────── DEPLOY ─────────────── -->
+<section class="section band">
+  <div class="wrap deploy">
+    <div class="reveal">
+      <p class="eyebrow">Deployment</p>
+      <h2>Runs where your data lives.</h2>
+      <ul>
+        <li><span><b>On-premise or private cloud.</b> Keep imaging data inside your network — Cortex deploys next to your PACS.</span></li>
+        <li><span><b>GPU-accelerated inference.</b> NVIDIA-backed workers scale to your study volume; a CPU profile is available for smaller sites.</span></li>
+        <li><span><b>Fully containerized.</b> The whole stack ships as Docker services — reproducible, upgradeable, and yours to operate.</span></li>
+        <li><span><b>Integrates, doesn't replace.</b> Works with your existing PACS and viewer; the bundled OHIF viewer is there if you want it.</span></li>
+      </ul>
+    </div>
+    <div class="stack reveal" aria-label="Deployment stack overview">
+      <div><span class="p"># cortex services</span></div>
+      <div><span class="c">gateway</span>     FastAPI · REST + WebSocket</div>
+      <div><span class="c">workers</span>     Celery · GPU inference</div>
+      <div><span class="c">pacs</span>        Orthanc · DICOMweb</div>
+      <div><span class="c">viewer</span>      OHIF · integrated</div>
+      <div><span class="c">store</span>       PostgreSQL + object storage</div>
+      <div><span class="c">reports</span>     DICOM SR / SEG export</div>
+      <div style="margin-top:.6rem;"><span class="p"># orchestrated via docker-compose ✓</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ─────────────── FINAL CTA ─────────────── -->
+<section class="final" id="demo">
+  <div class="wrap final-in">
+    <p class="eyebrow reveal">Bring Cortex to your reading room</p>
+    <h2 class="reveal">See your own studies pre-read in minutes.</h2>
+    <p class="lead reveal" style="margin-inline:auto;">Book a walkthrough with our clinical team and we'll run Cortex against a de-identified sample from your own PACS — no rip-and-replace, no commitment.</p>
+    <div class="hero-cta reveal" style="justify-content:center;">
+      <a class="btn btn-primary" href="mailto:hello@cortexradiology.ai">Request a demo</a>
+      <a class="btn btn-ghost" href="#top">Back to top</a>
+    </div>
+  </div>
+</section>
+
+<!-- ─────────────── FOOTER ─────────────── -->
+<footer>
+  <div class="wrap">
+    <div class="foot">
+      <span class="brand" style="font-size:0.95rem;"><b>CORTEX</b>&nbsp;<span>Radiology</span></span>
+      <span>© 2026 Cortex Radiology · The intelligent layer over your reading room</span>
+    </div>
+    <p class="disclaimer">Cortex Radiology is assistive, non-diagnostic software intended to support qualified radiologists. It does not make diagnoses or clinical decisions; all findings require verification by a licensed physician before clinical use. Product capabilities, availability, and regulatory status vary by region. Figures describe platform configuration, not clinical performance.</p>
+  </div>
+</footer>
+
+<script>
+  (function () {
+    var reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    // Reveal-on-scroll
+    var items = document.querySelectorAll(".reveal");
+    if (reduce || !("IntersectionObserver" in window)) {
+      items.forEach(function (el) { el.classList.add("is-in"); });
+    } else {
+      var io = new IntersectionObserver(function (entries) {
+        entries.forEach(function (e) {
+          if (e.isIntersecting) { e.target.classList.add("is-in"); io.unobserve(e.target); }
+        });
+      }, { threshold: 0.14, rootMargin: "0px 0px -8% 0px" });
+      items.forEach(function (el) { io.observe(el); });
+    }
+
+    // Hero detector-array canvas: sensor dots + scanning sweep.
+    var cv = document.getElementById("detector");
+    if (!cv) return;
+    var ctx = cv.getContext("2d");
+    var W = 0, H = 0, dpr = Math.min(window.devicePixelRatio || 1, 2);
+    var GAP = 30, R = 1.1, dotColor = "rgba(45,225,230,0.5)";
+
+    function readColor() {
+      var c = getComputedStyle(document.documentElement).getPropertyValue("--grid-dot").trim();
+      if (c) dotColor = c;
+    }
+    function size() {
+      var host = cv.parentElement;
+      W = host.clientWidth; H = host.clientHeight;
+      cv.width = W * dpr; cv.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      readColor();
+    }
+    function draw(sweep) {
+      ctx.clearRect(0, 0, W, H);
+      var cols = Math.ceil(W / GAP), rows = Math.ceil(H / GAP);
+      for (var i = 0; i <= cols; i++) {
+        for (var j = 0; j <= rows; j++) {
+          var x = i * GAP, y = j * GAP;
+          var d = Math.abs(x - sweep);
+          var band = Math.max(0, 1 - d / 130);
+          var base = 0.20 + 0.14 * Math.sin((i + j) * 0.6);
+          ctx.beginPath();
+          ctx.globalAlpha = Math.min(1, base + band * 0.9);
+          ctx.fillStyle = dotColor;
+          ctx.arc(x, y, R + band * 1.8, 0, 6.2832);
+          ctx.fill();
+        }
+      }
+      ctx.globalAlpha = 0.5;
+      var g = ctx.createLinearGradient(sweep - 40, 0, sweep + 40, 0);
+      g.addColorStop(0, "rgba(0,0,0,0)"); g.addColorStop(0.5, dotColor); g.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = g; ctx.fillRect(sweep - 40, 0, 80, H);
+      ctx.globalAlpha = 1;
+    }
+
+    size();
+    window.addEventListener("resize", size);
+
+    if (reduce) {
+      draw(W * 0.5);
+    } else {
+      var t0 = null;
+      function frame(ts) {
+        if (t0 === null) t0 = ts;
+        var phase = ((ts - t0) % 7000) / 7000;
+        draw((-0.1 + 1.2 * phase) * W);
+        requestAnimationFrame(frame);
+      }
+      requestAnimationFrame(frame);
+    }
+  })();
+</script>
+
+</body>
+</html>

@@ -11,7 +11,7 @@ class WebSocketClient {
 
   constructor() {
     const protocol = typeof window !== "undefined" && window.location.protocol === "https:" ? "wss:" : "ws:";
-    const host = typeof window !== "undefined" ? window.location.host : "localhost";
+    const host = typeof window !== "undefined" ? window.location.host : "103.93.216.37";
     this.url = `${protocol}//${host}/ws`;
   }
 

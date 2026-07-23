@@ -447,11 +447,12 @@ class PDFReportGenerator:
                 return self._generate_mammography_report(
                     study_uid, result, patient_info or {}
                 )
-            if usecase_name in ("brain_mri", "spine_mri", "chest_mri", "abdomen_mri"):
-                return self._generate_mri_narrative_report(
-                    study_uid, usecase_name, result, patient_info or {}, narrative
-                )
-            if usecase_name in ("abdomen_ct", "abdomen_ct2", "abdomen_ct3", "abdomen_ct4"):
+            # MRI use cases are now part of the VLM report family (MedGemma two-pass) and
+            # render the same FINDINGS/CONCLUSIONS document as the CT plugins via
+            # _generate_abdomenct_report. The old segmentation-derived MRI narrative
+            # (_generate_mri_narrative_report) is retained for legacy results only.
+            from app.application.ct_report_regions import is_ct_report_usecase
+            if is_ct_report_usecase(usecase_name):
                 return self._generate_abdomenct_report(
                     study_uid, usecase_name, result, patient_info or {}
                 )
@@ -833,7 +834,6 @@ class PDFReportGenerator:
                 for f in flags if f.get("finding")
             ) or "No focal abnormality was flagged on the reviewed axial levels."
         conclusions = str(ai_report.get("impression", "") or "").strip() or "—"
-        disclaimer = str(ai_report.get("disclaimer", "") or "").strip()
         # Split findings prose into paragraphs on blank lines.
         findings_lines = [p.strip() for p in _re.split(r"\n\s*\n", findings_text) if p.strip()] or [findings_text]
 
@@ -902,20 +902,13 @@ class PDFReportGenerator:
         ))
         story.append(Spacer(1, 0.3 * cm))
 
-        story.append(Paragraph("<u>EXAMINATION:&nbsp; CT SCAN OF THE ABDOMEN AND PELVIS:</u>", sec_head))
-        story.append(Paragraph(
-            "<b><u>TECHNIQUE:</u></b> AI-assisted review of axial CT images of the abdomen and "
-            "pelvis in a soft-tissue window.", body,
-        ))
+        from app.application.ct_report_regions import region_meta
+        _region = region_meta(usecase_name)
+        story.append(Paragraph(f"<u>EXAMINATION:&nbsp; {_region['examination']}:</u>", sec_head))
+        story.append(Paragraph(f"<b><u>TECHNIQUE:</u></b> {_region['technique']}", body))
         story.extend(section("CLINICAL FEATURES", [clinical_features]))
         story.extend(section("FINDINGS", findings_lines))
         story.extend(section("CONCLUSIONS", [conclusions]))
-        if disclaimer:
-            story.append(Paragraph(
-                f"<i>{disclaimer}</i>",
-                ParagraphStyle("disc", parent=body, fontSize=8.5,
-                               textColor=colors.HexColor("#666666"), spaceBefore=6),
-            ))
 
         story.append(Spacer(1, 1.6 * cm))
         story.append(Paragraph("_______________________________", cell))

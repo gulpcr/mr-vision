@@ -1,0 +1,18 @@
+name: neck_mri
+version: "1.0.0"
+description: >
+  Neck MRI screening by a local MedGemma vision-language model, MULTIPARAMETRIC and in
+  TWO passes, with NO segmentation and NO measurement. Every MR sequence (T1, post-contrast
+  T1, T2, FLAIR, DWI, SWI ...) is classified, co-registered onto one reference grid, and
+  rendered as a labeled PANEL MONTAGE per axial level so signal can be compared across
+  sequences. Pass 1: MedGemma scans every level montage to flag potentially abnormal levels
+  by their cross-sequence signal pattern. Pass 2: only the flagged levels are sent back for a
+  free-text multiparametric report. Requires medgemma_enabled (local Ollama). NON-DIAGNOSTIC
+  assistive output — full radiologist review remains required.
+supported_body_parts:
+  - NECK
+required_sequences:
+  - T2
+  - T1
+model_type: MedGemma (local VLM) multiparametric two-pass full-volume anomaly scan + report
+enabled: true

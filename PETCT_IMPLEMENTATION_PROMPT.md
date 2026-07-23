@@ -1104,15 +1104,15 @@ After implementation, verify with:
 python -m pytest backend/tests/usecases/pet_ct/ -v
 
 # Integration test: submit a PET/CT study via API
-curl -X POST http://localhost:8000/api/studies/{uid}/jobs \
+curl -X POST http://103.93.216.37:8000/api/studies/{uid}/jobs \
   -H "Content-Type: application/json" \
   -d '{"usecase_names": ["pet_ct"]}'
 
 # Check job status
-curl http://localhost:8000/api/jobs/{job_id}
+curl http://103.93.216.37:8000/api/jobs/{job_id}
 
 # Retrieve result
-curl http://localhost:8000/api/results/{uid}/pet_ct
+curl http://103.93.216.37:8000/api/results/{uid}/pet_ct
 ```
 
 ---

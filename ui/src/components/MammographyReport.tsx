@@ -12,8 +12,6 @@ import { Printer, FileDown, AlertTriangle, X, Sparkles } from "lucide-react";
 const HOSPITAL_NAME = "AECH-KIRAN";
 const HOSPITAL_SUBTITLE =
   "Atomic Energy Cancer Hospital — Karachi Institute of Radiotherapy and Nuclear Medicine (KIRAN)";
-const FOOTER_ADDRESS =
-  "Haider Bux Gabol Road, Gulzar-e-Hijri, KDA Scheme 33, Karachi. Ph: 021-99261601-04 Ext. 222, 345";
 
 function fmtAge(raw: string | null): string {
   if (!raw) return "—";
@@ -157,18 +155,8 @@ export function MammographyReport({ study, result }: { study: Study; result: Res
                 <p>BI-RADS category {summary.birads_left} for left breast.</p>
               )}
             </div>
-
-            {/* AI attribution (no human signatory in read-only AI mode) */}
-            <div className="mt-12 text-center">
-              <p className="text-sm font-bold">AI-generated (Gemini)</p>
-              <p className="text-xs text-gray-500 mt-1">
-                {summary.ai_report_disclaimer || "Non-diagnostic — requires radiologist verification before clinical use."}
-              </p>
-            </div>
           </>
         )}
-
-        <p className="text-center text-[10px] text-gray-400 mt-8 pt-3 border-t border-gray-100">{FOOTER_ADDRESS}</p>
       </div>
     </div>
   );

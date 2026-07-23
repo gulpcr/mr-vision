@@ -1,71 +1,106 @@
-model:
-  # MONAI Model Zoo: BraTS brain tumor segmentation (SegResNet)
-  # Pre-trained on BraTS 2021 challenge data. Auto-downloads on first run.
-  # No manual weight provisioning required.
-  architecture: segresnet
-  bundle_name: brats_mri_segmentation
-  source: monai_model_zoo
-  version: "1.0.0"
-
-  # Auto-downloaded bundles are cached here (persisted via Docker volume)
-  bundle_cache_dir: /app/app/usecases/brain_mri/model/bundles
-
-  # If you have custom-trained weights (nnU-Net, SwinUNETR, etc.), set this
-  # path and the pipeline will prefer them over the auto-downloaded model.
-  custom_weights_path: null
-
-inference:
-  device: auto   # "auto" selects cuda when a real GPU is present, cpu otherwise
-  mixed_precision: true
-  batch_size: 1
-  sliding_window:
-    roi_size: [240, 240, 160]
-    sw_batch_size: 1
-    overlap: 0.6
-    mode: gaussian
-
+# brain_mri configuration (MULTIPARAMETRIC MRI report family). No learned model. Every MR
+# sequence is classified, co-registered onto one reference grid, and rendered as a labeled
+# PANEL MONTAGE per axial level; MedGemma scans the montages to flag levels, then reports on
+# the flagged ones. MRI has no absolute intensity scale (unlike CT HU), so each sequence tile
+# uses a per-volume PERCENTILE window. Measurement is DISABLED (no validated MR segmentation).
 preprocessing:
-  target_spacing: [1.0, 1.0, 1.0]
-  orientation: RAS
-  intensity_normalization: z_score
-  crop_to_nonzero: true
-  # Skull-strip each sequence before inference. BraTS is trained on skull-stripped
-  # brains, so this brings input in-distribution and stops the model labelling
-  # bright skull/scalp as tumour. Heuristic (Otsu + morphology); set false to disable.
-  skull_strip: true
+  edge_trim_fraction: 0.05
+  # Intensity-relative foreground: keep a level only if at least this fraction of the
+  # reference-sequence pixels sit above a low-percentile floor (drops near-empty air levels).
+  min_foreground_fraction: 0.05
+  max_scan_slices: 96
+  preview_count: 6
 
-postprocessing:
-  # BraTS SegResNet output channels (sigmoid, not softmax):
-  #   channel 0 → tumor core (TC)
-  #   channel 1 → whole tumor (WT)
-  #   channel 2 → enhancing tumor (ET)
-  # Post-processing converts sigmoid outputs into a merged label map.
-  label_map:
-    0: background
-    1: tumor_core
-    2: whole_tumor
-    3: enhancing_tumor
-  min_lesion_volume_ml: 0.05
-  apply_connected_components: true
-  largest_component_only_labels: [2]
+  # Per-sequence percentile window (no HU): clip each sequence to [low_pct, high_pct] of its
+  # own non-zero voxels so every tile is consistently windowed.
+  window_low_pct: 1.0
+  window_high_pct: 99.0
+
+  # Panel-montage layout.
+  tile_size: 448
+  montage_cols: 3
+  montage_max_size: 1536
+
+  # Sequence classification catalogue (first matching entry wins per series; largest series
+  # kept per sequence). A base_t1 series carrying a contrast marker is promoted to contrast_t1.
+  base_t1: "T1"
+  contrast_t1: "T1+C"
+  contrast_patterns:
+    - '(?i)post[\s_-]*contrast'
+    - '(?i)post[\s_-]*gad'
+    - '(?i)\+\s*c\b'
+    - '(?i)\bc\s*\+'
+    - '(?i)\bgad\b'
+    - '(?i)\+\s*gd'
+    - '(?i)\bgd\b'
+    - '(?i)\bce\b'
+    - '(?i)contrast'
+    - '(?i)\bpost\b'
+  sequences:
+    - name: "FLAIR"
+      patterns:
+        - '(?i)flair'
+        - '(?i)dark[\s_-]*fluid'
+    - name: "ADC"
+      patterns:
+        - '(?i)\badc\b'
+    - name: "DWI"
+      patterns:
+        - '(?i)\bdwi\b'
+        - '(?i)diffusion'
+        - '(?i)ep2d[\s_-]*diff'
+        - '(?i)b[\s_-]?1000'
+        - '(?i)\btrace'
+        - '(?i)tracew'
+    - name: "SWI"
+      patterns:
+        - '(?i)\bswi\b'
+        - '(?i)susceptibilit'
+        - '(?i)\bt2\*'
+        - '(?i)\bgre\b'
+        - '(?i)hemo'
+        - '(?i)haemo'
+    - name: "T2"
+      patterns:
+        - '(?i)\bt2\b'
+        - '(?i)t2w'
+        - '(?i)t2[\s_-]*tse'
+        - '(?i)t2[\s_-]*fse'
+        - '(?i)ciss'
+        - '(?i)ssfp'
+        - '(?i)fiesta'
+        - '(?i)cistern'
+        - '(?i)\bspace\b'
+        - '(?i)\bdrive\b'
+        - '(?i)\bfisp\b'
+        - '(?i)constructive'
+        - '(?i)balanced'
+    - name: "T1"
+      patterns:
+        - '(?i)\bt1\b'
+        - '(?i)mprage'
+        - '(?i)bravo'
+        - '(?i)t1w'
+        - '(?i)spgr'
+        - '(?i)fspgr'
+        - '(?i)\btfe\b'
+  # Montage tile order (present sequences tiled + labeled in this order).
+  sequence_order: ["T1", "T1+C", "T2", "FLAIR", "DWI", "ADC", "SWI"]
+  # Co-registration reference (first present wins; else the sequence with most slices).
+  reference_preference: ["FLAIR", "T2", "T1"]
+
+
+scan:
+  batch_size: 2
+  # MedGemma model tag for this use case (27B is more sensitive). Empty → global MEDGEMMA_MODEL.
+  model: "medgemma:27b"
+
+report:
+  max_report_levels: 10
+
+# Measurement DISABLED for MRI (no validated per-region segmentation seed).
+measurement:
+  enabled: false
 
 quality_checks:
-  min_expected_spacing_mm: 0.5
-  max_expected_spacing_mm: 5.0
-  min_slices: 20
-  max_spacing_anisotropy: 3.0
-  motion_artifact_threshold: 0.15
-
-swin_unetr:
-  # Set to a .pt file to activate SwinUNETR over the BraTS SegResNet bundle.
-  # Leave null to use the auto-downloaded BraTS bundle (default).
-  custom_weights_path: null
-  in_channels: 4              # T1 / T1ce / T2 / FLAIR (matches BraTS convention)
-  out_channels: 4             # background + TC + WT + ET
-  feature_size: 48
-  use_checkpoint: false
-  roi_size: [128, 128, 128]
-  sw_batch_size: 1
-  overlap: 0.5
-  mode: gaussian
-  threshold: 0.5
+  min_slices: 10

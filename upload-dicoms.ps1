@@ -4,7 +4,7 @@
 
 param(
     [string]$Folder = "$PSScriptRoot\DICOMS",
-    [string]$OrthancUrl = "http://localhost:8042",
+    [string]$OrthancUrl = "http://103.93.216.37:8042",
     [string]$Username = "orthanc",
     [string]$Password = "orthanc"
 )

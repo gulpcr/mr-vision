@@ -1,28 +1,32 @@
+# chest_mri is MANUAL-ONLY (like abdomen_ct and the report family): the rule below is
+# disabled so auto-classification never selects it. The multiparametric two-pass MedGemma
+# scan is expensive (many model calls per study), so it is opt-in — run it explicitly by
+# passing usecase_names=["chest_mri"] to POST /api/studies/{uid}/jobs.
+#
+# To enable auto-routing, flip `enabled: true` — the rule is already scoped to MR + this
+# region so it will only match relevant studies.
 rules:
-  - body_parts:
+  - modality: MR
+    body_parts:
       - CHEST
       - THORAX
       - LUNG
     study_description_patterns:
-      - "(?i)chest"
-      - "(?i)thorax"
-      - "(?i)thoracic"
-      - "(?i)lung"
-      - "(?i)pulmon"
-      - "(?i)cardiac.*mri"
-      - "(?i)mri.*chest"
+      - '(?i)chest'
+      - '(?i)thorax'
+      - '(?i)thoracic'
+      - '(?i)lung'
+      - '(?i)pulmon'
+      - '(?i)mediast'
+      - '(?i)cardiac.*mri'
+      - '(?i)mri.*chest'
     series_description_patterns:
-      - "(?i)haste"
-      - "(?i)t2.*haste"
-      - "(?i)haste.*t2"
-      - "(?i)t1.*gre"
-      - "(?i)gre.*t1"
-      - "(?i)stir"
-      - "(?i)true.*fisp"
-      - "(?i)truefisp"
-      - "(?i)fisp"
-      - "(?i)t2.*tse.*cor"
-      - "(?i)t2.*tse.*sag"
-    modality: MR
-    priority: 10
-    enabled: true
+      - '(?i)haste'
+      - '(?i)t2'
+      - '(?i)stir'
+      - '(?i)fisp'
+      - '(?i)t1'
+      - '(?i)cor'
+      - '(?i)ax'
+    priority: 5
+    enabled: false

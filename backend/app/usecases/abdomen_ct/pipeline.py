@@ -1,28 +1,31 @@
 from __future__ import annotations
 
-"""Abdomen CT → MedGemma pipeline.
+"""Abdomen CT (v2) → MedGemma two-pass pipeline.
 
-No learned model, no segmentation, no measurement. It takes the study's primary
-CT series straight from PACS, samples a set of axial slices EVENLY across the
-scanned volume (superior→inferior, so coverage is consistent regardless of slice
-thickness), renders each in a FIXED soft-tissue HU window (level 40 / width 400 —
-the portal-venous workhorse window), and exposes them as artifacts. The free-text
-radiological report is authored afterwards by a local MedGemma vision-language
-model in the Celery task hook (infrastructure/queue/tasks.py), which reads these
-PNGs from disk — mirroring how the pet_ct MedGemma path works.
+Unlike ``abdomen_ct`` — which samples a handful of axial levels (evenly or via a
+VQVAE anomaly selector) and hands them straight to MedGemma — ``abdomen_ct`` does
+NOT pre-select the slices to report. Instead it renders the WHOLE diagnostic volume
+and lets MedGemma itself decide what is abnormal, in two passes driven by the Celery
+task hook (infrastructure/queue/tasks.py):
 
-Design choices (see the conversation that produced this):
-  * Fixed HU windowing, not percentile auto-windowing — percentile flattens the
-    low-contrast difference between a lesion and normal parenchyma.
-  * Even-coverage sampling by fraction of depth, not fixed z indices — a study is
-    60–500 slices depending on thickness, so fixed indices land on random anatomy.
-  * MedGemma names the organs itself from the windowed slices (no TotalSegmentator);
-    the trade-off is that a small organ can fall between sampled slices, mitigated
-    by sampling more slices. This is assistive, NON-DIAGNOSTIC output.
+  Pass 1 (scan):   every foreground axial slice is rendered and fed to MedGemma in
+                   batches until the entire volume has been reviewed; MedGemma flags
+                   the slices (z-levels) that look potentially abnormal.
+  Pass 2 (report): only the flagged slices are sent back to MedGemma, which writes a
+                   structured free-text findings/impression report on them.
 
-Layer note: like the other plugins this module stays free of infrastructure
-imports (the MedGemma call lives in the Celery task). Its own prompt builder is in
-``app.usecases.abdomen_ct.prompts`` and is self-contained — no cross-plugin imports.
+This module owns Pass-0 only: series selection + rendering the full set of scannable
+slices. It stays free of infrastructure imports (the MedGemma calls live in the task
+hook, using ``app.usecases.abdomen_ct.report`` + ``prompts``). The rendered slices
+are written to ``working_dir/scan/`` and described by a ``scan_slices`` manifest
+returned to the hook; only a small preview subset is registered as artifacts here —
+the hook appends the flagged slices as artifacts before the MinIO upload, so exactly
+what MedGemma reported on is what gets stored/shown.
+
+Design choices mirror abdomen_ct: fixed HU windowing (not percentile — it flattens
+lesion-vs-parenchyma contrast), radiological display orientation, and NON-DIAGNOSTIC
+assistive output. The trade-off vs abdomen_ct is cost: scanning the whole volume is
+many more MedGemma calls, bounded by ``max_scan_slices``/``batch_size`` in config.
 """
 
 import asyncio
@@ -52,54 +55,31 @@ _CT_SCOUT_PATTERNS = [
 
 
 class Pipeline(BasePipeline):
-    """Samples soft-tissue-windowed abdomen CT slices; MedGemma narrates them later."""
+    """Renders the full scannable abdomen CT volume; MedGemma flags + narrates later."""
 
     def __init__(self) -> None:
         with open(CONFIG_PATH) as fh:
             self._cfg: dict[str, Any] = yaml.safe_load(fh) or {}
         self._cfg_pre = self._cfg.get("preprocessing", {})
+        self._cfg_scan = self._cfg.get("scan", {})
+        self._cfg_report = self._cfg.get("report", {})
         self._cfg_qa = self._cfg.get("quality_checks", {})
         self._model_version = "abdomen_ct_medgemma_v1.0.0"
         self._model_checksum = "n/a_no_model"
 
-        # Optional anomaly-guided slice selector (VQVAE + Transformer). Gated by the
-        # Settings flag AND the plugin's own anomaly.enabled AND weights on disk;
-        # any load failure leaves it None so infer() falls back to even sampling.
-        self._selector = None
-        self._load_anomaly_selector()
-
-    def _load_anomaly_selector(self) -> None:
-        from app.config import get_settings
-
-        cfg = self._cfg.get("anomaly", {}) or {}
-        if not (get_settings().abdomen_ct_anomaly_enabled and cfg.get("enabled", False)):
-            return
-
-        vq = USECASE_DIR / cfg.get("vqvae_weights", "model/vqvae_last.pt")
-        tr = USECASE_DIR / cfg.get("transformer_weights", "model/transformer_last.pt")
-        if not (vq.exists() and tr.exists()):
-            logger.warning("abdomen_ct_anomaly_weights_missing", vqvae=str(vq), transformer=str(tr))
-            return
-
-        try:
-            from app.usecases.abdomen_ct.anomaly import AnomalySliceSelector
-
-            selector = AnomalySliceSelector(cfg, USECASE_DIR)
-            selector.load()
-            self._selector = selector
-        except Exception as exc:
-            logger.warning("abdomen_ct_anomaly_load_failed_using_even_sampling", error=str(exc))
-            self._selector = None
-
     # ── series selection ─────────────────────────────────────────────────────
 
-    @staticmethod
-    def _select_primary_series(series: list[Series]) -> Series | None:
-        """Pick the diagnostic CT volume: most instances, excluding scouts.
+    def _select_primary_series(self, series: list[Series]) -> Series | None:
+        """Pick the REGION-appropriate diagnostic CT volume.
 
-        Prefers CT-modality series; skips single/dual-slice scouts/topograms. Falls
-        back to the largest series of any modality if no CT is tagged.
+        Among non-scout CT series, prefer those whose description matches this region's
+        ``preprocessing.series_patterns`` — so on a multi-series study (e.g. a separate
+        chest series AND an abdomen series in one study) each region-plugin reads ITS
+        OWN series rather than just the largest one. Ties broken by instance count.
+        Falls back to the largest non-scout series when nothing matches, setting
+        ``self._series_region_matched=False`` so ``preprocess`` can raise a QA flag.
         """
+        self._series_region_matched = True
         if not series:
             return None
 
@@ -112,7 +92,39 @@ class Pipeline(BasePipeline):
             return any(re.search(p, desc) for p in _CT_SCOUT_PATTERNS) or (0 < n <= 2)
 
         ct = [s for s in series if (s.modality or "").upper() == "CT" and not _is_scout(s)]
-        pool = ct or [s for s in series if not _is_scout(s)] or series
+        pool = ct or [s for s in series if not _is_scout(s)] or list(series)
+
+        # Region match is TAG-FIRST, description-fallback:
+        #   1. DICOM BodyPartExamined (0018,0015) — the canonical, reliable per-series
+        #      body-region tag — matched against this region's `body_part_tags`.
+        #   2. SeriesDescription regex (`series_patterns`) — the fallback, because
+        #      BodyPartExamined is DICOM Type 3 (optional) and is frequently blank
+        #      (it is empty on this deployment's scanners), so the free-text description
+        #      is often the only populated region signal.
+        tags = [t.strip().upper() for t in (self._cfg_pre.get("body_part_tags") or [])]
+        patterns = self._cfg_pre.get("series_patterns") or []
+
+        def _bpe(s: Series) -> str:
+            return (s.body_part_examined or "").strip().upper().replace(" ", "")
+
+        if tags:
+            tag_hits = [
+                s for s in pool
+                if _bpe(s) and any(_bpe(s) == t or t in _bpe(s) for t in tags)
+            ]
+            if tag_hits:
+                return max(tag_hits, key=_instances)
+        if patterns:
+            desc_hits = [
+                s for s in pool
+                if any(re.search(p, s.series_description or "") for p in patterns)
+            ]
+            if desc_hits:
+                return max(desc_hits, key=_instances)
+        # Neither the tag nor the description identified this region — read the largest
+        # series but flag it, so the report notes it may not match this region's anatomy.
+        if tags or patterns:
+            self._series_region_matched = False
         return max(pool, key=_instances)
 
     # ── Phase 1: preprocess (download the primary CT series) ───────────────────
@@ -141,12 +153,23 @@ class Pipeline(BasePipeline):
             )
         )
 
+        qa_flags: list[str] = []
+        qa_details: dict[str, Any] = {}
+        if not getattr(self, "_series_region_matched", True):
+            # No series matched this region's series_patterns on a study that has other
+            # series — this plugin read the largest series, which may be another region.
+            qa_flags.append("series_region_unmatched")
+            qa_details["series_region_unmatched"] = (
+                f"No series matched this region; read '{primary.series_description}'."
+            )
+
         logger.info(
             "abdomen_ct_preprocess_complete",
             study_uid=study.study_instance_uid,
             series=primary.series_description,
             modality=primary.modality,
             instances=getattr(primary, "num_instances", None),
+            region_matched=getattr(self, "_series_region_matched", True),
         )
 
         return {
@@ -155,148 +178,153 @@ class Pipeline(BasePipeline):
             "modality": (primary.modality or study.modality or "").upper() or None,
             "series_description": primary.series_description,
             "study_description": study.study_description,
-            "qa_flags": [],
-            "qa_details": {},
+            "qa_flags": qa_flags,
+            "qa_details": qa_details,
         }
 
-    # ── Phase 2: infer (anomaly-guided slice selection, or pass-through) ─────────
+    # ── Phase 2: infer (no learned model — pass-through) ─────────────────────────
 
     def infer(self, preprocessed: dict[str, Any], working_dir: str) -> dict[str, Any]:
-        out = dict(preprocessed)
-        if self._selector is None or not self._selector.ready:
-            logger.info("abdomen_ct_infer_even_sampling")
-            return out
+        # The "inference" for abdomen_ct is the MedGemma two-pass scan/report, which
+        # runs in the Celery task hook (it needs the infrastructure MedGemma client).
+        # Here we only pass the preprocessed context through.
+        logger.info("abdomen_ct_infer_passthrough")
+        return dict(preprocessed)
 
-        try:
-            arr = self._load_volume(preprocessed["volume_path"])
-            if arr.ndim != 3:
-                logger.info("abdomen_ct_anomaly_skipped_not_a_volume")
-                return out
-            z_lo, z_hi = self._trim_bounds(arr.shape[2])
-            top_k = max(1, int(self._cfg_pre.get("slice_count", 6)))
-            result = self._selector.select(arr, top_k, z_lo, z_hi)
-            if result and result.get("selected_z"):
-                out["anomaly_selected_z"] = result["selected_z"]
-                out["anomaly_scores"] = result["scores"]
-                out["anomaly_scored_count"] = result["scored_count"]
-                out["model_version"] = result["model_version"]
-                out["model_checksum"] = result["model_checksum"]
-        except Exception as exc:
-            logger.warning("abdomen_ct_anomaly_infer_failed_fallback", error=str(exc))
-        return out
-
-    # ── Phase 3: postprocess (sample + window the slices) ───────────────────────
+    # ── Phase 3: postprocess (render the full scannable volume) ──────────────────
 
     def postprocess(self, inference_output: dict[str, Any], working_dir: str) -> dict[str, Any]:
         logger.info("abdomen_ct_postprocess_start")
 
-        artifacts_dir = Path(working_dir) / "artifacts"
-        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        scan_dir = Path(working_dir) / "scan"
+        scan_dir.mkdir(parents=True, exist_ok=True)
 
         qa_flags: list[str] = list(inference_output.get("qa_flags", []))
         qa_details: dict[str, Any] = dict(inference_output.get("qa_details", {}))
 
         arr = self._load_volume(inference_output["volume_path"])
         windows = self._windows()
+        win_names = [str(w["name"]) for w in windows]
 
-        # Slice indices come from the anomaly selector when it ran in infer(); otherwise
-        # fall back to even-across-volume sampling. Either way we render the RAW slices.
-        anomaly_z = inference_output.get("anomaly_selected_z")
-        if anomaly_z:
-            z_indices = [int(z) for z in anomaly_z]
-            selection_method = "anomaly"
-        else:
-            z_indices = self._sample_slice_indices(arr)
-            selection_method = "even"
+        # scan_windows / report_windows are validated against the rendered windows.
+        scan_windows = [w for w in (self._cfg_scan.get("scan_windows") or []) if w in win_names]
+        if not scan_windows:
+            # Back-compat: accept a single scan_window, else default to the first window.
+            legacy = str(self._cfg_scan.get("scan_window", win_names[0]))
+            scan_windows = [legacy if legacy in win_names else win_names[0]]
+        report_windows = [w for w in (self._cfg_report.get("windows") or []) if w in win_names]
+        if not report_windows:
+            report_windows = [scan_windows[0]]
 
         if arr.ndim < 3:
             qa_flags.append("not_a_volume")
-        elif arr.shape[2] < int(self._cfg_qa.get("min_slices", 10)):
-            qa_flags.append("insufficient_slices")
+            candidates: list[int] = [0] if arr.ndim == 2 else []
+        else:
+            if arr.shape[2] < int(self._cfg_qa.get("min_slices", 10)):
+                qa_flags.append("insufficient_slices")
+            candidates = self._candidate_slices(arr)
 
-        # Render each sampled LEVEL in each configured HU window. Ordering is
-        # level-major (all windows of level 1, then level 2, …) so same-level windows
-        # stay adjacent in the image list the model receives.
-        artifacts: list[dict[str, Any]] = []
-        levels: list[int] = []
-        for order, z in enumerate(z_indices, 1):
+        # Render every candidate slice in every configured window into working_dir/scan/.
+        # scan_slices is the manifest the task hook reads (it is NOT persisted to the
+        # result — the task only saves the known result keys).
+        scan_slices: list[dict[str, Any]] = []
+        for order, z in enumerate(candidates, 1):
             slice_2d = self._extract_slice(arr, z)
             if slice_2d is None:
                 continue
-            level_rendered = False
             for w in windows:
-                name = f"slice_{order:02d}_z{z:04d}_{self._slug(w['name'])}.png"
-                out_path = artifacts_dir / name
+                name = f"slc_{order:03d}_z{z:04d}_{self._slug(w['name'])}.png"
+                out_path = scan_dir / name
                 if self._render_png(slice_2d, str(out_path), float(w["level"]), float(w["width"])):
-                    level_rendered = True
-                    artifacts.append({
+                    scan_slices.append({
+                        "z": int(z),
+                        "window": str(w["name"]),
                         "name": name,
-                        "artifact_type": "abdomen_ct_slice_png",
                         "local_path": str(out_path),
-                        "content_type": "image/png",
+                        "order": order,
                     })
-            if level_rendered:
-                levels.append(z)
 
-        if not artifacts:
+        if not scan_slices:
             qa_flags.append("no_slices_rendered")
 
+        # Preview: a small, evenly-spread set of scan-window slices always registered as
+        # artifacts so the UI shows something even when MedGemma is off / flags nothing.
+        # The hook appends the flagged slices to this list before upload.
+        preview_count = max(1, int(self._cfg_pre.get("preview_count", 6)))
+        preview_z = self._even_pick(candidates, preview_count)
+        by_z_window = {(s["z"], s["window"]): s for s in scan_slices}
+        artifacts: list[dict[str, Any]] = []
+        for z in preview_z:
+            entry = by_z_window.get((int(z), scan_windows[0]))
+            if entry:
+                artifacts.append({
+                    "name": entry["name"],
+                    "artifact_type": "abdomen_ct_slice_png",
+                    "local_path": entry["local_path"],
+                    "content_type": "image/png",
+                })
+
         image_dimensions = [int(d) for d in arr.shape]
-        window_names = [str(w["name"]) for w in windows]
         window_desc = ", ".join(
             f"{w['name']} (L{float(w['level']):g}/W{float(w['width']):g})" for w in windows
         )
-        anomaly_scores = inference_output.get("anomaly_scores") or {}
-        if selection_method == "anomaly":
-            top = ", ".join(f"z{z} (nll {anomaly_scores.get(z, anomaly_scores.get(int(z))):.2f})"
-                            for z in levels if anomaly_scores.get(z, anomaly_scores.get(int(z))) is not None)
-            inference_method = "vqvae_transformer_anomaly_slice_selection"
-            selection_note = (
-                f"Selected {len(levels)} MOST-ANOMALOUS axial level(s) via an unsupervised "
-                f"VQVAE+Transformer (of {inference_output.get('anomaly_scored_count', '?')} scored): "
-                f"{top or 'z=' + str(levels)}"
-            )
-        else:
-            inference_method = "even_sampling (multi-window slices → MedGemma)"
-            selection_note = f"Sampled {len(levels)} axial level(s) EVENLY across the volume (z={levels})"
 
         summary = {
             "modality": inference_output.get("modality"),
             "series_description": inference_output.get("series_description"),
             "study_description": inference_output.get("study_description"),
-            "slices_rendered": levels,
-            "slice_selection": selection_method,
-            "anomaly_scores": {int(z): anomaly_scores[z] for z in anomaly_scores} or None,
+            "candidate_slices": len(candidates),
             "image_dimensions": image_dimensions,
-            "hu_windows": window_names,
+            "hu_windows": win_names,
+            "scan_windows": scan_windows,
+            "report_windows": report_windows,
             "quantitative": False,
-            "inference_method": inference_method,
+            "slice_selection": "medgemma_full_volume_scan",
+            "inference_method": "medgemma_two_pass (scan whole volume → report flagged slices)",
+            # Filled by the task hook when MedGemma runs:
+            "anomaly_slices": [],
             "processing_notes": (
-                f"{selection_note}, each rendered in {len(windows)} HU window(s): {window_desc}. "
-                f"{len(artifacts)} image(s) total. A free-text radiological report is authored "
-                "by the local MedGemma model when enabled. NON-DIAGNOSTIC: only the selected "
-                "slices were reviewed — pathology on unshown slices cannot be excluded."
+                f"Rendered {len(candidates)} foreground axial slice(s) across the volume in "
+                f"{len(windows)} HU window(s): {window_desc}. MedGemma scans EVERY slice in "
+                f"batches to flag potential abnormalities, then reports on the flagged slices "
+                "only. NON-DIAGNOSTIC assistive output: intervening/non-flagged slices are not "
+                "individually reported and no measurement/segmentation is performed — full-volume "
+                "radiologist review remains required."
             ),
         }
 
         logger.info(
             "abdomen_ct_postprocess_complete",
-            levels_sampled=levels, images_total=len(artifacts),
-            image_dimensions=image_dimensions, qa_flags=qa_flags,
+            candidate_slices=len(candidates), scan_images=len(scan_slices),
+            preview_artifacts=len(artifacts), scan_windows=scan_windows,
+            report_windows=report_windows, image_dimensions=image_dimensions, qa_flags=qa_flags,
         )
 
         return {
             "summary": summary,
             "measurements": {
                 "image_dimensions": image_dimensions,
-                "slices_rendered": levels,
-                "images_total": len(artifacts),
+                "candidate_slices": len(candidates),
+                "scan_images_rendered": len(scan_slices),
             },
             "qa_flags": qa_flags,
             "qa_details": qa_details,
-            "model_version": inference_output.get("model_version", self._model_version),
-            "model_checksum": inference_output.get("model_checksum", self._model_checksum),
+            "model_version": self._model_version,
+            "model_checksum": self._model_checksum,
             "artifacts": artifacts,
+            # Extra keys consumed by the Celery task hook only (not persisted):
+            "scan_slices": scan_slices,
+            "scan_config": {
+                "scan_windows": scan_windows,
+                "report_windows": report_windows,
+                "batch_size": int(self._cfg_scan.get("batch_size", 2)),
+                "max_report_levels": int(self._cfg_report.get("max_report_levels", 6)),
+                # Per-use-case model override (falls back to global MEDGEMMA_MODEL in
+                # the hook when empty).
+                "model": str(self._cfg_scan.get("model", "") or ""),
+                # SAM-Med3D tumour-measurement config (measurement: block).
+                "measure": self._cfg.get("measurement", {}) or {},
+            },
         }
 
     # ── helpers ──────────────────────────────────────────────────────────────
@@ -329,35 +357,56 @@ class Pipeline(BasePipeline):
 
     def _trim_bounds(self, nz: int) -> tuple[int, int]:
         """Inclusive [lo, hi] z range after trimming partial-anatomy/table ends."""
-        trim = float(self._cfg_pre.get("edge_trim_fraction", 0.08))
+        trim = float(self._cfg_pre.get("edge_trim_fraction", 0.05))
         lo = int(nz * trim)
         hi = int(nz * (1.0 - trim)) - 1
         if hi <= lo:
             lo, hi = 0, nz - 1
         return lo, hi
 
-    def _sample_slice_indices(self, arr: np.ndarray) -> list[int]:
-        """Evenly-spaced z indices across the volume (superior→inferior).
+    def _candidate_slices(self, arr: np.ndarray) -> list[int]:
+        """Foreground axial z-indices (superior→inferior), capped to max_scan_slices.
 
-        Trims a fraction off each end (partial anatomy / table) and returns
-        ``slice_count`` unique indices. For a 2D image returns the single slice.
+        Trims the partial-anatomy ends, drops near-empty (air/table) slices, and — if
+        the surviving count exceeds the cap — keeps an evenly-strided subset so the
+        whole volume is still covered. Returned descending (superior→inferior), which
+        is the radiological reading order used throughout the plugin.
         """
         if arr.ndim < 3:
-            return [0]
+            return [0] if arr.ndim == 2 else []
 
         nz = int(arr.shape[2])
-        count = max(1, int(self._cfg_pre.get("slice_count", 6)))
         lo, hi = self._trim_bounds(nz)
-        if count == 1:
-            return [(lo + hi) // 2]
-        # NIfTI z is stored inferior→superior; sample from hi (superior) down to lo
-        # so image order 1..N reads superior→inferior, matching radiological reading.
-        idx = np.linspace(hi, lo, count).round().astype(int)
+        min_fg = float(self._cfg_pre.get("min_foreground_fraction", 0.05))
+
+        kept: list[int] = []
+        for z in range(hi, lo - 1, -1):  # superior→inferior
+            sl = arr[:, :, z]
+            if float((sl > -500.0).mean()) >= min_fg:
+                kept.append(z)
+        if not kept:  # degenerate (e.g. uncalibrated) — fall back to the trimmed range
+            kept = list(range(hi, lo - 1, -1))
+
+        cap = max(1, int(self._cfg_pre.get("max_scan_slices", 48)))
+        if len(kept) > cap:
+            picked = self._even_pick(kept, cap)
+            logger.info("abdomen_ct_candidates_strided", available=len(kept), scanned=len(picked))
+            return picked
+        return kept
+
+    @staticmethod
+    def _even_pick(items: list[int], k: int) -> list[int]:
+        """Evenly-spread subset of ``items`` (preserving order), at most ``k`` elements."""
+        if k <= 0 or not items:
+            return []
+        if len(items) <= k:
+            return list(items)
+        idx = np.linspace(0, len(items) - 1, k).round().astype(int)
         seen: list[int] = []
-        for z in idx:
-            z = int(max(0, min(nz - 1, z)))
-            if z not in seen:
-                seen.append(z)
+        for i in idx:
+            v = items[int(i)]
+            if v not in seen:
+                seen.append(v)
         return seen
 
     @staticmethod
@@ -389,7 +438,7 @@ class Pipeline(BasePipeline):
             # up), so transpose then flip the vertical axis nibabel stores bottom-up.
             img = Image.fromarray((np.flipud(norm.T) * 255.0).astype(np.uint8), mode="L")
 
-            out_size = int(self._cfg_pre.get("out_size", 1024) or 0)
+            out_size = int(self._cfg_pre.get("out_size", 768) or 0)
             long_edge = max(img.size)
             if out_size and long_edge and long_edge != out_size:
                 scale = out_size / long_edge

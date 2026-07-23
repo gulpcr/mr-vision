@@ -21,9 +21,15 @@ window.config = {
       configuration: {
         friendlyName: 'Orthanc PACS',
         name: 'orthanc',
-        wadoUriRoot: 'http://localhost/wado',
-        qidoRoot: 'http://localhost/dicom-web',
-        wadoRoot: 'http://localhost/dicom-web',
+        // Relative (same-origin) roots. OHIF, the UI, and the Orthanc
+        // /dicom-web + /wado endpoints are all served by the same platform
+        // nginx, so leaving off the scheme+host makes the browser resolve
+        // these against whatever origin loaded the viewer. This works over
+        // http or https, from localhost, the exposed IP, or a domain name,
+        // with no CORS or mixed-content problems. Do NOT hardcode a host here.
+        wadoUriRoot: '/wado',
+        qidoRoot: '/dicom-web',
+        wadoRoot: '/dicom-web',
         qidoSupportsIncludeField: false,
         imageRendering: 'wadors',
         thumbnailRendering: 'wadors',

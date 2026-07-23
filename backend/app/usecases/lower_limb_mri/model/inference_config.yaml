@@ -1,0 +1,77 @@
+# lower_limb_mri configuration (MULTIPARAMETRIC MRI report family). No learned model. Every MR
+# sequence is classified, co-registered onto one reference grid, and rendered as a labeled
+# PANEL MONTAGE per axial level; MedGemma scans the montages to flag levels, then reports on
+# the flagged ones. MRI has no absolute intensity scale (unlike CT HU), so each sequence tile
+# uses a per-volume PERCENTILE window. Measurement is DISABLED (no validated MR segmentation).
+preprocessing:
+  edge_trim_fraction: 0.05
+  # Intensity-relative foreground: keep a level only if at least this fraction of the
+  # reference-sequence pixels sit above a low-percentile floor (drops near-empty air levels).
+  min_foreground_fraction: 0.05
+  max_scan_slices: 96
+  preview_count: 6
+
+  # Per-sequence percentile window (no HU): clip each sequence to [low_pct, high_pct] of its
+  # own non-zero voxels so every tile is consistently windowed.
+  window_low_pct: 1.0
+  window_high_pct: 99.0
+
+  # Panel-montage layout.
+  tile_size: 448
+  montage_cols: 3
+  montage_max_size: 1536
+
+  # Sequence classification catalogue (first matching entry wins per series; largest series
+  # kept per sequence). A base_t1 series carrying a contrast marker is promoted to contrast_t1.
+  base_t1: "T1"
+  contrast_t1: "T1+C"
+  contrast_patterns:
+    - '(?i)post[\s_-]*contrast'
+    - '(?i)post[\s_-]*gad'
+    - '(?i)\+\s*c\b'
+    - '(?i)\bc\s*\+'
+    - '(?i)\bgad\b'
+    - '(?i)\+\s*gd'
+    - '(?i)\bgd\b'
+    - '(?i)\bce\b'
+    - '(?i)contrast'
+    - '(?i)\bpost\b'
+  sequences:
+    - name: "STIR"
+      patterns:
+        - '(?i)stir'
+        - '(?i)t2.*fs'
+        - '(?i)pd.*fs'
+        - '(?i)fat[\s_-]*sat'
+        - '(?i)spair'
+    - name: "T2"
+      patterns:
+        - '(?i)\bt2\b'
+        - '(?i)t2w'
+        - '(?i)\bpd\b'
+        - '(?i)proton'
+    - name: "T1"
+      patterns:
+        - '(?i)\bt1\b'
+        - '(?i)t1w'
+        - '(?i)t1[\s_-]*se'
+  # Montage tile order (present sequences tiled + labeled in this order).
+  sequence_order: ["T1", "T2", "STIR", "T1+C"]
+  # Co-registration reference (first present wins; else the sequence with most slices).
+  reference_preference: ["T2", "STIR", "T1"]
+
+
+scan:
+  batch_size: 2
+  # MedGemma model tag for this use case (27B is more sensitive). Empty → global MEDGEMMA_MODEL.
+  model: "medgemma:27b"
+
+report:
+  max_report_levels: 10
+
+# Measurement DISABLED for MRI (no validated per-region segmentation seed).
+measurement:
+  enabled: false
+
+quality_checks:
+  min_slices: 10

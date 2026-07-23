@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { Study, Result, getPreviewUrl, getArtifactUrl, getFusedUrl } from "@/lib/api";
+import { isCtReportUsecase } from "@/lib/ctReport";
 import { QAPanel } from "./QAPanel";
 import { FusedViewer } from "./FusedViewer";
 import {
@@ -92,11 +93,9 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
   const actuallyHasPet = study.series.some((s) => s.modality === "PT");
   const isPetCt = PET_USECASES.includes(result.usecase_name) && actuallyHasPet;
   const isPipelineMismatch = PET_USECASES.includes(result.usecase_name) && !actuallyHasPet;
-  const isAbdomenCt = result.usecase_name === "abdomen_ct";
-  const isAbdomenCt2 = result.usecase_name === "abdomen_ct2";
-  const isAbdomenCt3 = result.usecase_name === "abdomen_ct3";
-  const isAbdomenScan = isAbdomenCt2 || isAbdomenCt3; // full-volume scan variants (flagged slices)
-  const isAbdomenCtLike = isAbdomenCt || isAbdomenCt2 || isAbdomenCt3;
+  const isAbdomenCt = isCtReportUsecase(result.usecase_name); // CT-report family (abdomen_ct + ct_*)
+  const isAbdomenScan = isAbdomenCt; // full-volume MedGemma scan (flagged slices)
+  const isAbdomenCtLike = isAbdomenCt;
 
   return (
     <div className="report-container">
@@ -294,10 +293,7 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
 
           {(() => {
             const slices = result.artifacts.filter(
-              (a) =>
-                a.artifact_type === "abdomen_ct_slice_png" ||
-                a.artifact_type === "abdomen_ct2_slice_png" ||
-                a.artifact_type === "abdomen_ct3_slice_png"
+              (a) => a.artifact_type === `${result.usecase_name}_slice_png`
             );
             if (slices.length === 0) return null;
             return (

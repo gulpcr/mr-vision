@@ -1,0 +1,25 @@
+# lumbar_spine_mri is MANUAL-ONLY (like abdomen_ct and the report family): the rule below is
+# disabled so auto-classification never selects it. The multiparametric two-pass MedGemma
+# scan is expensive (many model calls per study), so it is opt-in — run it explicitly by
+# passing usecase_names=["lumbar_spine_mri"] to POST /api/studies/{uid}/jobs.
+#
+# To enable auto-routing, flip `enabled: true` — the rule is already scoped to MR + this
+# region so it will only match relevant studies.
+rules:
+  - modality: MR
+    body_parts:
+      - SPINE
+      - LSPINE
+    study_description_patterns:
+      - '(?i)lumbar'
+      - '(?i)l.?spine'
+      - '(?i)lumbosacral'
+      - '(?i)\bspine\b'
+    series_description_patterns:
+      - '(?i)t2'
+      - '(?i)t1'
+      - '(?i)stir'
+      - '(?i)sag'
+      - '(?i)ax'
+    priority: 5
+    enabled: false

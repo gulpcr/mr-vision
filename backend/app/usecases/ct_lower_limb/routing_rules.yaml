@@ -1,0 +1,19 @@
+# ct_lower_limb is MANUAL-ONLY: the rule below is disabled so auto-classification never
+# selects it. The two-pass full-volume MedGemma scan is expensive (many model calls per
+# study), so it is opt-in — run it explicitly by passing usecase_names=["ct_lower_limb"] to
+# POST /api/studies/{uid}/jobs. Flip `enabled: true` to allow auto-routing (the rule is
+# already scoped to CT + this region).
+rules:
+  - modality: CT
+    body_parts:
+      - LOWER_LIMB
+      - KNEE
+    study_description_patterns:
+      - "(?i)lower\\s*limb"
+      - "(?i)\\bfemur\\b"
+      - "(?i)\\btibia\\b"
+      - "(?i)\\bknee\\b"
+      - "(?i)\\bankle\\b"
+      - "(?i)\\bleg\\b"
+    priority: 5
+    enabled: false

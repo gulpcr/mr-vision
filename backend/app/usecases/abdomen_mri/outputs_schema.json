@@ -1,82 +1,193 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "Abdomen MRI Segmentation Result",
+  "title": "Abdomen MRI Multiparametric MedGemma Two-Pass Report Result",
   "type": "object",
-  "required": ["summary", "measurements", "qa_flags", "qa_details", "model_version", "model_checksum", "artifacts"],
+  "required": [
+    "summary",
+    "measurements",
+    "qa_flags",
+    "model_version",
+    "artifacts"
+  ],
   "properties": {
     "summary": {
       "type": "object",
-      "required": ["hepatomegaly_suspected", "splenomegaly_suspected", "organ_count_segmented"],
       "properties": {
-        "hepatomegaly_suspected": { "type": "boolean" },
-        "splenomegaly_suspected": { "type": "boolean" },
-        "organ_count_segmented": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 5,
-          "description": "Number of organs with non-zero segmentation volume"
+        "modality": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
-        "segmentation_labels": {
-          "type": "object",
-          "additionalProperties": { "type": "string" }
+        "series_description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "study_description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "candidate_slices": {
+          "type": "integer"
+        },
+        "image_dimensions": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
         },
         "sequences_used": {
           "type": "array",
-          "items": { "type": "string" }
+          "items": {
+            "type": "string"
+          }
         },
-        "processing_notes": { "type": "string" }
+        "reference_sequence": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "hu_windows": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "scan_windows": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "report_windows": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "quantitative": {
+          "type": "boolean"
+        },
+        "slice_selection": {
+          "type": "string"
+        },
+        "inference_method": {
+          "type": "string"
+        },
+        "processing_notes": {
+          "type": "string"
+        },
+        "anomaly_slices": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        },
+        "anomaly_findings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "z": {
+                "type": "integer"
+              },
+              "finding": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "scan_batches": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "ai_report": {
+          "type": "object",
+          "properties": {
+            "findings": {
+              "type": "string"
+            },
+            "impression": {
+              "type": "string"
+            },
+            "disclaimer": {
+              "type": "string"
+            }
+          }
+        },
+        "ai_report_provider": {
+          "type": "string"
+        }
       }
     },
     "measurements": {
       "type": "object",
-      "required": [
-        "volumes_ml",
-        "total_parenchymal_volume_ml"
-      ],
       "properties": {
-        "volumes_ml": {
-          "type": "object",
-          "description": "Per-organ volumes in mL",
-          "properties": {
-            "liver": { "type": "number", "minimum": 0 },
-            "spleen": { "type": "number", "minimum": 0 },
-            "right_kidney": { "type": "number", "minimum": 0 },
-            "left_kidney": { "type": "number", "minimum": 0 },
-            "pancreas": { "type": "number", "minimum": 0 }
-          },
-          "additionalProperties": { "type": "number" }
-        },
-        "total_parenchymal_volume_ml": { "type": "number", "minimum": 0 },
-        "voxel_spacing_mm": {
-          "type": "array",
-          "items": { "type": "number" }
-        },
         "image_dimensions": {
           "type": "array",
-          "items": { "type": "integer" }
+          "items": {
+            "type": "integer"
+          }
+        },
+        "candidate_slices": {
+          "type": "integer"
+        },
+        "scan_images_rendered": {
+          "type": "integer"
+        },
+        "sequences_used": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       }
     },
     "qa_flags": {
       "type": "array",
-      "items": { "type": "string" }
+      "items": {
+        "type": "string"
+      }
     },
     "qa_details": {
       "type": "object",
       "additionalProperties": true
     },
-    "model_version": { "type": "string" },
-    "model_checksum": { "type": "string" },
+    "model_version": {
+      "type": "string"
+    },
+    "model_checksum": {
+      "type": "string"
+    },
     "artifacts": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["name", "artifact_type", "local_path", "content_type"],
+        "required": [
+          "name",
+          "artifact_type",
+          "local_path"
+        ],
         "properties": {
-          "name": { "type": "string" },
-          "artifact_type": { "type": "string" },
-          "local_path": { "type": "string" },
-          "content_type": { "type": "string" }
+          "name": {
+            "type": "string"
+          },
+          "artifact_type": {
+            "type": "string"
+          },
+          "local_path": {
+            "type": "string"
+          },
+          "content_type": {
+            "type": "string"
+          }
         }
       }
     }

@@ -1,0 +1,195 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Lower Limb MRI Multiparametric MedGemma Two-Pass Report Result",
+  "type": "object",
+  "required": [
+    "summary",
+    "measurements",
+    "qa_flags",
+    "model_version",
+    "artifacts"
+  ],
+  "properties": {
+    "summary": {
+      "type": "object",
+      "properties": {
+        "modality": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "series_description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "study_description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "candidate_slices": {
+          "type": "integer"
+        },
+        "image_dimensions": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        },
+        "sequences_used": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "reference_sequence": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "hu_windows": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "scan_windows": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "report_windows": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "quantitative": {
+          "type": "boolean"
+        },
+        "slice_selection": {
+          "type": "string"
+        },
+        "inference_method": {
+          "type": "string"
+        },
+        "processing_notes": {
+          "type": "string"
+        },
+        "anomaly_slices": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        },
+        "anomaly_findings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "z": {
+                "type": "integer"
+              },
+              "finding": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "scan_batches": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "ai_report": {
+          "type": "object",
+          "properties": {
+            "findings": {
+              "type": "string"
+            },
+            "impression": {
+              "type": "string"
+            },
+            "disclaimer": {
+              "type": "string"
+            }
+          }
+        },
+        "ai_report_provider": {
+          "type": "string"
+        }
+      }
+    },
+    "measurements": {
+      "type": "object",
+      "properties": {
+        "image_dimensions": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        },
+        "candidate_slices": {
+          "type": "integer"
+        },
+        "scan_images_rendered": {
+          "type": "integer"
+        },
+        "sequences_used": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "qa_flags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "qa_details": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "model_version": {
+      "type": "string"
+    },
+    "model_checksum": {
+      "type": "string"
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "artifact_type",
+          "local_path"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "artifact_type": {
+            "type": "string"
+          },
+          "local_path": {
+            "type": "string"
+          },
+          "content_type": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}
