@@ -5,6 +5,17 @@
 :root {
   --foreground: #171717;
   --background: #f8fafc;
+  --surface: 255 255 255;
+  --surface-raised: 249 250 251;
+  --border: 229 231 235;
+}
+
+.dark {
+  --foreground: #f1f5f9;
+  --background: #0f172a;
+  --surface: 15 23 42;
+  --surface-raised: 30 41 59;
+  --border: 51 65 85;
 }
 
 body {
@@ -12,16 +23,6 @@ body {
   background: var(--background);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
-
-.status-badge {
-  @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
-}
-.status-pending { @apply bg-gray-100 text-gray-800; }
-.status-preprocessing, .status-routing { @apply bg-blue-100 text-blue-800; }
-.status-inferring { @apply bg-yellow-100 text-yellow-800; }
-.status-postprocessing { @apply bg-indigo-100 text-indigo-800; }
-.status-completed { @apply bg-green-100 text-green-800; }
-.status-failed { @apply bg-red-100 text-red-800; }
 
 /* Sidebar */
 .sidebar-transition {

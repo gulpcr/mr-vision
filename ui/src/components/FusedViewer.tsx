@@ -125,7 +125,7 @@ function FusedPane({
       >
         {imgLoading && (
           <div className="absolute top-1.5 right-1.5 z-10">
-            <Loader2 className="w-3.5 h-3.5 animate-spin text-gray-500" />
+            <Loader2 className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none text-gray-500" />
           </div>
         )}
         {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -264,7 +264,7 @@ export function FusedViewer({
   if (!meta) {
     return (
       <div className="flex items-center justify-center h-[360px] bg-black text-gray-400 text-sm gap-2">
-        <Loader2 className="w-4 h-4 animate-spin" /> Loading fused viewer…
+        <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none" /> Loading fused viewer…
       </div>
     );
   }

@@ -24,7 +24,8 @@ async def get_routing_rules(
     routing_service: Annotated[RoutingService, Depends(get_routing_service)],
 ):
     rules = routing_service.get_all_rules()
-    return RoutingRulesResponse(routing_rules=rules)
+    overrides = routing_service.get_site_overrides()
+    return RoutingRulesResponse(routing_rules=rules, site_overrides=overrides)
 
 
 @router.put("/routing-rules")

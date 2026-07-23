@@ -278,6 +278,35 @@ async def create_share_link(
     return link
 
 
+@router.get("/results/{result_id}/shares")
+async def list_share_links(
+    result_id: str,
+    session: Annotated["AsyncSession", Depends(get_session)],
+):
+    """List existing portal share links for a result (most recent first) — the
+    delivery-status view for the one channel actually implemented today."""
+    from app.application.portal_service import PortalService
+
+    portal = PortalService(session)
+    return {"shares": await portal.list_links_for_result(result_id)}
+
+
+@router.post("/portal/shares/{link_id}/revoke")
+async def revoke_share_link(
+    link_id: str,
+    session: Annotated["AsyncSession", Depends(get_session)],
+):
+    """Revoke a portal share link immediately."""
+    from app.application.portal_service import PortalService
+
+    portal = PortalService(session)
+    revoked = await portal.revoke_link(link_id)
+    if not revoked:
+        raise HTTPException(404, "Share link not found")
+    await session.commit()
+    return {"status": "ok", "link_id": link_id}
+
+
 @router.get("/portal/{token}")
 async def get_portal_result(
     token: str,

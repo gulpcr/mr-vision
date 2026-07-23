@@ -29,10 +29,31 @@ export function formatValue(
   return unit ? `${formatted} ${unit}` : formatted;
 }
 
+// The backend returns UTC datetimes without a timezone suffix (e.g.
+// "2026-06-08T17:06:39"). JavaScript's Date() parses a timezone-less string as
+// LOCAL time, so every such timestamp would otherwise render offset by the
+// viewer's own UTC offset. Appending 'Z' forces correct UTC interpretation.
+// Every date-parsing helper in this file (and any other caller that needs to
+// parse a raw backend timestamp) should go through this — do not call
+// `new Date(rawBackendString)` directly elsewhere.
+export function parseUtcDate(dateStr: string): Date {
+  const hasOffset = /[Zz]$|[+-]\d{2}:?\d{2}$/.test(dateStr);
+  return new Date(hasOffset ? dateStr : `${dateStr}Z`);
+}
+
+// Locale-aware formatting driven by a single site-locale setting (see
+// lib/i18n.tsx) rather than a hardcoded "en-US" — falls back to "en-US" when
+// no locale has been resolved yet (e.g. during SSR before the client mounts).
+const DEFAULT_LOCALE = "en-US";
+let activeLocale: string = DEFAULT_LOCALE;
+export function setFormatLocale(locale: string): void {
+  activeLocale = locale;
+}
+
 export function formatDate(dateStr: string | null | undefined): string {
   if (!dateStr) return "-";
   try {
-    return new Date(dateStr).toLocaleDateString("en-US", {
+    return parseUtcDate(dateStr).toLocaleDateString(activeLocale, {
       year: "numeric",
       month: "short",
       day: "numeric",
@@ -45,7 +66,7 @@ export function formatDate(dateStr: string | null | undefined): string {
 export function formatDateTime(dateStr: string | null | undefined): string {
   if (!dateStr) return "-";
   try {
-    return new Date(dateStr).toLocaleString("en-US", {
+    return parseUtcDate(dateStr).toLocaleString(activeLocale, {
       year: "numeric",
       month: "short",
       day: "numeric",

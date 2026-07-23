@@ -2,7 +2,11 @@
 
 import { useState } from "react";
 import { useAuditLogs } from "@/lib/hooks";
-import { Search, Filter, Clock } from "lucide-react";
+import { formatDateTime } from "@/lib/format";
+import { Table, Caption, Th } from "@/components/ui/Table";
+import { TableSkeleton } from "@/components/ui/TableSkeleton";
+import { EmptyState } from "@/components/ui/EmptyState";
+import { Filter, Clock, Shield } from "lucide-react";
 
 export default function AuditPage() {
   const [actionFilter, setActionFilter] = useState("");
@@ -63,73 +67,77 @@ export default function AuditPage() {
       </div>
 
       {/* Table */}
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
-        {isLoading ? (
-          <div className="p-12 text-center text-gray-400">Loading...</div>
-        ) : (
-          <>
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-gray-100">
-                  <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Timestamp</th>
-                  <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Action</th>
-                  <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Entity</th>
-                  <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Actor</th>
-                  <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Details</th>
+      <div className="bg-white dark:bg-surface rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
+        <Table>
+          <Caption>Platform audit log, filterable by action, entity type, and actor</Caption>
+          <thead>
+            <tr className="border-b border-gray-100 dark:border-gray-800">
+              <Th>Timestamp</Th>
+              <Th>Action</Th>
+              <Th>Entity</Th>
+              <Th>Actor</Th>
+              <Th>Details</Th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-50 dark:divide-gray-800">
+            {isLoading ? (
+              <TableSkeleton rows={8} columnWidths={[140, 100, 140, 90, 160]} />
+            ) : !data?.entries || data.entries.length === 0 ? (
+              <tr>
+                <td colSpan={5}>
+                  <EmptyState
+                    icon={Shield}
+                    title="No audit entries found"
+                    description="Try adjusting or clearing your filters."
+                  />
+                </td>
+              </tr>
+            ) : (
+              data.entries.map((entry) => (
+                <tr key={entry.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                  <td className="py-2.5 px-4 text-gray-500 dark:text-gray-400 whitespace-nowrap">
+                    <div className="flex items-center gap-1.5">
+                      <Clock className="w-3 h-3" />
+                      {formatDateTime(entry.timestamp)}
+                    </div>
+                  </td>
+                  <td className="py-2.5 px-4">
+                    <span className="px-2 py-0.5 bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-300 text-xs rounded-full font-medium">
+                      {entry.action}
+                    </span>
+                  </td>
+                  <td className="py-2.5 px-4 text-gray-700 dark:text-gray-300">
+                    {entry.entity_type}/{entry.entity_id?.slice(0, 12)}
+                  </td>
+                  <td className="py-2.5 px-4 text-gray-600 dark:text-gray-400">{entry.actor}</td>
+                  <td className="py-2.5 px-4 text-gray-500 dark:text-gray-400 text-xs max-w-[200px] truncate">
+                    {JSON.stringify(entry.details).slice(0, 80)}
+                  </td>
                 </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-50">
-                {(data?.entries || []).map((entry) => (
-                  <tr key={entry.id} className="hover:bg-gray-50">
-                    <td className="py-2.5 px-4 text-gray-500 whitespace-nowrap">
-                      <div className="flex items-center gap-1.5">
-                        <Clock className="w-3 h-3" />
-                        {entry.timestamp ? new Date(entry.timestamp).toLocaleString() : "-"}
-                      </div>
-                    </td>
-                    <td className="py-2.5 px-4">
-                      <span className="px-2 py-0.5 bg-blue-50 text-blue-700 text-xs rounded-full font-medium">
-                        {entry.action}
-                      </span>
-                    </td>
-                    <td className="py-2.5 px-4 text-gray-700">
-                      {entry.entity_type}/{entry.entity_id?.slice(0, 12)}
-                    </td>
-                    <td className="py-2.5 px-4 text-gray-600">{entry.actor}</td>
-                    <td className="py-2.5 px-4 text-gray-500 text-xs max-w-[200px] truncate">
-                      {JSON.stringify(entry.details).slice(0, 80)}
-                    </td>
-                  </tr>
-                ))}
-                {(!data?.entries || data.entries.length === 0) && (
-                  <tr>
-                    <td colSpan={5} className="py-12 text-center text-gray-400">
-                      No audit entries found
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-            <div className="px-4 py-3 bg-gray-50 text-xs text-gray-500 border-t border-gray-100 flex justify-between items-center">
-              <span>Total: {data?.total || 0} entries</span>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => setOffset(Math.max(0, offset - limit))}
-                  disabled={offset === 0}
-                  className="px-3 py-1 border border-gray-200 rounded text-xs disabled:opacity-50 hover:bg-gray-100"
-                >
-                  Previous
-                </button>
-                <button
-                  onClick={() => setOffset(offset + limit)}
-                  disabled={(data?.entries?.length || 0) < limit}
-                  className="px-3 py-1 border border-gray-200 rounded text-xs disabled:opacity-50 hover:bg-gray-100"
-                >
-                  Next
-                </button>
-              </div>
+              ))
+            )}
+          </tbody>
+        </Table>
+        {!isLoading && data?.entries && data.entries.length > 0 && (
+          <div className="px-4 py-3 bg-gray-50 dark:bg-surface-raised text-xs text-gray-500 dark:text-gray-400 border-t border-gray-100 dark:border-gray-800 flex justify-between items-center">
+            <span>Total: {data?.total || 0} entries</span>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setOffset(Math.max(0, offset - limit))}
+                disabled={offset === 0}
+                className="px-3 py-1 border border-gray-200 dark:border-gray-700 rounded text-xs disabled:opacity-50 hover:bg-gray-100 dark:hover:bg-gray-800"
+              >
+                Previous
+              </button>
+              <button
+                onClick={() => setOffset(offset + limit)}
+                disabled={(data?.entries?.length || 0) < limit}
+                className="px-3 py-1 border border-gray-200 dark:border-gray-700 rounded text-xs disabled:opacity-50 hover:bg-gray-100 dark:hover:bg-gray-800"
+              >
+                Next
+              </button>
             </div>
-          </>
+          </div>
         )}
       </div>
     </div>

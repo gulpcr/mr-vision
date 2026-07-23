@@ -22,19 +22,19 @@ export default function ReviewPage() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Review Queue</h1>
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Review Queue</h1>
           {data?.stats && (
             <div className="flex gap-3 mt-2 text-sm">
               <span className="text-amber-600">Pending: {data.stats.pending || 0}</span>
-              <span className="text-green-600">Approved: {data.stats.approved || 0}</span>
-              <span className="text-red-600">Rejected: {data.stats.rejected || 0}</span>
+              <span className="text-green-600 dark:text-green-400">Approved: {data.stats.approved || 0}</span>
+              <span className="text-red-600 dark:text-red-400">Rejected: {data.stats.rejected || 0}</span>
             </div>
           )}
         </div>
         <select
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}
-          className="text-sm border border-gray-200 rounded-lg px-3 py-2"
+          className="text-sm border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2"
         >
           <option value="">All</option>
           <option value="pending">Pending</option>
@@ -43,27 +43,27 @@ export default function ReviewPage() {
         </select>
       </div>
 
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
-        {isLoading ? <div className="p-12 text-center text-gray-400">Loading...</div> : (
+      <div className="bg-white dark:bg-surface rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
+        {isLoading ? <div className="p-12 text-center text-gray-400 dark:text-gray-500">Loading...</div> : (
           <table className="w-full text-sm">
-            <thead><tr className="border-b border-gray-100">
-              <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Study</th>
-              <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Use Case</th>
-              <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Confidence</th>
-              <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Status</th>
-              <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Reviewer</th>
+            <thead><tr className="border-b border-gray-100 dark:border-gray-800">
+              <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase">Study</th>
+              <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase">Use Case</th>
+              <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase">Confidence</th>
+              <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase">Status</th>
+              <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase">Reviewer</th>
               <th className="py-3 px-4"></th>
             </tr></thead>
-            <tbody className="divide-y divide-gray-50">
+            <tbody className="divide-y divide-gray-50 dark:divide-gray-800">
               {(data?.items || []).map((item) => (
-                <tr key={item.id} className="hover:bg-gray-50">
+                <tr key={item.id} className="hover:bg-gray-50 dark:hover:bg-surface-raised">
                   <td className="py-2.5 px-4">
                     <div className="flex items-center gap-2">
                       <AlertTriangle className="w-4 h-4 text-amber-500" />
-                      <span className="text-gray-700 font-mono text-xs">{item.study_instance_uid.slice(0, 20)}...</span>
+                      <span className="text-gray-700 dark:text-gray-300 font-mono text-xs">{item.study_instance_uid.slice(0, 20)}...</span>
                     </div>
                   </td>
-                  <td className="py-2.5 px-4 text-gray-600">{item.usecase_name.replace(/_/g, " ")}</td>
+                  <td className="py-2.5 px-4 text-gray-600 dark:text-gray-400 dark:text-gray-500">{item.usecase_name.replace(/_/g, " ")}</td>
                   <td className="py-2.5 px-4">
                     <span className={`px-2 py-0.5 text-xs rounded-full font-medium ${getConfidenceColor(item.confidence_score)}`}>
                       {(item.confidence_score * 100).toFixed(1)}%
@@ -71,12 +71,12 @@ export default function ReviewPage() {
                   </td>
                   <td className="py-2.5 px-4">
                     <span className={`px-2 py-0.5 text-xs rounded-full font-medium ${
-                      item.status === "approved" ? "bg-green-50 text-green-700" :
-                      item.status === "rejected" ? "bg-red-50 text-red-700" :
-                      "bg-amber-50 text-amber-700"
+                      item.status === "approved" ? "bg-green-50 dark:bg-green-950 text-green-700 dark:text-green-300" :
+                      item.status === "rejected" ? "bg-red-50 dark:bg-red-950 text-red-700 dark:text-red-300" :
+                      "bg-amber-50 dark:bg-amber-950 text-amber-700 dark:text-amber-300"
                     }`}>{item.status}</span>
                   </td>
-                  <td className="py-2.5 px-4 text-gray-500">{item.reviewer || "-"}</td>
+                  <td className="py-2.5 px-4 text-gray-500 dark:text-gray-400 dark:text-gray-500">{item.reviewer || "-"}</td>
                   <td className="py-2.5 px-4">
                     <Link href={`/review/${item.id}`} className="flex items-center gap-1 text-primary-600 hover:text-primary-700 text-xs font-medium">
                       <Eye className="w-3.5 h-3.5" /> Review
@@ -85,7 +85,7 @@ export default function ReviewPage() {
                 </tr>
               ))}
               {(!data?.items || data.items.length === 0) && (
-                <tr><td colSpan={6} className="py-12 text-center text-gray-400">No items in review queue</td></tr>
+                <tr><td colSpan={6} className="py-12 text-center text-gray-400 dark:text-gray-500">No items in review queue</td></tr>
               )}
             </tbody>
           </table>

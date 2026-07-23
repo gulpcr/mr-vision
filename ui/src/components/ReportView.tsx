@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useRef, useState } from "react";
 import { Study, Result, getPreviewUrl, getArtifactUrl, getFusedUrl } from "@/lib/api";
 import { isCtReportUsecase } from "@/lib/ctReport";
 import { QAPanel } from "./QAPanel";
@@ -12,6 +12,10 @@ import {
   formatPatientName,
   getNestedValue,
 } from "@/lib/format";
+import { StatusBadge } from "@/components/ui/StatusBadge";
+import { AIProvenanceBanner } from "@/components/ui/AIProvenanceBanner";
+import { AuthImg } from "@/components/ui/AuthImg";
+import { useFocusTrap } from "@/components/ui/useFocusTrap";
 import {
   Printer,
   AlertTriangle,
@@ -21,57 +25,6 @@ import {
   Maximize2,
   X,
 } from "lucide-react";
-
-// Fetches image with Authorization header so JWT-protected /api/artifacts and
-// /api/preview endpoints return 200 instead of 401 (browser <img> never sends
-// auth headers on its own).
-function AuthImage({
-  src,
-  alt,
-  className,
-  fallback = "Image not available",
-}: {
-  src: string;
-  alt: string;
-  className?: string;
-  fallback?: string;
-}) {
-  const [objectUrl, setObjectUrl] = useState<string | null>(null);
-  const [failed, setFailed] = useState(false);
-
-  useEffect(() => {
-    let revoke: string | null = null;
-    const token = typeof window !== "undefined" ? localStorage.getItem("auth_token") : null;
-    const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
-
-    fetch(src, { headers })
-      .then((r) => {
-        if (!r.ok) throw new Error(`${r.status}`);
-        return r.blob();
-      })
-      .then((blob) => {
-        const url = URL.createObjectURL(blob);
-        revoke = url;
-        setObjectUrl(url);
-      })
-      .catch(() => setFailed(true));
-
-    return () => {
-      if (revoke) URL.revokeObjectURL(revoke);
-    };
-  }, [src]);
-
-  if (failed)
-    return (
-      <div className="flex items-center justify-center h-48 text-gray-500 text-xs bg-black rounded-lg">
-        {fallback}
-      </div>
-    );
-  if (!objectUrl)
-    return <div className="h-48 bg-gray-900 rounded-lg animate-pulse" />;
-  /* eslint-disable-next-line @next/next/no-img-element */
-  return <img src={objectUrl} alt={alt} className={className} />;
-}
 
 interface ReportViewProps {
   study: Study;
@@ -86,6 +39,8 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
   const summarySection = uiSchema?.sections?.find((s: any) => s.id === "summary");
   const tumorDetected = result.summary?.tumor_detected;
   const [zoomedView, setZoomedView] = useState<string | null>(null);
+  const zoomDialogRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(zoomDialogRef, zoomedView !== null, () => setZoomedView(null));
 
   // Only activate PET/CT mode when the DICOM study actually contains PT series.
   // A pet_ct pipeline can be run on non-PET data (routing error); in that case
@@ -109,22 +64,13 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
             <p className="text-sm text-gray-500 mt-0.5">
               {uiSchema?.description || ""}
             </p>
-            {(() => {
-              const rs = study.reading_status || "unread";
-              const by = study.assigned_to_username;
-              const m: Record<string, [string, string]> = {
-                unread: ["Unclaimed", "bg-gray-100 text-gray-600"],
-                in_progress: [by ? `Reading — ${by}` : "Reading", "bg-blue-100 text-blue-700"],
-                reported: [by ? `Reported — ${by}` : "Reported", "bg-amber-100 text-amber-800"],
-                signed: [`Signed off${by ? ` — ${by}` : ""}`, "bg-green-100 text-green-700"],
-              };
-              const [label, cls] = m[rs] || [rs, "bg-gray-100 text-gray-600"];
-              return (
-                <span className={`inline-block mt-2 px-2.5 py-0.5 rounded-full text-xs font-semibold ${cls}`}>
-                  {rs !== "signed" ? "Preliminary · " : ""}{label}
-                </span>
-              );
-            })()}
+            <div className="mt-2">
+              <StatusBadge
+                variant="reading"
+                status={study.reading_status || "unread"}
+                assignedTo={study.assigned_to_username}
+              />
+            </div>
           </div>
           <button
             onClick={() => window.print()}
@@ -313,7 +259,7 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
                         {artifact.name.replace(/\.[^.]+$/, "").replace(/_/g, " ")}
                       </div>
                       <div className="bg-black rounded-lg overflow-hidden border-2 border-gray-200">
-                        <AuthImage
+                        <AuthImg
                           src={getArtifactUrl(study.study_instance_uid, result.usecase_name, artifact.name)}
                           alt={artifact.name}
                           className="w-full h-auto"
@@ -768,7 +714,7 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
                           {label}
                         </div>
                         <div className="bg-black rounded-lg overflow-hidden border-2 border-gray-200">
-                          <AuthImage
+                          <AuthImg
                             src={getArtifactUrl(study.study_instance_uid, result.usecase_name, artifact.name)}
                             alt={artifact.name}
                             className="w-full h-auto"
@@ -802,7 +748,7 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
                     className="relative bg-black rounded-lg overflow-hidden cursor-pointer border-2 border-gray-200 hover:border-primary-400 transition-colors"
                     onClick={() => setZoomedView(view)}
                   >
-                    <AuthImage
+                    <AuthImg
                       src={url}
                       alt={`${view} segmentation overlay`}
                       className="w-full h-auto"
@@ -828,9 +774,18 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
           className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center no-print"
           onClick={() => setZoomedView(null)}
         >
-          <div className="relative max-w-4xl max-h-[90vh] p-2">
+          <div
+            ref={zoomDialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label={`${zoomedView} view, enlarged`}
+            tabIndex={-1}
+            className="relative max-w-4xl max-h-[90vh] p-2 outline-none"
+            onClick={(e) => e.stopPropagation()}
+          >
             <button
               onClick={() => setZoomedView(null)}
+              aria-label="Close enlarged view"
               className="absolute -top-3 -right-3 bg-white rounded-full p-1.5 shadow-lg z-10 hover:bg-gray-100"
             >
               <X className="w-5 h-5 text-gray-700" />
@@ -838,7 +793,7 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
             <div className="text-center text-white text-sm font-medium mb-2 uppercase tracking-wider">
               {zoomedView} View
             </div>
-            <AuthImage
+            <AuthImg
               src={
                 isPetCt
                   ? getFusedUrl(
@@ -938,12 +893,7 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
             <strong>Generated:</strong> {formatDateTime(result.created_at)}
           </span>
         </div>
-        <div className="border-t border-gray-200 pt-3 text-xs text-gray-400 italic">
-          DISCLAIMER: This is an AI-generated analysis intended to assist clinical
-          decision-making. It is not a substitute for professional medical judgment.
-          All findings must be reviewed and validated by a qualified radiologist or
-          physician before clinical use.
-        </div>
+        <AIProvenanceBanner variant="footer" />
       </div>
     </div>
   );

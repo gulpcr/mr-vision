@@ -3,11 +3,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { api, Study, Job, UseCase, UrgencyScore } from "@/lib/api";
-import { StatusBadge } from "@/components/StatusBadge";
-import { formatDate, formatPatientName } from "@/lib/format";
+import { StatusBadge } from "@/components/ui/StatusBadge";
+import { Modal } from "@/components/ui/Modal";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { ErrorBanner } from "@/components/ui/ErrorBanner";
+import { EmptyState } from "@/components/ui/EmptyState";
+import { TableSkeleton } from "@/components/ui/TableSkeleton";
+import { Table, Caption, Th, SortableTh } from "@/components/ui/Table";
+import { formatDate, formatPatientName, parseUtcDate } from "@/lib/format";
+import { useLocale } from "@/lib/i18n";
 import Link from "next/link";
 import {
-  Search, Upload, ChevronDown, ChevronUp, AlertTriangle, Zap,
+  Search, Upload, AlertTriangle, Zap,
   TrendingUp, RefreshCw, Clock, Layers, X, PlayCircle,
   ClipboardList, ChevronRight, Trash2, RotateCcw, Square,
   CheckCircle2,
@@ -29,6 +36,12 @@ const PRIORITY_CONFIG = {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+// UTC-safe ms-since-epoch for a raw backend timestamp (see parseUtcDate).
+function toUtcMs(dateStr: string | null | undefined): number {
+  if (!dateStr) return 0;
+  return parseUtcDate(dateStr).getTime();
+}
+
 function relativeTime(dateStr: string | null | undefined): string {
   if (!dateStr) return "";
   const diff = Date.now() - toUtcMs(dateStr);
@@ -44,15 +57,6 @@ function relativeTime(dateStr: string | null | undefined): string {
 
 const ACTIVE_STATUSES = ["pending", "routing", "preprocessing", "inferring", "postprocessing"];
 const STALE_MS = 15 * 60 * 1000; // 15 minutes without an update → stale
-
-// The API returns UTC datetimes without a timezone suffix (e.g. "2026-06-08T17:06:39").
-// JavaScript's Date() parses those as LOCAL time, making every timestamp appear
-// offset by the user's UTC offset.  Appending 'Z' forces correct UTC interpretation.
-function toUtcMs(dateStr: string | null | undefined): number {
-  if (!dateStr) return 0;
-  const s = dateStr.endsWith("Z") || dateStr.includes("+") ? dateStr : dateStr + "Z";
-  return new Date(s).getTime();
-}
 
 function latestPerUsecase(studyJobs: Job[]): Job[] {
   // studyJobs is already sorted newest-first by the backend (created_at DESC)
@@ -98,23 +102,6 @@ function StatCard({
   );
 }
 
-// ── Skeleton Row ─────────────────────────────────────────────────────────────
-
-function SkeletonRow() {
-  return (
-    <tr className="border-b border-gray-50">
-      {[44, 130, 180, 90, 88, 150, 112].map((w, i) => (
-        <td key={i} className="py-4 px-4">
-          <div className="h-4 bg-gray-100 rounded animate-pulse" style={{ width: w }} />
-          {(i === 1 || i === 3) && (
-            <div className="h-3 bg-gray-100 rounded animate-pulse mt-1.5" style={{ width: w * 0.55 }} />
-          )}
-        </td>
-      ))}
-    </tr>
-  );
-}
-
 // ── Use-case Modal ───────────────────────────────────────────────────────────
 
 function UsecaseModal({
@@ -125,69 +112,45 @@ function UsecaseModal({
   onSelect: (uid: string, names?: string[]) => void;
 }) {
   return (
-    <div
-      className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center"
-      onClick={onClose}
-    >
-      <div
-        className="bg-white rounded-xl shadow-2xl border border-gray-200 w-80 overflow-hidden"
-        onClick={(e) => e.stopPropagation()}
+    <Modal open title="Run AI Pipeline" onClose={onClose} size="sm">
+      <button
+        onClick={() => onSelect(studyUid)}
+        disabled={running}
+        className="w-full flex items-center gap-2 px-3 py-2.5 text-sm font-medium text-left rounded-lg text-primary-700 bg-primary-50 hover:bg-primary-100 disabled:opacity-50 transition-colors mb-1"
       >
-        <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
-          <span className="font-semibold text-sm text-gray-800">Run AI Pipeline</span>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors">
-            <X className="w-4 h-4" />
-          </button>
+        <Zap className="w-4 h-4 shrink-0" />
+        <div>
+          <div>Auto-Route</div>
+          <div className="text-xs font-normal text-primary-500">Let the system pick the best pipeline</div>
         </div>
-        <div className="p-2">
-          <button
-            onClick={() => onSelect(studyUid)}
-            disabled={running}
-            className="w-full flex items-center gap-2 px-3 py-2.5 text-sm font-medium text-left rounded-lg text-primary-700 bg-primary-50 hover:bg-primary-100 disabled:opacity-50 transition-colors mb-1"
-          >
-            <Zap className="w-4 h-4 shrink-0" />
-            <div>
-              <div>Auto-Route</div>
-              <div className="text-xs font-normal text-primary-500">Let the system pick the best pipeline</div>
-            </div>
-          </button>
-          {usecases.filter((uc) => uc.enabled).length > 0 && (
-            <>
-              <div className="text-[10px] uppercase tracking-wider text-gray-400 px-3 py-1.5">
-                Or choose a specific pipeline
-              </div>
-              {usecases.filter((uc) => uc.enabled).map((uc) => (
-                <button
-                  key={uc.name}
-                  onClick={() => onSelect(studyUid, [uc.name])}
-                  disabled={running}
-                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left rounded-lg text-gray-700 hover:bg-gray-50 disabled:opacity-50 transition-colors"
-                >
-                  <ChevronRight className="w-3.5 h-3.5 text-gray-400 shrink-0" />
-                  {uc.name.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
-                </button>
-              ))}
-            </>
-          )}
-        </div>
-      </div>
-    </div>
+      </button>
+      {usecases.filter((uc) => uc.enabled).length > 0 && (
+        <>
+          <div className="text-[10px] uppercase tracking-wider text-gray-400 px-3 py-1.5">
+            Or choose a specific pipeline
+          </div>
+          {usecases.filter((uc) => uc.enabled).map((uc) => (
+            <button
+              key={uc.name}
+              onClick={() => onSelect(studyUid, [uc.name])}
+              disabled={running}
+              className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left rounded-lg text-gray-700 hover:bg-gray-50 disabled:opacity-50 transition-colors"
+            >
+              <ChevronRight className="w-3.5 h-3.5 text-gray-400 shrink-0" />
+              {uc.name.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
+            </button>
+          ))}
+        </>
+      )}
+    </Modal>
   );
-}
-
-// ── Sort Icon ────────────────────────────────────────────────────────────────
-
-function SortIcon({ field, active, dir }: { field: string; active: boolean; dir: SortDir }) {
-  if (!active) return <ChevronDown className="w-3 h-3 text-gray-300" />;
-  return dir === "asc"
-    ? <ChevronUp className="w-3 h-3 text-primary-500" />
-    : <ChevronDown className="w-3 h-3 text-primary-500" />;
 }
 
 // ── Page ─────────────────────────────────────────────────────────────────────
 
 export default function WorklistPage() {
   const router = useRouter();
+  const { strings } = useLocale();
 
   const [studies, setStudies]       = useState<Study[]>([]);
   const [jobs, setJobs]             = useState<Record<string, Job[]>>({});
@@ -412,11 +375,11 @@ export default function WorklistPage() {
       {/* Header ──────────────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between mb-5">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Worklist</h1>
+          <h1 className="text-2xl font-bold text-gray-900">{strings.worklist.title}</h1>
           <p className="text-sm text-gray-500 mt-0.5">
             {total} stud{total === 1 ? "y" : "ies"}
             {lastRefreshed && (
-              <span className="ml-2 text-gray-400">
+              <span className="ms-2 text-gray-400">
                 · Updated {relativeTime(lastRefreshed.toISOString())}
               </span>
             )}
@@ -426,10 +389,11 @@ export default function WorklistPage() {
           <button
             onClick={() => loadStudies(true)}
             disabled={refreshing}
+            aria-label="Refresh worklist"
             title="Refresh worklist"
             className="p-2 text-gray-500 hover:text-gray-800 hover:bg-gray-100 rounded-lg transition-colors disabled:opacity-40"
           >
-            <RefreshCw className={`w-4 h-4 ${refreshing ? "animate-spin" : ""}`} />
+            <RefreshCw className={`w-4 h-4 ${refreshing ? "animate-spin motion-reduce:animate-none" : ""}`} />
           </button>
           <Link
             href="/upload"
@@ -483,19 +447,12 @@ export default function WorklistPage() {
 
       {/* Job dispatch error banner */}
       {jobError && (
-        <div className="flex items-start gap-3 bg-red-50 border border-red-200 rounded-xl px-4 py-3 mb-2">
-          <AlertTriangle className="w-4 h-4 text-red-500 mt-0.5 shrink-0" />
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-semibold text-red-800">Failed to start AI pipeline</p>
-            <p className="text-xs text-red-700 mt-0.5 break-words">{jobError}</p>
-          </div>
-          <button
-            onClick={() => setJobError(null)}
-            className="text-red-400 hover:text-red-600 shrink-0"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
+        <ErrorBanner
+          title="Failed to start AI pipeline"
+          message={jobError}
+          onDismiss={() => setJobError(null)}
+          className="mb-2"
+        />
       )}
 
       {/* Filters ─────────────────────────────────────────────────────────── */}
@@ -503,14 +460,14 @@ export default function WorklistPage() {
         <div className="flex flex-wrap items-center gap-2 px-4 py-3">
           {/* Search */}
           <div className="relative flex-1 min-w-[220px]">
-            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+            <Search className="w-4 h-4 absolute start-3 top-1/2 -translate-y-1/2 text-gray-400" />
             <input
               ref={searchRef}
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search patient, MRN, description, accession…  (/)"
-              className="w-full pl-9 pr-4 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+              placeholder={strings.worklist.searchPlaceholder}
+              className="w-full ps-9 pe-4 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
             />
           </div>
 
@@ -606,92 +563,54 @@ export default function WorklistPage() {
 
       {/* Table ───────────────────────────────────────────────────────────── */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-gray-100 bg-white">
-                <th
-                  className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider cursor-pointer hover:text-gray-700 select-none"
-                  onClick={() => toggleSort("urgency")}
-                >
-                  <span className="flex items-center gap-1">
-                    Priority
-                    <SortIcon field="urgency" active={sortField === "urgency"} dir={sortDir} />
-                  </span>
-                </th>
-                <th
-                  className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider cursor-pointer hover:text-gray-700 select-none"
-                  onClick={() => toggleSort("patient_name")}
-                >
-                  <span className="flex items-center gap-1">
-                    Patient
-                    <SortIcon field="patient_name" active={sortField === "patient_name"} dir={sortDir} />
-                  </span>
-                </th>
-                <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">
-                  Study
-                </th>
-                <th
-                  className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider cursor-pointer hover:text-gray-700 select-none"
-                  onClick={() => toggleSort("study_date")}
-                >
-                  <span className="flex items-center gap-1">
-                    Date
-                    <SortIcon field="study_date" active={sortField === "study_date"} dir={sortDir} />
-                  </span>
-                </th>
-                <th
-                  className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider cursor-pointer hover:text-gray-700 select-none"
-                  onClick={() => toggleSort("body_part_examined")}
-                >
-                  <span className="flex items-center gap-1">
-                    Body Part
-                    <SortIcon field="body_part_examined" active={sortField === "body_part_examined"} dir={sortDir} />
-                  </span>
-                </th>
-                <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">
-                  AI Status
-                </th>
-                <th className="py-3 px-4 w-[170px]" />
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-50">
-              {loading && studies.length === 0 ? (
-                Array.from({ length: 7 }).map((_, i) => <SkeletonRow key={i} />)
-              ) : filtered.length === 0 ? (
-                <tr>
-                  <td colSpan={7}>
-                    <div className="py-16 flex flex-col items-center gap-3 text-center">
-                      <ClipboardList className="w-10 h-10 text-gray-200" />
-                      <div>
-                        <p className="text-gray-500 font-medium">
-                          {activeFilters > 0 ? "No studies match your filters" : "No studies yet"}
-                        </p>
-                        <p className="text-gray-400 text-xs mt-1">
-                          {activeFilters > 0
-                            ? "Try adjusting or clearing your filters"
-                            : "Upload DICOM studies to get started"}
-                        </p>
-                      </div>
-                      {activeFilters > 0 ? (
+        <Table>
+          <Caption>Worklist of studies with AI job status and reading workflow</Caption>
+          <thead>
+            <tr className="border-b border-gray-100 dark:border-gray-800 bg-white dark:bg-surface">
+              <SortableTh label={strings.worklist.columnPriority} field="urgency" activeField={sortField} dir={sortDir} onSort={(f) => toggleSort(f as SortField)} />
+              <SortableTh label={strings.worklist.columnPatient} field="patient_name" activeField={sortField} dir={sortDir} onSort={(f) => toggleSort(f as SortField)} />
+              <Th>{strings.worklist.columnStudy}</Th>
+              <SortableTh label={strings.worklist.columnDate} field="study_date" activeField={sortField} dir={sortDir} onSort={(f) => toggleSort(f as SortField)} />
+              <SortableTh label={strings.worklist.columnBodyPart} field="body_part_examined" activeField={sortField} dir={sortDir} onSort={(f) => toggleSort(f as SortField)} />
+              <Th>{strings.worklist.columnAiStatus}</Th>
+              <Th className="w-[170px]" />
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-50 dark:divide-gray-800">
+            {loading && studies.length === 0 ? (
+              <TableSkeleton rows={7} columnWidths={[44, 130, 180, 90, 88, 150, 112]} subtextColumns={[1, 3]} />
+            ) : filtered.length === 0 ? (
+              <tr>
+                <td colSpan={7}>
+                  <EmptyState
+                    icon={ClipboardList}
+                    title={activeFilters > 0 ? strings.worklist.noStudiesMatch : strings.worklist.noStudiesYet}
+                    description={
+                      activeFilters > 0
+                        ? strings.worklist.noStudiesMatchDescription
+                        : strings.worklist.noStudiesYetDescription
+                    }
+                    action={
+                      activeFilters > 0 ? (
                         <button
                           onClick={clearFilters}
-                          className="text-xs px-3 py-1.5 border border-gray-200 rounded-lg text-gray-600 hover:bg-gray-50"
+                          className="text-xs px-3 py-1.5 border border-gray-200 dark:border-gray-700 rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800"
                         >
-                          Clear filters
+                          {strings.worklist.clearFilters}
                         </button>
                       ) : (
                         <Link
                           href="/upload"
                           className="text-xs px-3 py-1.5 bg-primary-600 text-white rounded-lg hover:bg-primary-700"
                         >
-                          Upload DICOM
+                          {strings.worklist.uploadCta}
                         </Link>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              ) : (
+                      )
+                    }
+                  />
+                </td>
+              </tr>
+            ) : (
                 filtered.map((study) => {
                   const studyJobs    = jobs[study.study_instance_uid] || [];
                   const isRunning    = runningAI === study.study_instance_uid;
@@ -798,7 +717,7 @@ export default function WorklistPage() {
                               const runCount = studyJobs.filter((j) => j.usecase_name === job.usecase_name).length;
                               return (
                                 <div key={job.id} className="flex items-center gap-1.5 flex-wrap">
-                                  <StatusBadge status={stale ? "failed" : job.status} />
+                                  <StatusBadge variant="job" status={stale ? "failed" : job.status} />
                                   <span className="text-xs text-gray-500 truncate max-w-[80px]">
                                     {job.usecase_name.replace(/_/g, " ")}
                                   </span>
@@ -886,7 +805,7 @@ export default function WorklistPage() {
                             className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-white bg-green-600 rounded-lg hover:bg-green-700 disabled:opacity-50 transition-colors whitespace-nowrap"
                           >
                             {isRunning
-                              ? <RefreshCw className="w-3 h-3 animate-spin" />
+                              ? <RefreshCw className="w-3 h-3 animate-spin motion-reduce:animate-none" />
                               : <PlayCircle className="w-3 h-3" />
                             }
                             Run AI
@@ -894,6 +813,7 @@ export default function WorklistPage() {
                           {study.patient_id && completedJob && (
                             <Link
                               href={`/admin/patients/${encodeURIComponent(study.patient_id)}/trend/${completedJob.usecase_name}`}
+                              aria-label="View longitudinal trend"
                               title="Longitudinal trend"
                               className="p-1.5 text-purple-600 border border-purple-200 rounded-lg hover:bg-purple-50 transition-colors"
                             >
@@ -902,24 +822,18 @@ export default function WorklistPage() {
                           )}
                           {/* Delete study */}
                           {confirmDelete === study.study_instance_uid ? (
-                            <div className="flex items-center gap-1">
-                              <button
-                                onClick={() => handleDeleteStudy(study.study_instance_uid)}
-                                disabled={deletingStudy === study.study_instance_uid}
-                                className="px-2 py-1 text-[10px] font-semibold text-white bg-red-600 rounded hover:bg-red-700 transition-colors"
-                              >
-                                {deletingStudy === study.study_instance_uid ? "…" : "Confirm"}
-                              </button>
-                              <button
-                                onClick={() => setConfirmDelete(null)}
-                                className="px-2 py-1 text-[10px] text-gray-500 bg-gray-100 rounded hover:bg-gray-200 transition-colors"
-                              >
-                                Keep
-                              </button>
-                            </div>
+                            <ConfirmDialog
+                              tier="inline"
+                              danger
+                              confirmLabel={deletingStudy === study.study_instance_uid ? "…" : "Confirm"}
+                              cancelLabel="Keep"
+                              onConfirm={() => handleDeleteStudy(study.study_instance_uid)}
+                              onCancel={() => setConfirmDelete(null)}
+                            />
                           ) : (
                             <button
                               onClick={() => setConfirmDelete(study.study_instance_uid)}
+                              aria-label="Remove study from platform"
                               title="Remove study from platform"
                               className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
                             >
@@ -933,8 +847,7 @@ export default function WorklistPage() {
                 })
               )}
             </tbody>
-          </table>
-        </div>
+        </Table>
 
         {/* Table footer */}
         <div className="px-4 py-3 bg-gray-50 border-t border-gray-100 flex items-center justify-between text-xs text-gray-500">
@@ -943,14 +856,14 @@ export default function WorklistPage() {
             <span className="font-medium text-gray-700">{filtered.length}</span> of{" "}
             <span className="font-medium text-gray-700">{total}</span> studies
             {activeFilters > 0 && (
-              <span className="ml-1 text-primary-500">
+              <span className="ms-1 text-primary-500">
                 · {activeFilters} filter{activeFilters > 1 ? "s" : ""} active
               </span>
             )}
           </span>
           {urgencyLoading && (
             <span className="flex items-center gap-1 text-gray-400">
-              <RefreshCw className="w-3 h-3 animate-spin" /> Loading priority scores…
+              <RefreshCw className="w-3 h-3 animate-spin motion-reduce:animate-none" /> Loading priority scores…
             </span>
           )}
         </div>

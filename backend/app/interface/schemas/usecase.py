@@ -29,6 +29,7 @@ class RoutingRuleResponse(BaseModel):
 
 class RoutingRulesResponse(BaseModel):
     routing_rules: dict[str, list[dict[str, Any]]]
+    site_overrides: list[dict[str, Any]] = []
 
 
 class UpdateRoutingRulesRequest(BaseModel):

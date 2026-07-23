@@ -3,7 +3,9 @@
 import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import { api, Study, Job, Result, CptSuggestion, ProtocolCheckResult, ComparisonData, MedGemmaDebug } from "@/lib/api";
-import { StatusBadge } from "@/components/StatusBadge";
+import { StatusBadge } from "@/components/ui/StatusBadge";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { useAuth } from "@/lib/auth";
 import { ReportView } from "@/components/ReportView";
 import { FusedViewer } from "@/components/FusedViewer";
 import { ComparePanel } from "@/components/ComparePanel";
@@ -12,7 +14,7 @@ import { isCtReportUsecase } from "@/lib/ctReport";
 import Link from "next/link";
 import {
   ArrowLeft, ExternalLink, ArrowLeftRight, FileDown, Share2, AlertTriangle,
-  CheckCircle, DollarSign, Stethoscope, ChevronDown, ChevronUp, Link2, X, TrendingUp, FileText, Bug
+  CheckCircle, DollarSign, Stethoscope, ChevronDown, ChevronUp, Link2, X, TrendingUp, FileText, Bug, Truck
 } from "lucide-react";
 
 // ── Sequence type detector ────────────────────────────────────────────────────
@@ -55,6 +57,7 @@ function getSeqBadge(desc: string | null, protocol: string | null): SeqBadge | n
 export default function StudyPage() {
   const params = useParams();
   const uid = params.uid as string;
+  const { user: currentUser } = useAuth();
 
   const [study, setStudy] = useState<Study | null>(null);
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -92,6 +95,7 @@ export default function StudyPage() {
 
   const [readingBusy, setReadingBusy] = useState(false);
   const [readingError, setReadingError] = useState<string | null>(null);
+  const [pendingSign, setPendingSign] = useState(false);
   const runReading = async (fn: () => Promise<unknown>) => {
     setReadingBusy(true);
     setReadingError(null);
@@ -265,7 +269,7 @@ export default function StudyPage() {
     if (!selectedResult || shareLoading) return;
     setShareLoading(true);
     try {
-      const link = await api.portal.createShareLink(selectedResult.id, "radiologist", 7);
+      const link = await api.portal.createShareLink(selectedResult.id, currentUser?.username || "unknown", 7);
       const portalUrl = `${window.location.origin}/portal/${link.token}`;
       setShareLink(portalUrl);
     } catch (e: any) {
@@ -283,7 +287,7 @@ export default function StudyPage() {
     });
   };
 
-  if (loading) return <p className="text-gray-500 p-4">Loading study...</p>;
+  if (loading) return <p className="text-gray-500 dark:text-gray-400 dark:text-gray-500 p-4">Loading study...</p>;
   if (!study) return <p className="text-red-500 p-4">Study not found</p>;
 
   // All studies open in the OHIF v3 / Cornerstone3D viewer; the mode is chosen
@@ -311,17 +315,17 @@ export default function StudyPage() {
   return (
     <div className="space-y-6">
       {/* Breadcrumb */}
-      <Link href="/worklist" className="inline-flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-700">
+      <Link href="/worklist" className="inline-flex items-center gap-1.5 text-sm text-gray-500 dark:text-gray-400 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">
         <ArrowLeft className="w-4 h-4" /> Back to Worklist
       </Link>
 
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">
             {formatPatientName(study.patient_name)}
           </h1>
-          <p className="text-sm text-gray-500 mt-0.5">
+          <p className="text-sm text-gray-500 dark:text-gray-400 dark:text-gray-500 mt-0.5">
             {study.study_description || "No description"} &middot;{" "}
             {study.body_part_examined || study.modality || ""} &middot;{" "}
             {formatDate(study.study_date)}
@@ -341,31 +345,22 @@ export default function StudyPage() {
       {/* Reading workflow */}
       {(() => {
         const rs = study.reading_status || "unread";
-        const cls = ({
-          unread: "bg-gray-100 text-gray-600",
-          in_progress: "bg-blue-100 text-blue-700",
-          reported: "bg-amber-100 text-amber-700",
-          signed: "bg-green-100 text-green-700",
-        } as Record<string, string>)[rs] || "bg-gray-100 text-gray-600";
-        const label = ({
-          unread: "Unread", in_progress: "In Progress", reported: "Reported", signed: "Signed",
-        } as Record<string, string>)[rs] || rs;
         const btn = "px-3 py-1.5 text-xs font-medium rounded-lg transition-colors disabled:opacity-50";
         return (
-          <div className="bg-white rounded-lg shadow-sm border border-gray-200 px-4 py-3">
+          <div className="bg-white dark:bg-surface rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 px-4 py-3">
             <div className="flex items-center justify-between flex-wrap gap-3">
               <div className="flex items-center gap-3 flex-wrap">
-                <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Reading</span>
-                <span className={`px-2.5 py-1 rounded text-xs font-semibold ${cls}`}>{label}</span>
+                <span className="text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase tracking-wider">Reading</span>
+                <StatusBadge variant="reading" status={rs} />
                 {study.assigned_to_username && (
-                  <span className="text-sm text-gray-600">
+                  <span className="text-sm text-gray-600 dark:text-gray-400 dark:text-gray-500">
                     Assigned to <span className="font-medium">{study.assigned_to_username}</span>
                   </span>
                 )}
                 {study.tat_signoff_minutes != null ? (
-                  <span className="text-xs text-gray-400">Turnaround: {study.tat_signoff_minutes} min</span>
+                  <span className="text-xs text-gray-400 dark:text-gray-500">Turnaround: {study.tat_signoff_minutes} min</span>
                 ) : study.tat_report_minutes != null ? (
-                  <span className="text-xs text-gray-400">Report TAT: {study.tat_report_minutes} min</span>
+                  <span className="text-xs text-gray-400 dark:text-gray-500">Report TAT: {study.tat_report_minutes} min</span>
                 ) : null}
               </div>
               <div className="flex items-center gap-2">
@@ -382,51 +377,63 @@ export default function StudyPage() {
                     <button disabled={readingBusy} onClick={() => runReading(() => api.reading.report(uid))}
                       className={`${btn} text-white bg-amber-600 hover:bg-amber-700`}>Mark Reported</button>
                     <button disabled={readingBusy} onClick={() => runReading(() => api.reading.unclaim(uid))}
-                      className={`${btn} text-gray-600 border border-gray-200 hover:bg-gray-50`}>Release</button>
+                      className={`${btn} text-gray-600 dark:text-gray-400 dark:text-gray-500 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-surface-raised`}>Release</button>
                   </>
                 )}
                 {rs === "reported" && (
-                  <button disabled={readingBusy} onClick={() => runReading(() => api.reading.sign(uid))}
+                  <button disabled={readingBusy} onClick={() => setPendingSign(true)}
                     className={`${btn} text-white bg-green-600 hover:bg-green-700`}>Sign Off</button>
                 )}
                 {rs === "signed" && (
-                  <span className="text-xs text-green-600 flex items-center gap-1">
+                  <span className="text-xs text-green-600 dark:text-green-400 flex items-center gap-1">
                     <CheckCircle className="w-4 h-4" /> Signed
                   </span>
                 )}
               </div>
             </div>
-            {readingError && <p className="text-xs text-red-600 mt-2">{readingError}</p>}
+            {readingError && <p className="text-xs text-red-600 dark:text-red-400 mt-2">{readingError}</p>}
+            <ConfirmDialog
+              tier="modal"
+              open={pendingSign}
+              title="Sign Off Report"
+              consequence="Signing off finalizes this study's reading status as complete and is recorded against your account. This action cannot be undone from this screen."
+              confirmLabel="Sign Off"
+              onConfirm={async () => {
+                await runReading(() => api.reading.sign(uid));
+                setPendingSign(false);
+              }}
+              onCancel={() => setPendingSign(false)}
+            />
           </div>
         );
       })()}
 
       {/* Info Cards */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
-          <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Study Information</h2>
+        <div className="bg-white dark:bg-surface rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-4">
+          <h2 className="text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-3">Study Information</h2>
           <dl className="space-y-2 text-sm">
             <div className="flex justify-between">
-              <dt className="text-gray-500">Patient ID</dt>
-              <dd className="font-medium text-gray-900">{study.patient_id || "-"}</dd>
+              <dt className="text-gray-500 dark:text-gray-400 dark:text-gray-500">Patient ID</dt>
+              <dd className="font-medium text-gray-900 dark:text-gray-100">{study.patient_id || "-"}</dd>
             </div>
             <div className="flex justify-between">
-              <dt className="text-gray-500">Accession #</dt>
-              <dd className="font-medium text-gray-900">{study.accession_number || "-"}</dd>
+              <dt className="text-gray-500 dark:text-gray-400 dark:text-gray-500">Accession #</dt>
+              <dd className="font-medium text-gray-900 dark:text-gray-100">{study.accession_number || "-"}</dd>
             </div>
             <div className="flex justify-between">
-              <dt className="text-gray-500">Institution</dt>
-              <dd className="font-medium text-gray-900">{study.institution_name || "-"}</dd>
+              <dt className="text-gray-500 dark:text-gray-400 dark:text-gray-500">Institution</dt>
+              <dd className="font-medium text-gray-900 dark:text-gray-100">{study.institution_name || "-"}</dd>
             </div>
             <div className="flex justify-between">
-              <dt className="text-gray-500">Series Count</dt>
-              <dd className="font-medium text-gray-900">{study.series.length}</dd>
+              <dt className="text-gray-500 dark:text-gray-400 dark:text-gray-500">Series Count</dt>
+              <dd className="font-medium text-gray-900 dark:text-gray-100">{study.series.length}</dd>
             </div>
           </dl>
         </div>
 
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
-          <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Series</h2>
+        <div className="bg-white dark:bg-surface rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-4">
+          <h2 className="text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-3">Series</h2>
           <div className="space-y-2 max-h-64 overflow-y-auto">
             {study.series
               .slice()
@@ -445,11 +452,11 @@ export default function StudyPage() {
                           {badge.label}
                         </span>
                       )}
-                      <span className={`font-medium truncate ${isSetup ? "text-gray-500" : "text-gray-900"}`}>
+                      <span className={`font-medium truncate ${isSetup ? "text-gray-500 dark:text-gray-400 dark:text-gray-500" : "text-gray-900 dark:text-gray-100"}`}>
                         {s.series_description || s.protocol_name || `Series ${s.series_number}`}
                       </span>
                     </div>
-                    <div className="flex items-center gap-2 mt-0.5 text-xs text-gray-400">
+                    <div className="flex items-center gap-2 mt-0.5 text-xs text-gray-400 dark:text-gray-500">
                       <span>{s.modality}</span>
                       <span>&middot;</span>
                       <span>{s.num_instances} slices</span>
@@ -487,23 +494,23 @@ export default function StudyPage() {
           </div>
         </div>
 
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
-          <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">AI Jobs</h2>
+        <div className="bg-white dark:bg-surface rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-4">
+          <h2 className="text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-3">AI Jobs</h2>
           {jobs.length === 0 ? (
-            <p className="text-sm text-gray-400">No jobs run yet</p>
+            <p className="text-sm text-gray-400 dark:text-gray-500">No jobs run yet</p>
           ) : (
             <div className="space-y-2">
               {jobs.map((job) => (
-                <div key={job.id} className="border border-gray-100 rounded-lg p-2.5">
+                <div key={job.id} className="border border-gray-100 dark:border-gray-800 rounded-lg p-2.5">
                   <div className="flex items-center justify-between">
-                    <span className="text-sm font-medium text-gray-900">
+                    <span className="text-sm font-medium text-gray-900 dark:text-gray-100">
                       {job.usecase_name.replace(/_/g, " ")}
                     </span>
-                    <StatusBadge status={job.status} />
+                    <StatusBadge variant="job" status={job.status} />
                   </div>
-                  {job.status_message && <p className="text-xs text-gray-500 mt-1">{job.status_message}</p>}
+                  {job.status_message && <p className="text-xs text-gray-500 dark:text-gray-400 dark:text-gray-500 mt-1">{job.status_message}</p>}
                   {job.progress > 0 && job.status !== "completed" && (
-                    <div className="mt-2 bg-gray-100 rounded-full h-1.5">
+                    <div className="mt-2 bg-gray-100 dark:bg-gray-800 rounded-full h-1.5">
                       <div
                         className="bg-primary-600 h-1.5 rounded-full transition-all"
                         style={{ width: `${job.progress * 100}%` }}
@@ -519,12 +526,12 @@ export default function StudyPage() {
       </div>
 
       {/* DICOM Viewer */}
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
-        <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
+      <div className="bg-white dark:bg-surface rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
+        <div className="px-4 py-3 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">DICOM Viewer</h2>
+            <h2 className="text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase tracking-wider">DICOM Viewer</h2>
             {showNativeFused ? (
-              <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full font-medium">
+              <span className="text-xs bg-amber-100 text-amber-700 dark:text-amber-300 px-2 py-0.5 rounded-full font-medium">
                 CT + PET
               </span>
             ) : hasPetSeries ? (
@@ -568,7 +575,7 @@ export default function StudyPage() {
                   className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
                     selectedUsecase === r.usecase_name
                       ? "bg-primary-600 text-white"
-                      : "bg-white text-gray-700 border border-gray-200 hover:bg-gray-50"
+                      : "bg-white dark:bg-surface text-gray-700 dark:text-gray-300 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-surface-raised"
                   }`}
                 >
                   {r.usecase_name.replace(/_/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase())}
@@ -605,14 +612,14 @@ export default function StudyPage() {
                   <button
                     onClick={loadPriorComparison}
                     disabled={priorLoading}
-                    className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-amber-700 border border-amber-200 rounded-lg hover:bg-amber-50 transition-colors disabled:opacity-50"
+                    className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-amber-700 dark:text-amber-300 border border-amber-200 rounded-lg hover:bg-amber-50 dark:hover:bg-amber-950 transition-colors disabled:opacity-50"
                   >
                     <ArrowLeftRight className="w-4 h-4" />
                     {priorLoading ? "Loading..." : "Prior Comparison"}
                   </button>
                   {["pet_ct", "pet_ct_brain"].includes(selectedResult.usecase_name) && (
                     <Link
-                      href={`/study/${uid}/molecular?usecase=${selectedResult.usecase_name}`}
+                      href={`/study/${uid}/report/${selectedResult.usecase_name}`}
                       className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-indigo-700 border border-indigo-200 rounded-lg hover:bg-indigo-50 transition-colors"
                     >
                       <FileText className="w-4 h-4" /> PET-CT Report
@@ -631,7 +638,7 @@ export default function StudyPage() {
                   )}
                   {selectedResult.usecase_name === "mammography" && (
                     <Link
-                      href={`/study/${uid}/mammography`}
+                      href={`/study/${uid}/report/mammography`}
                       className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-rose-700 border border-rose-200 rounded-lg hover:bg-rose-50 transition-colors"
                     >
                       <FileText className="w-4 h-4" /> Mammography Report
@@ -639,7 +646,7 @@ export default function StudyPage() {
                   )}
                   {isCtReportUsecase(selectedResult.usecase_name) && (
                     <Link
-                      href={`/study/${uid}/abdomen?usecase=${selectedResult.usecase_name}`}
+                      href={`/study/${uid}/report/${selectedResult.usecase_name}`}
                       className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-cyan-700 border border-cyan-200 rounded-lg hover:bg-cyan-50 transition-colors"
                     >
                       <FileText className="w-4 h-4" /> AI Report
@@ -648,7 +655,7 @@ export default function StudyPage() {
                   <button
                     onClick={handleDownloadPdf}
                     disabled={pdfLoading}
-                    className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-700 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50"
+                    className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 border border-gray-200 dark:border-gray-700 rounded-lg hover:bg-gray-50 dark:hover:bg-surface-raised transition-colors disabled:opacity-50"
                   >
                     <FileDown className="w-4 h-4" />
                     {pdfLoading ? "Generating..." : "Download PDF"}
@@ -656,11 +663,17 @@ export default function StudyPage() {
                   <button
                     onClick={handleCreateShareLink}
                     disabled={shareLoading}
-                    className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-blue-700 border border-blue-200 rounded-lg hover:bg-blue-50 transition-colors disabled:opacity-50"
+                    className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-blue-700 dark:text-blue-300 border border-blue-200 rounded-lg hover:bg-blue-50 dark:hover:bg-blue-950 transition-colors disabled:opacity-50"
                   >
                     <Share2 className="w-4 h-4" />
                     {shareLoading ? "Creating..." : "Share"}
                   </button>
+                  <Link
+                    href={`/study/${uid}/delivery`}
+                    className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 border border-gray-200 dark:border-gray-700 rounded-lg hover:bg-gray-50 dark:hover:bg-surface-raised transition-colors"
+                  >
+                    <Truck className="w-4 h-4" /> Delivery Status
+                  </Link>
                   {study.patient_id && (
                     <Link
                       href={`/admin/patients/${encodeURIComponent(study.patient_id)}/trend/${selectedUsecase}`}
@@ -676,19 +689,19 @@ export default function StudyPage() {
 
           {/* Share link display */}
           {shareLink && (
-            <div className="mb-4 bg-blue-50 border border-blue-200 rounded-lg p-4 flex items-center gap-3">
-              <Link2 className="w-4 h-4 text-blue-600 shrink-0" />
+            <div className="mb-4 bg-blue-50 dark:bg-blue-950 border border-blue-200 rounded-lg p-4 flex items-center gap-3">
+              <Link2 className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0" />
               <div className="flex-1 min-w-0">
-                <p className="text-xs font-semibold text-blue-700 mb-1">Referring Physician Portal Link (expires in 7 days)</p>
+                <p className="text-xs font-semibold text-blue-700 dark:text-blue-300 mb-1">Referring Physician Portal Link (expires in 7 days)</p>
                 <p className="text-sm text-blue-800 font-mono truncate">{shareLink}</p>
               </div>
               <button
                 onClick={copyShareLink}
-                className="px-3 py-1.5 text-xs font-medium text-blue-700 bg-blue-100 hover:bg-blue-200 rounded-lg transition-colors shrink-0"
+                className="px-3 py-1.5 text-xs font-medium text-blue-700 dark:text-blue-300 bg-blue-100 hover:bg-blue-200 rounded-lg transition-colors shrink-0"
               >
                 {shareCopied ? "Copied!" : "Copy"}
               </button>
-              <button onClick={() => setShareLink(null)} className="text-blue-400 hover:text-blue-600">
+              <button onClick={() => setShareLink(null)} className="text-blue-400 hover:text-blue-600 dark:hover:text-blue-400">
                 <X className="w-4 h-4" />
               </button>
             </div>
@@ -696,19 +709,19 @@ export default function StudyPage() {
 
           {/* CPT Suggestions Panel */}
           {cptSuggestions && (
-            <div className="mb-4 bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+            <div className="mb-4 bg-white dark:bg-surface rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
               <button
                 onClick={() => setCptOpen(!cptOpen)}
-                className="w-full flex items-center justify-between px-4 py-3 border-b border-gray-100 text-left hover:bg-gray-50 transition-colors"
+                className="w-full flex items-center justify-between px-4 py-3 border-b border-gray-100 dark:border-gray-800 text-left hover:bg-gray-50 dark:hover:bg-surface-raised transition-colors"
               >
                 <div className="flex items-center gap-2">
                   <DollarSign className="w-4 h-4 text-emerald-600" />
-                  <span className="text-sm font-semibold text-gray-900">CPT Billing Code Suggestions</span>
+                  <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">CPT Billing Code Suggestions</span>
                   <span className="text-xs bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full font-medium">
                     {cptSuggestions.length} codes
                   </span>
                 </div>
-                {cptOpen ? <ChevronUp className="w-4 h-4 text-gray-400" /> : <ChevronDown className="w-4 h-4 text-gray-400" />}
+                {cptOpen ? <ChevronUp className="w-4 h-4 text-gray-400 dark:text-gray-500" /> : <ChevronDown className="w-4 h-4 text-gray-400 dark:text-gray-500" />}
               </button>
               {cptOpen && (
                 <div className="p-4">
@@ -717,11 +730,11 @@ export default function StudyPage() {
                       <div
                         key={cpt.code}
                         className={`flex items-start gap-3 p-3 rounded-lg border ${
-                          cpt.category === "addon" ? "border-gray-100 bg-gray-50" : "border-emerald-100 bg-emerald-50"
+                          cpt.category === "addon" ? "border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-surface-raised" : "border-emerald-100 bg-emerald-50"
                         }`}
                       >
                         <div className="shrink-0">
-                          <span className={`text-sm font-bold font-mono ${cpt.category === "addon" ? "text-gray-600" : "text-emerald-700"}`}>
+                          <span className={`text-sm font-bold font-mono ${cpt.category === "addon" ? "text-gray-600 dark:text-gray-400 dark:text-gray-500" : "text-emerald-700"}`}>
                             {cpt.code}
                           </span>
                           {cpt.category === "primary" && i === 0 && (
@@ -732,10 +745,10 @@ export default function StudyPage() {
                           )}
                         </div>
                         <div className="flex-1 min-w-0">
-                          <p className="text-sm font-medium text-gray-900">{cpt.description}</p>
+                          <p className="text-sm font-medium text-gray-900 dark:text-gray-100">{cpt.description}</p>
                         </div>
                         <div className="shrink-0 text-right">
-                          <span className="text-xs font-medium text-gray-600">
+                          <span className="text-xs font-medium text-gray-600 dark:text-gray-400 dark:text-gray-500">
                             {(cpt.confidence * 100).toFixed(0)}% confidence
                           </span>
                           <div className="w-16 bg-gray-200 rounded-full h-1 mt-1">
@@ -748,7 +761,7 @@ export default function StudyPage() {
                       </div>
                     ))}
                   </div>
-                  <p className="text-xs text-gray-400 mt-3">
+                  <p className="text-xs text-gray-400 dark:text-gray-500 mt-3">
                     AI-generated suggestions only. Verify against clinical documentation before billing.
                   </p>
                 </div>
@@ -758,10 +771,10 @@ export default function StudyPage() {
 
           {/* Protocol Check Panel */}
           {protocolCheck && (
-            <div className="mb-4 bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+            <div className="mb-4 bg-white dark:bg-surface rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
               <button
                 onClick={() => setProtocolOpen(!protocolOpen)}
-                className="w-full flex items-center justify-between px-4 py-3 border-b border-gray-100 text-left hover:bg-gray-50 transition-colors"
+                className="w-full flex items-center justify-between px-4 py-3 border-b border-gray-100 dark:border-gray-800 text-left hover:bg-gray-50 dark:hover:bg-surface-raised transition-colors"
               >
                 <div className="flex items-center gap-2">
                   {protocolCheck.status === "ok" || protocolCheck.issues.length === 0 ? (
@@ -769,12 +782,12 @@ export default function StudyPage() {
                   ) : (
                     <AlertTriangle className="w-4 h-4 text-amber-500" />
                   )}
-                  <span className="text-sm font-semibold text-gray-900">Protocol Check</span>
+                  <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">Protocol Check</span>
                   <span
                     className={`text-xs px-2 py-0.5 rounded-full font-medium ${
                       protocolCheck.status === "ok" || protocolCheck.issues.length === 0
-                        ? "bg-green-100 text-green-700"
-                        : "bg-amber-100 text-amber-700"
+                        ? "bg-green-100 text-green-700 dark:text-green-300"
+                        : "bg-amber-100 text-amber-700 dark:text-amber-300"
                     }`}
                   >
                     {protocolCheck.status === "ok" || protocolCheck.issues.length === 0
@@ -782,12 +795,12 @@ export default function StudyPage() {
                       : `${protocolCheck.issues.length} issue${protocolCheck.issues.length !== 1 ? "s" : ""}`}
                   </span>
                 </div>
-                {protocolOpen ? <ChevronUp className="w-4 h-4 text-gray-400" /> : <ChevronDown className="w-4 h-4 text-gray-400" />}
+                {protocolOpen ? <ChevronUp className="w-4 h-4 text-gray-400 dark:text-gray-500" /> : <ChevronDown className="w-4 h-4 text-gray-400 dark:text-gray-500" />}
               </button>
               {protocolOpen && (
                 <div className="p-4">
                   {protocolCheck.issues.length === 0 ? (
-                    <p className="text-sm text-green-700 flex items-center gap-2">
+                    <p className="text-sm text-green-700 dark:text-green-300 flex items-center gap-2">
                       <CheckCircle className="w-4 h-4" /> All {protocolCheck.series_checked} series checked — no protocol issues found.
                     </p>
                   ) : (
@@ -797,10 +810,10 @@ export default function StudyPage() {
                           key={i}
                           className={`p-3 rounded-lg border ${
                             issue.severity === "error"
-                              ? "border-red-200 bg-red-50"
+                              ? "border-red-200 bg-red-50 dark:bg-red-950"
                               : issue.severity === "warning"
-                              ? "border-amber-200 bg-amber-50"
-                              : "border-blue-100 bg-blue-50"
+                              ? "border-amber-200 bg-amber-50 dark:bg-amber-950"
+                              : "border-blue-100 bg-blue-50 dark:bg-blue-950"
                           }`}
                         >
                           <div className="flex items-center gap-2 mb-1">
@@ -810,20 +823,20 @@ export default function StudyPage() {
                                 issue.severity === "warning" ? "text-amber-500" : "text-blue-400"
                               }`}
                             />
-                            <span className="text-xs font-semibold text-gray-700">{issue.series_description}</span>
+                            <span className="text-xs font-semibold text-gray-700 dark:text-gray-300">{issue.series_description}</span>
                             <span
                               className={`text-xs px-1.5 py-0.5 rounded font-medium uppercase ${
-                                issue.severity === "error" ? "bg-red-200 text-red-700" :
-                                issue.severity === "warning" ? "bg-amber-200 text-amber-700" :
-                                "bg-blue-100 text-blue-700"
+                                issue.severity === "error" ? "bg-red-200 text-red-700 dark:text-red-300" :
+                                issue.severity === "warning" ? "bg-amber-200 text-amber-700 dark:text-amber-300" :
+                                "bg-blue-100 text-blue-700 dark:text-blue-300"
                               }`}
                             >
                               {issue.severity}
                             </span>
                           </div>
-                          <p className="text-sm text-gray-800">{issue.message}</p>
+                          <p className="text-sm text-gray-800 dark:text-gray-200">{issue.message}</p>
                           {issue.suggestion && (
-                            <p className="text-xs text-gray-500 mt-1">
+                            <p className="text-xs text-gray-500 dark:text-gray-400 dark:text-gray-500 mt-1">
                               Suggestion: <span className="font-medium">{issue.suggestion}</span>
                             </p>
                           )}
@@ -838,21 +851,21 @@ export default function StudyPage() {
 
           {/* Prior Comparison Panel */}
           {priorComparison && (
-            <div className="mb-4 bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+            <div className="mb-4 bg-white dark:bg-surface rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
               <button
                 onClick={() => setPriorOpen(!priorOpen)}
-                className="w-full flex items-center justify-between px-4 py-3 border-b border-gray-100 text-left hover:bg-gray-50 transition-colors"
+                className="w-full flex items-center justify-between px-4 py-3 border-b border-gray-100 dark:border-gray-800 text-left hover:bg-gray-50 dark:hover:bg-surface-raised transition-colors"
               >
                 <div className="flex items-center gap-2">
                   <ArrowLeftRight className="w-4 h-4 text-amber-600" />
-                  <span className="text-sm font-semibold text-gray-900">Prior Study Comparison</span>
+                  <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">Prior Study Comparison</span>
                   {priorComparison.delta.days_between !== null && (
-                    <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full font-medium">
+                    <span className="text-xs bg-amber-100 text-amber-700 dark:text-amber-300 px-2 py-0.5 rounded-full font-medium">
                       {priorComparison.delta.days_between} days ago
                     </span>
                   )}
                 </div>
-                {priorOpen ? <ChevronUp className="w-4 h-4 text-gray-400" /> : <ChevronDown className="w-4 h-4 text-gray-400" />}
+                {priorOpen ? <ChevronUp className="w-4 h-4 text-gray-400 dark:text-gray-500" /> : <ChevronDown className="w-4 h-4 text-gray-400 dark:text-gray-500" />}
               </button>
               {priorOpen && (
                 <div className="p-4">
@@ -864,36 +877,36 @@ export default function StudyPage() {
 
           {/* MedGemma Debug Panel */}
           {mgDebug && (
-            <div className="mb-4 bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+            <div className="mb-4 bg-white dark:bg-surface rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
               <button
                 onClick={() => setMgOpen(!mgOpen)}
-                className="w-full flex items-center justify-between px-4 py-3 border-b border-gray-100 text-left hover:bg-gray-50 transition-colors"
+                className="w-full flex items-center justify-between px-4 py-3 border-b border-gray-100 dark:border-gray-800 text-left hover:bg-gray-50 dark:hover:bg-surface-raised transition-colors"
               >
                 <div className="flex items-center gap-2 flex-wrap">
                   <Bug className="w-4 h-4 text-fuchsia-600" />
-                  <span className="text-sm font-semibold text-gray-900">MedGemma Debug</span>
+                  <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">MedGemma Debug</span>
                   <span className="text-xs bg-fuchsia-100 text-fuchsia-700 px-2 py-0.5 rounded-full font-medium">
                     {mgDebug.medgemma.model}
                   </span>
-                  <span className="text-xs text-gray-400">
+                  <span className="text-xs text-gray-400 dark:text-gray-500">
                     {mgDebug.inputs.n_images_sent}/{mgDebug.inputs.n_images_total} images sent
                   </span>
                   {mgDebug.medgemma.ready === false && (
-                    <span className="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded-full font-medium">
+                    <span className="text-xs bg-red-100 text-red-700 dark:text-red-300 px-2 py-0.5 rounded-full font-medium">
                       Ollama unreachable
                     </span>
                   )}
                 </div>
-                {mgOpen ? <ChevronUp className="w-4 h-4 text-gray-400" /> : <ChevronDown className="w-4 h-4 text-gray-400" />}
+                {mgOpen ? <ChevronUp className="w-4 h-4 text-gray-400 dark:text-gray-500" /> : <ChevronDown className="w-4 h-4 text-gray-400 dark:text-gray-500" />}
               </button>
               {mgOpen && (
                 <div className="p-4 space-y-4">
                   {/* Config + run controls */}
-                  <div className="flex items-center gap-x-3 gap-y-1 flex-wrap text-xs text-gray-500">
-                    <span>base_url: <span className="font-mono text-gray-700">{mgDebug.medgemma.base_url}</span></span>
+                  <div className="flex items-center gap-x-3 gap-y-1 flex-wrap text-xs text-gray-500 dark:text-gray-400 dark:text-gray-500">
+                    <span>base_url: <span className="font-mono text-gray-700 dark:text-gray-300">{mgDebug.medgemma.base_url}</span></span>
                     <span>&middot; enabled: {String(mgDebug.medgemma.enabled)}</span>
                     {mgDebug.stored_ai_report_provider && (
-                      <span>&middot; stored report by: <span className="font-mono text-gray-700">{mgDebug.stored_ai_report_provider}</span></span>
+                      <span>&middot; stored report by: <span className="font-mono text-gray-700 dark:text-gray-300">{mgDebug.stored_ai_report_provider}</span></span>
                     )}
                   </div>
                   <div className="flex items-center gap-2 flex-wrap">
@@ -911,21 +924,21 @@ export default function StudyPage() {
                     >
                       {mgRunning ? "Running…" : "Run send_all (every image)"}
                     </button>
-                    <span className="text-xs text-gray-400">≈ 20–30 s per run</span>
+                    <span className="text-xs text-gray-400 dark:text-gray-500">≈ 20–30 s per run</span>
                   </div>
 
                   {mgDebug.note && (
-                    <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">{mgDebug.note}</p>
+                    <p className="text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950 border border-amber-200 rounded p-2">{mgDebug.note}</p>
                   )}
 
                   {/* Images (inputs) */}
                   <div>
-                    <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
-                      Images ({mgDebug.inputs.images.length}) — <span className="text-green-600">sent</span> vs generated-but-not-sent
+                    <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-2">
+                      Images ({mgDebug.inputs.images.length}) — <span className="text-green-600 dark:text-green-400">sent</span> vs generated-but-not-sent
                     </p>
                     <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
                       {mgDebug.inputs.images.map((im) => (
-                        <div key={im.name} className="border border-gray-100 rounded-lg overflow-hidden">
+                        <div key={im.name} className="border border-gray-100 dark:border-gray-800 rounded-lg overflow-hidden">
                           {im.base64 ? (
                             // eslint-disable-next-line @next/next/no-img-element
                             <img
@@ -934,20 +947,20 @@ export default function StudyPage() {
                               className="w-full h-32 object-contain bg-black"
                             />
                           ) : (
-                            <div className="w-full h-32 bg-gray-100 flex items-center justify-center text-xs text-gray-400">
+                            <div className="w-full h-32 bg-gray-100 dark:bg-gray-800 flex items-center justify-center text-xs text-gray-400 dark:text-gray-500">
                               no preview
                             </div>
                           )}
                           <div className="p-1.5">
                             <div className="flex items-center justify-between gap-1">
-                              <span className="text-[11px] font-medium text-gray-700 truncate" title={im.name}>{im.name}</span>
+                              <span className="text-[11px] font-medium text-gray-700 dark:text-gray-300 truncate" title={im.name}>{im.name}</span>
                               {im.sent_to_model ? (
-                                <span className="text-[9px] font-bold uppercase bg-green-100 text-green-700 px-1 py-0.5 rounded shrink-0">sent</span>
+                                <span className="text-[9px] font-bold uppercase bg-green-100 text-green-700 dark:text-green-300 px-1 py-0.5 rounded shrink-0">sent</span>
                               ) : (
-                                <span className="text-[9px] font-bold uppercase bg-gray-100 text-gray-400 px-1 py-0.5 rounded shrink-0">not sent</span>
+                                <span className="text-[9px] font-bold uppercase bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500 px-1 py-0.5 rounded shrink-0">not sent</span>
                               )}
                             </div>
-                            <span className="text-[10px] text-gray-400">
+                            <span className="text-[10px] text-gray-400 dark:text-gray-500">
                               {(im.bytes / 1024).toFixed(0)} KB · {im.artifact_type}
                             </span>
                           </div>
@@ -958,10 +971,10 @@ export default function StudyPage() {
 
                   {/* Prompt (input) */}
                   <div>
-                    <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
+                    <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-2">
                       Prompt ({mgDebug.inputs.prompt_chars} chars)
                     </p>
-                    <pre className="text-[11px] whitespace-pre-wrap bg-gray-50 border border-gray-100 rounded p-3 max-h-80 overflow-auto text-gray-700">
+                    <pre className="text-[11px] whitespace-pre-wrap bg-gray-50 dark:bg-surface-raised border border-gray-100 dark:border-gray-800 rounded p-3 max-h-80 overflow-auto text-gray-700 dark:text-gray-300">
                       {mgDebug.inputs.prompt}
                     </pre>
                   </div>
@@ -969,12 +982,12 @@ export default function StudyPage() {
                   {/* Output */}
                   {mgDebug.output && (
                     <div>
-                      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
+                      <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-2">
                         Raw output · {mgDebug.output.elapsed_s}s ·{" "}
                         {mgDebug.output.parsed_ok ? (
-                          <span className="text-green-600">parsed ✓</span>
+                          <span className="text-green-600 dark:text-green-400">parsed ✓</span>
                         ) : (
-                          <span className="text-red-600">parse failed{mgDebug.output.parse_error ? ` (${mgDebug.output.parse_error})` : ""}</span>
+                          <span className="text-red-600 dark:text-red-400">parse failed{mgDebug.output.parse_error ? ` (${mgDebug.output.parse_error})` : ""}</span>
                         )}
                       </p>
                       <pre className="text-[11px] whitespace-pre-wrap bg-gray-900 text-green-200 rounded p-3 max-h-80 overflow-auto">
@@ -991,7 +1004,7 @@ export default function StudyPage() {
           {selectedResult && uiSchema ? (
             <ReportView study={study} result={selectedResult} uiSchema={uiSchema} />
           ) : selectedUsecase ? (
-            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-8 text-center text-gray-400">
+            <div className="bg-white dark:bg-surface rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-8 text-center text-gray-400 dark:text-gray-500">
               Loading report...
             </div>
           ) : null}

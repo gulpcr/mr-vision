@@ -2,9 +2,11 @@
 
 import { useEffect, useState } from "react";
 import { api, QaMetrics } from "@/lib/api";
+import { ErrorBanner } from "@/components/ui/ErrorBanner";
+import { EmptyState } from "@/components/ui/EmptyState";
 import {
   BarChart3, Clock, CheckCircle, AlertTriangle, TrendingUp, TrendingDown,
-  Minus, RefreshCw, Filter
+  RefreshCw,
 } from "lucide-react";
 
 const USECASE_LABELS: Record<string, string> = {
@@ -100,7 +102,7 @@ export default function QaDashboardPage() {
       {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">QA Dashboard</h1>
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">QA Dashboard</h1>
           <p className="text-sm text-gray-500 mt-0.5">Radiologist agreement rates, turnaround times, and audit metrics</p>
         </div>
         <div className="flex items-center gap-3">
@@ -128,22 +130,18 @@ export default function QaDashboardPage() {
             disabled={loading}
             className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-gray-700 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50"
           >
-            <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
+            <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin motion-reduce:animate-none" : ""}`} />
             Refresh
           </button>
         </div>
       </div>
 
-      {error && (
-        <div className="bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-sm text-red-700">
-          {error}
-        </div>
-      )}
+      {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
 
       {loading && !metrics ? (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           {[...Array(4)].map((_, i) => (
-            <div key={i} className="bg-white rounded-xl border border-gray-200 p-5 animate-pulse">
+            <div key={i} className="bg-white rounded-xl border border-gray-200 p-5 animate-pulse motion-reduce:animate-none">
               <div className="h-4 bg-gray-100 rounded w-20 mb-3" />
               <div className="h-8 bg-gray-100 rounded w-16" />
             </div>
@@ -309,7 +307,9 @@ export default function QaDashboardPage() {
             </div>
           </div>
         </>
-      ) : null}
+      ) : (
+        <EmptyState icon={BarChart3} title="No QA metrics available" description="Try refreshing or selecting a different time range." />
+      )}
     </div>
   );
 }

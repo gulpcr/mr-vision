@@ -65,6 +65,16 @@ export function useSiteConfig() {
   return useSWR("site-config", () => api.admin.getSiteConfig());
 }
 
+export function useUsers() {
+  return useSWR("users", () => api.auth.listUsers());
+}
+
+export function useShareLinks(resultId: string | null) {
+  return useSWR(resultId ? ["shares", resultId] : null, () =>
+    api.portal.listShares(resultId!).then((d) => d.shares)
+  );
+}
+
 export function useHealth() {
   return useSWR("health", fetchHealth, { refreshInterval: 30000 });
 }

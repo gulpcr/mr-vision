@@ -242,6 +242,26 @@ class RoutingService:
     def get_all_rules(self) -> dict[str, list[dict]]:
         return self._build_effective_rules()
 
+    def get_site_overrides(self) -> list[dict]:
+        """Flat list of the current site-override rules, usecase_name embedded
+        per rule — the exact shape update_site_rules() expects back. Distinct
+        from get_all_rules(), which merges these with the base per-usecase
+        routing_rules.yaml and cannot be used to reconstruct the override-only
+        list (the admin UI must start from this, not the merged view)."""
+        flat: list[dict] = []
+        for uc_name, rules in self._site_overrides.items():
+            for rule in rules:
+                flat.append({
+                    "usecase_name": uc_name,
+                    "body_parts": rule.body_parts,
+                    "study_description_patterns": rule.study_description_patterns,
+                    "series_description_patterns": rule.series_description_patterns,
+                    "modality": rule.modality,
+                    "priority": rule.priority,
+                    "enabled": rule.enabled,
+                })
+        return flat
+
     def update_site_rules(self, rules_data: list[dict]):
         settings = get_settings()
         site_config_path = settings.site_config_path

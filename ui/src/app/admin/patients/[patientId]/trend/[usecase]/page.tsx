@@ -87,8 +87,8 @@ export default function PatientTrendPage() {
   if (loading) {
     return (
       <div className="flex items-center justify-center py-20">
-        <Activity className="w-6 h-6 text-blue-500 animate-pulse mr-2" />
-        <p className="text-gray-500">Loading longitudinal data...</p>
+        <Activity className="w-6 h-6 text-blue-500 animate-pulse motion-reduce:animate-none mr-2" />
+        <p className="text-gray-500 dark:text-gray-400 dark:text-gray-500">Loading longitudinal data...</p>
       </div>
     );
   }
@@ -96,12 +96,12 @@ export default function PatientTrendPage() {
   if (error || !trendData) {
     return (
       <div className="space-y-4">
-        <Link href="/worklist" className="inline-flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-700">
+        <Link href="/worklist" className="inline-flex items-center gap-1.5 text-sm text-gray-500 dark:text-gray-400 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">
           <ArrowLeft className="w-4 h-4" /> Back to Worklist
         </Link>
-        <div className="bg-red-50 border border-red-200 rounded-lg px-4 py-6 text-center">
+        <div className="bg-red-50 dark:bg-red-950 border border-red-200 rounded-lg px-4 py-6 text-center">
           <AlertTriangle className="w-8 h-8 text-red-400 mx-auto mb-2" />
-          <p className="text-red-700 font-medium">No longitudinal data available</p>
+          <p className="text-red-700 dark:text-red-300 font-medium">No longitudinal data available</p>
           <p className="text-red-500 text-sm mt-1">{error || "No prior studies found for this patient."}</p>
         </div>
       </div>
@@ -112,11 +112,11 @@ export default function PatientTrendPage() {
   if (timepoints.length === 0) {
     return (
       <div className="space-y-4">
-        <Link href="/worklist" className="inline-flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-700">
+        <Link href="/worklist" className="inline-flex items-center gap-1.5 text-sm text-gray-500 dark:text-gray-400 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">
           <ArrowLeft className="w-4 h-4" /> Back to Worklist
         </Link>
-        <div className="bg-amber-50 border border-amber-200 rounded-lg p-6 text-center">
-          <p className="text-amber-700">Only one study found. Longitudinal tracking requires at least 2 time points.</p>
+        <div className="bg-amber-50 dark:bg-amber-950 border border-amber-200 rounded-lg p-6 text-center">
+          <p className="text-amber-700 dark:text-amber-300">Only one study found. Longitudinal tracking requires at least 2 time points.</p>
         </div>
       </div>
     );
@@ -147,14 +147,14 @@ export default function PatientTrendPage() {
 
   return (
     <div className="space-y-6">
-      <Link href="/worklist" className="inline-flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-700">
+      <Link href="/worklist" className="inline-flex items-center gap-1.5 text-sm text-gray-500 dark:text-gray-400 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">
         <ArrowLeft className="w-4 h-4" /> Back to Worklist
       </Link>
 
       {/* Header */}
       <div>
-        <h1 className="text-2xl font-bold text-gray-900">Longitudinal Trend</h1>
-        <p className="text-sm text-gray-500 mt-0.5">
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Longitudinal Trend</h1>
+        <p className="text-sm text-gray-500 dark:text-gray-400 dark:text-gray-500 mt-0.5">
           Patient ID: <span className="font-medium">{patientId}</span> &middot; {usecaseLabel} &middot;{" "}
           {timepoints.length} time point{timepoints.length !== 1 ? "s" : ""}
         </p>
@@ -162,10 +162,10 @@ export default function PatientTrendPage() {
 
       {/* RANO Timeline */}
       {timepoints.some((tp) => tp.rano_classification) && (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
-          <h2 className="text-sm font-semibold text-gray-900 mb-4">RANO Response Timeline</h2>
+        <div className="bg-white dark:bg-surface rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-5">
+          <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-4">RANO Response Timeline</h2>
           <div className="relative">
-            <div className="absolute left-4 top-0 bottom-0 w-0.5 bg-gray-100" />
+            <div className="absolute left-4 top-0 bottom-0 w-0.5 bg-gray-100 dark:bg-gray-800" />
             <div className="space-y-4 pl-10">
               {timepoints.map((tp, i) => {
                 const rano = tp.rano_classification;
@@ -184,14 +184,14 @@ export default function PatientTrendPage() {
                     }`}>
                       <div className="flex-1">
                         <div className="flex items-center gap-2">
-                          <span className="text-sm font-semibold text-gray-900">
+                          <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">
                             {formatDate(tp.study_date || tp.created_at)}
                           </span>
                           {i === 0 && (
-                            <span className="text-xs bg-gray-200 text-gray-600 px-1.5 py-0.5 rounded font-medium">Baseline</span>
+                            <span className="text-xs bg-gray-200 text-gray-600 dark:text-gray-400 dark:text-gray-500 px-1.5 py-0.5 rounded font-medium">Baseline</span>
                           )}
                           {i === timepoints.length - 1 && timepoints.length > 1 && (
-                            <span className="text-xs bg-blue-100 text-blue-600 px-1.5 py-0.5 rounded font-medium">Latest</span>
+                            <span className="text-xs bg-blue-100 text-blue-600 dark:text-blue-400 px-1.5 py-0.5 rounded font-medium">Latest</span>
                           )}
                         </div>
                       </div>
@@ -213,8 +213,8 @@ export default function PatientTrendPage() {
 
       {/* Measurement Time Series */}
       {Object.keys(series).length > 0 ? (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
-          <h2 className="text-sm font-semibold text-gray-900 mb-4 flex items-center gap-2">
+        <div className="bg-white dark:bg-surface rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-5">
+          <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-4 flex items-center gap-2">
             <TrendingUp className="w-4 h-4 text-blue-500" />
             Measurement Trends
           </h2>
@@ -226,18 +226,18 @@ export default function PatientTrendPage() {
               const isUp = changePct > 1;
               const isDown = changePct < -1;
               return (
-                <div key={key} className="border border-gray-100 rounded-lg p-4">
+                <div key={key} className="border border-gray-100 dark:border-gray-800 rounded-lg p-4">
                   <div className="flex items-start justify-between mb-2">
                     <div>
-                      <p className="text-xs font-semibold text-gray-600">{formatKey(key)}</p>
-                      <p className="text-lg font-bold text-gray-900 mt-0.5">
+                      <p className="text-xs font-semibold text-gray-600 dark:text-gray-400 dark:text-gray-500">{formatKey(key)}</p>
+                      <p className="text-lg font-bold text-gray-900 dark:text-gray-100 mt-0.5">
                         {last % 1 === 0 ? last : last.toFixed(2)}
                       </p>
                     </div>
                     <div className={`flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-lg ${
-                      isUp ? "bg-red-100 text-red-600" :
-                      isDown ? "bg-green-100 text-green-600" :
-                      "bg-gray-100 text-gray-500"
+                      isUp ? "bg-red-100 text-red-600 dark:text-red-400" :
+                      isDown ? "bg-green-100 text-green-600 dark:text-green-400" :
+                      "bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 dark:text-gray-500"
                     }`}>
                       {isUp ? <TrendingUp className="w-3 h-3" /> : isDown ? <TrendingDown className="w-3 h-3" /> : <Minus className="w-3 h-3" />}
                       {Math.abs(changePct).toFixed(1)}%
@@ -245,8 +245,8 @@ export default function PatientTrendPage() {
                   </div>
                   <SparkLine values={values} color={isUp ? "#ef4444" : isDown ? "#22c55e" : "#94a3b8"} />
                   <div className="flex justify-between mt-2">
-                    <span className="text-xs text-gray-400">{formatDate(dates[0])}</span>
-                    <span className="text-xs text-gray-400">{formatDate(dates[dates.length - 1])}</span>
+                    <span className="text-xs text-gray-400 dark:text-gray-500">{formatDate(dates[0])}</span>
+                    <span className="text-xs text-gray-400 dark:text-gray-500">{formatDate(dates[dates.length - 1])}</span>
                   </div>
                 </div>
               );
@@ -254,37 +254,37 @@ export default function PatientTrendPage() {
           </div>
         </div>
       ) : (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center">
-          <p className="text-gray-400 text-sm">Not enough numeric measurements to display trend charts.</p>
+        <div className="bg-white dark:bg-surface rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-8 text-center">
+          <p className="text-gray-400 dark:text-gray-500 text-sm">Not enough numeric measurements to display trend charts.</p>
         </div>
       )}
 
       {/* Data Table */}
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-        <div className="px-5 py-4 border-b border-gray-100">
-          <h2 className="text-sm font-semibold text-gray-900">Raw Timepoint Data</h2>
+      <div className="bg-white dark:bg-surface rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
+        <div className="px-5 py-4 border-b border-gray-100 dark:border-gray-800">
+          <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Raw Timepoint Data</h2>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="bg-gray-50 border-b border-gray-100">
-                <th className="text-left px-5 py-3 text-xs font-semibold text-gray-500 uppercase whitespace-nowrap">Date</th>
+              <tr className="bg-gray-50 dark:bg-surface-raised border-b border-gray-100 dark:border-gray-800">
+                <th className="text-left px-5 py-3 text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase whitespace-nowrap">Date</th>
                 {timepoints.some((tp) => tp.rano_classification) && (
-                  <th className="text-left px-5 py-3 text-xs font-semibold text-gray-500 uppercase">RANO</th>
+                  <th className="text-left px-5 py-3 text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase">RANO</th>
                 )}
                 {allMeasurementKeys.slice(0, 6).map((k) => (
-                  <th key={k} className="text-right px-4 py-3 text-xs font-semibold text-gray-500 uppercase whitespace-nowrap">
+                  <th key={k} className="text-right px-4 py-3 text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase whitespace-nowrap">
                     {formatKey(k).split(" / ").pop()}
                   </th>
                 ))}
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-50">
+            <tbody className="divide-y divide-gray-50 dark:divide-gray-800">
               {timepoints.map((tp, i) => {
                 const flat = flattenMeasurements(tp.measurements);
                 return (
-                  <tr key={tp.result_id} className={`hover:bg-gray-50 ${i === 0 ? "bg-blue-50/30" : ""}`}>
-                    <td className="px-5 py-3 font-medium text-gray-900 whitespace-nowrap">
+                  <tr key={tp.result_id} className={`hover:bg-gray-50 dark:hover:bg-surface-raised ${i === 0 ? "bg-blue-50/30" : ""}`}>
+                    <td className="px-5 py-3 font-medium text-gray-900 dark:text-gray-100 whitespace-nowrap">
                       {formatDate(tp.study_date || tp.created_at)}
                       {i === 0 && <span className="ml-2 text-xs text-blue-500 font-medium">Baseline</span>}
                     </td>
@@ -292,15 +292,15 @@ export default function PatientTrendPage() {
                       <td className="px-5 py-3">
                         {tp.rano_classification ? (
                           <span className={`text-xs font-bold px-2 py-0.5 rounded ${
-                            RANO_CONFIG[tp.rano_classification]?.bg || "bg-gray-100"
-                          } ${RANO_CONFIG[tp.rano_classification]?.text || "text-gray-700"}`}>
+                            RANO_CONFIG[tp.rano_classification]?.bg || "bg-gray-100 dark:bg-gray-800"
+                          } ${RANO_CONFIG[tp.rano_classification]?.text || "text-gray-700 dark:text-gray-300"}`}>
                             {tp.rano_classification}
                           </span>
                         ) : <span className="text-gray-300">—</span>}
                       </td>
                     )}
                     {allMeasurementKeys.slice(0, 6).map((k) => (
-                      <td key={k} className="px-4 py-3 text-right text-gray-700">
+                      <td key={k} className="px-4 py-3 text-right text-gray-700 dark:text-gray-300">
                         {flat[k] !== undefined ? (
                           flat[k] % 1 === 0 ? flat[k] : flat[k].toFixed(2)
                         ) : (

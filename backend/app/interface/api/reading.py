@@ -1,9 +1,11 @@
 """Reading-workflow API — study lifecycle, assignment, and turnaround.
 
-POST /studies/{uid}/claim        require(study.claim)    self-claim → in_progress
-POST /studies/{uid}/assign       require(study.claim)    assign/reassign to a radiologist
-POST /studies/{uid}/auto-assign  require(study.claim)    load-balance to least-loaded radiologist
-POST /studies/{uid}/unclaim      require(study.claim)    release → unread (assignee/admin)
+POST /studies/{uid}/claim        require(study.claim)     self-claim → in_progress
+POST /studies/{uid}/assign       require(study.claim)     assign/reassign to a radiologist
+POST /studies/{uid}/auto-assign  require(study.escalate)  load-balance to least-loaded radiologist —
+                                                           the remote-site escalation action; granted
+                                                           to technician as well as radiologist/admin
+POST /studies/{uid}/unclaim      require(study.claim)     release → unread (assignee/admin)
 POST /studies/{uid}/report       require(result.approve) in_progress → reported (assignee/admin)
 POST /studies/{uid}/sign         require(result.approve) reported → signed (assignee/admin)
 """
@@ -96,7 +98,7 @@ async def assign_study(
     return result
 
 
-@router.post("/{study_uid}/auto-assign", dependencies=[require_permission("study.claim")])
+@router.post("/{study_uid}/auto-assign", dependencies=[require_permission("study.escalate")])
 async def auto_assign_study(
     study_uid: str,
     request: Request,

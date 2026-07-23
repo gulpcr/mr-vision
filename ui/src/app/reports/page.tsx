@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import { useStudies, useUsecases } from "@/lib/hooks";
 import { api, Result, Study } from "@/lib/api";
 import { formatDate, formatDateTime, formatPatientName } from "@/lib/format";
+import { StatusBadge } from "@/components/ui/StatusBadge";
 import Link from "next/link";
 import { FileText, Search, Filter, ArrowLeftRight } from "lucide-react";
 
@@ -12,13 +13,6 @@ interface ReportEntry {
   result: Result;
   selected?: boolean;
 }
-
-const READING_STATUS: Record<string, [string, string]> = {
-  unread: ["Unclaimed", "bg-gray-100 text-gray-600"],
-  in_progress: ["Reading", "bg-blue-100 text-blue-700"],
-  reported: ["Reported", "bg-amber-100 text-amber-800"],
-  signed: ["Signed off", "bg-green-100 text-green-700"],
-};
 
 export default function ReportsPage() {
   const { data: studyData, isLoading: studiesLoading } = useStudies({ limit: "50" });
@@ -91,7 +85,7 @@ export default function ReportsPage() {
 
   return (
     <div>
-      <h1 className="text-2xl font-bold text-gray-900 mb-6">Reports</h1>
+      <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100 mb-6">Reports</h1>
 
       {selectedIds.length === 2 && (
         <div className="bg-primary-50 border border-primary-200 rounded-lg px-4 py-3 flex items-center justify-between">
@@ -106,25 +100,25 @@ export default function ReportsPage() {
         </div>
       )}
 
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200">
+      <div className="bg-white dark:bg-surface rounded-lg shadow-sm border border-gray-200 dark:border-gray-700">
         {/* Filters */}
-        <div className="flex flex-wrap items-center gap-3 px-5 py-3 border-b border-gray-100">
+        <div className="flex flex-wrap items-center gap-3 px-5 py-3 border-b border-gray-100 dark:border-gray-800">
           <div className="relative flex-1 min-w-[200px]">
-            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 dark:text-gray-500" />
             <input
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search by patient or use case..."
-              className="w-full pl-9 pr-4 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+              className="w-full pl-9 pr-4 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
             />
           </div>
           <div className="flex items-center gap-2">
-            <Filter className="w-4 h-4 text-gray-400" />
+            <Filter className="w-4 h-4 text-gray-400 dark:text-gray-500" />
             <select
               value={usecaseFilter}
               onChange={(e) => setUsecaseFilter(e.target.value)}
-              className="text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500"
+              className="text-sm border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500"
             >
               <option value="">All Use Cases</option>
               {usecases?.map((uc) => (
@@ -138,9 +132,9 @@ export default function ReportsPage() {
 
         {/* Table */}
         {studiesLoading || loading ? (
-          <div className="p-8 text-center text-sm text-gray-400">Loading reports...</div>
+          <div className="p-8 text-center text-sm text-gray-400 dark:text-gray-500">Loading reports...</div>
         ) : filtered.length === 0 ? (
-          <div className="p-8 text-center text-sm text-gray-400">
+          <div className="p-8 text-center text-sm text-gray-400 dark:text-gray-500">
             <FileText className="w-8 h-8 mx-auto mb-2 text-gray-300" />
             No completed reports found
           </div>
@@ -148,34 +142,34 @@ export default function ReportsPage() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-gray-100">
+                <tr className="border-b border-gray-100 dark:border-gray-800">
                   <th className="px-4 py-2.5 w-10"></th>
-                  <th className="text-left px-5 py-2.5 text-xs font-semibold text-gray-500 uppercase">
+                  <th className="text-left px-5 py-2.5 text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase">
                     Patient
                   </th>
-                  <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase">
+                  <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase">
                     Study Date
                   </th>
-                  <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase">
+                  <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase">
                     Use Case
                   </th>
-                  <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase">
+                  <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase">
                     Status
                   </th>
-                  <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase">
+                  <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase">
                     Model Version
                   </th>
-                  <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase">
+                  <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase">
                     Generated
                   </th>
                   <th className="px-5 py-2.5"></th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-gray-50">
+              <tbody className="divide-y divide-gray-50 dark:divide-gray-800">
                 {filtered.map((e) => (
                   <tr
                     key={`${e.result.id}`}
-                    className="hover:bg-gray-50"
+                    className="hover:bg-gray-50 dark:hover:bg-surface-raised"
                   >
                     <td className="px-4 py-3">
                       <input
@@ -183,16 +177,17 @@ export default function ReportsPage() {
                         checked={selectedIds.includes(e.result.id)}
                         onChange={() => toggleSelect(e.result.id)}
                         title="Select for comparison"
-                        className="w-4 h-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500 cursor-pointer"
+                        aria-label={`Select ${e.study.patient_name || "study"} for comparison`}
+                        className="w-4 h-4 rounded border-gray-300 dark:border-gray-700 text-primary-600 focus:ring-primary-500 cursor-pointer"
                       />
                     </td>
                     <td className="px-5 py-3">
-                      <p className="font-medium text-gray-900">
+                      <p className="font-medium text-gray-900 dark:text-gray-100">
                         {formatPatientName(e.study.patient_name)}
                       </p>
-                      <p className="text-xs text-gray-500">{e.study.patient_id}</p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400 dark:text-gray-500">{e.study.patient_id}</p>
                     </td>
-                    <td className="px-3 py-3 text-gray-600">
+                    <td className="px-3 py-3 text-gray-600 dark:text-gray-400 dark:text-gray-500">
                       {formatDate(e.study.study_date)}
                     </td>
                     <td className="px-3 py-3">
@@ -201,7 +196,7 @@ export default function ReportsPage() {
                           {e.result.usecase_name.replace(/_/g, " ")}
                         </span>
                         {e.result.version > 1 && (
-                          <span className="px-1.5 py-0.5 bg-amber-50 text-amber-600 text-[10px] rounded font-semibold border border-amber-100">
+                          <span className="px-1.5 py-0.5 bg-amber-50 dark:bg-amber-950 text-amber-600 text-[10px] rounded font-semibold border border-amber-100">
                             v{e.result.version}
                           </span>
                         )}
@@ -210,14 +205,11 @@ export default function ReportsPage() {
                     <td className="px-3 py-3">
                       {(() => {
                         const rs = e.study.reading_status || "unread";
-                        const [label, cls] = READING_STATUS[rs] || [rs, "bg-gray-100 text-gray-600"];
                         return (
                           <div className="flex flex-col gap-0.5">
-                            <span className={`inline-flex w-fit px-2 py-0.5 rounded-full text-xs font-semibold ${cls}`}>
-                              {label}
-                            </span>
+                            <StatusBadge variant="reading" status={rs} className="w-fit !px-2 !py-0.5 !border-0" />
                             {e.study.assigned_to_username && (
-                              <span className="text-[10px] text-gray-400 truncate max-w-[110px]" title={e.study.assigned_to_username}>
+                              <span className="text-[10px] text-gray-400 dark:text-gray-500 truncate max-w-[110px]" title={e.study.assigned_to_username}>
                                 {e.study.assigned_to_username}
                               </span>
                             )}
@@ -225,8 +217,8 @@ export default function ReportsPage() {
                         );
                       })()}
                     </td>
-                    <td className="px-3 py-3 text-gray-600">{e.result.model_version}</td>
-                    <td className="px-3 py-3 text-gray-600 text-xs">
+                    <td className="px-3 py-3 text-gray-600 dark:text-gray-400 dark:text-gray-500">{e.result.model_version}</td>
+                    <td className="px-3 py-3 text-gray-600 dark:text-gray-400 dark:text-gray-500 text-xs">
                       {formatDateTime(e.result.created_at)}
                     </td>
                     <td className="px-5 py-3">

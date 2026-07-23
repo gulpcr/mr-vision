@@ -3,13 +3,18 @@
 import { useState } from "react";
 import { useExperiments } from "@/lib/hooks";
 import { api } from "@/lib/api";
-import { Plus, Square, BarChart3 } from "lucide-react";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { Table, Caption, Th } from "@/components/ui/Table";
+import { TableSkeleton } from "@/components/ui/TableSkeleton";
+import { EmptyState } from "@/components/ui/EmptyState";
+import { Plus, Square, FlaskConical } from "lucide-react";
 import { mutate } from "swr";
 
 export default function ExperimentsPage() {
   const { data: experiments, isLoading } = useExperiments();
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ name: "", usecase_name: "", control_version: "", treatment_version: "", traffic_split: 0.5 });
+  const [pendingStopId, setPendingStopId] = useState<string | null>(null);
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -20,16 +25,14 @@ export default function ExperimentsPage() {
   };
 
   const handleStop = async (id: string) => {
-    if (confirm("Stop this experiment?")) {
-      await api.experiments.stop(id);
-      mutate("experiments");
-    }
+    await api.experiments.stop(id);
+    mutate("experiments");
   };
 
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">A/B Experiments</h1>
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">A/B Experiments</h1>
         <button onClick={() => setShowForm(!showForm)} className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-primary-600 rounded-lg hover:bg-primary-700">
           <Plus className="w-4 h-4" /> New Experiment
         </button>
@@ -46,45 +49,77 @@ export default function ExperimentsPage() {
         </form>
       )}
 
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
-        {isLoading ? <div className="p-12 text-center text-gray-400">Loading...</div> : (
-          <table className="w-full text-sm">
-            <thead><tr className="border-b border-gray-100">
-              <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Name</th>
-              <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Use Case</th>
-              <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Control</th>
-              <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Treatment</th>
-              <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Split</th>
-              <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Status</th>
-              <th className="py-3 px-4"></th>
-            </tr></thead>
-            <tbody className="divide-y divide-gray-50">
-              {(experiments || []).map((exp) => (
-                <tr key={exp.id} className="hover:bg-gray-50">
-                  <td className="py-2.5 px-4 font-medium text-gray-900">{exp.name}</td>
-                  <td className="py-2.5 px-4 text-gray-600">{exp.usecase_name}</td>
-                  <td className="py-2.5 px-4 text-gray-600">{exp.control_version}</td>
-                  <td className="py-2.5 px-4 text-gray-600">{exp.treatment_version}</td>
-                  <td className="py-2.5 px-4 text-gray-600">{(exp.traffic_split * 100).toFixed(0)}%</td>
+      <div className="bg-white dark:bg-surface rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
+        <Table>
+          <Caption>A/B experiments comparing model versions per use case</Caption>
+          <thead>
+            <tr className="border-b border-gray-100 dark:border-gray-800">
+              <Th>Name</Th>
+              <Th>Use Case</Th>
+              <Th>Control</Th>
+              <Th>Treatment</Th>
+              <Th>Split</Th>
+              <Th>Status</Th>
+              <Th className="w-16" />
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-50 dark:divide-gray-800">
+            {isLoading ? (
+              <TableSkeleton rows={5} columnWidths={[120, 100, 90, 90, 60, 70, 32]} />
+            ) : !experiments || experiments.length === 0 ? (
+              <tr>
+                <td colSpan={7}>
+                  <EmptyState
+                    icon={FlaskConical}
+                    title="No experiments"
+                    description="Create an A/B experiment to compare model versions on live traffic."
+                  />
+                </td>
+              </tr>
+            ) : (
+              experiments.map((exp) => (
+                <tr key={exp.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                  <td className="py-2.5 px-4 font-medium text-gray-900 dark:text-gray-100">{exp.name}</td>
+                  <td className="py-2.5 px-4 text-gray-600 dark:text-gray-400">{exp.usecase_name}</td>
+                  <td className="py-2.5 px-4 text-gray-600 dark:text-gray-400">{exp.control_version}</td>
+                  <td className="py-2.5 px-4 text-gray-600 dark:text-gray-400">{exp.treatment_version}</td>
+                  <td className="py-2.5 px-4 text-gray-600 dark:text-gray-400">{(exp.traffic_split * 100).toFixed(0)}%</td>
                   <td className="py-2.5 px-4">
-                    <span className={`px-2 py-0.5 text-xs rounded-full font-medium ${exp.is_active ? "bg-green-50 text-green-700" : "bg-gray-100 text-gray-500"}`}>
+                    <span className={`px-2 py-0.5 text-xs rounded-full font-medium ${exp.is_active ? "bg-green-50 dark:bg-green-950 text-green-700 dark:text-green-300" : "bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400"}`}>
                       {exp.is_active ? "Active" : "Stopped"}
                     </span>
                   </td>
-                  <td className="py-2.5 px-4 flex gap-2">
+                  <td className="py-2.5 px-4">
                     {exp.is_active && (
-                      <button onClick={() => handleStop(exp.id)} className="text-red-500 hover:text-red-700" title="Stop"><Square className="w-4 h-4" /></button>
+                      <button
+                        onClick={() => setPendingStopId(exp.id)}
+                        className="text-red-500 hover:text-red-700"
+                        aria-label={`Stop experiment ${exp.name}`}
+                        title="Stop"
+                      >
+                        <Square className="w-4 h-4" />
+                      </button>
                     )}
                   </td>
                 </tr>
-              ))}
-              {(!experiments || experiments.length === 0) && (
-                <tr><td colSpan={7} className="py-12 text-center text-gray-400">No experiments</td></tr>
-              )}
-            </tbody>
-          </table>
-        )}
+              ))
+            )}
+          </tbody>
+        </Table>
       </div>
+      <ConfirmDialog
+        tier="modal"
+        danger
+        open={pendingStopId !== null}
+        title="Stop Experiment"
+        consequence="Traffic will immediately revert to the control version for this use case."
+        confirmLabel="Stop Experiment"
+        onConfirm={async () => {
+          if (pendingStopId) await handleStop(pendingStopId);
+          setPendingStopId(null);
+        }}
+        onCancel={() => setPendingStopId(null)}
+      />
     </div>
   );
 }

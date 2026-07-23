@@ -1,19 +1,19 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { ComparisonData, Result } from "@/lib/api";
 import { getPreviewUrl } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
 import { QAPanel } from "./QAPanel";
+import { AuthImg } from "@/components/ui/AuthImg";
 import {
   TrendingUp,
   TrendingDown,
   Minus,
-  CheckCircle,
-  AlertTriangle,
   Calendar,
 } from "lucide-react";
 import clsx from "clsx";
+import { SEVERITY_CONFIG, type SeverityTier } from "@/lib/design/severity";
 
 interface Props {
   data: ComparisonData;
@@ -21,68 +21,30 @@ interface Props {
   labelB?: string;
 }
 
-function severityColor(severity: "low" | "medium" | "high", change: number) {
-  if (severity === "low") return "text-green-600";
-  if (severity === "medium") return "text-yellow-600";
-  return "text-red-600";
+// Measurement-delta severity ("low" = stable/reassuring change, "medium" =
+// moderate, "high" = concerning) mapped onto the shared 5-tier severity scale.
+const DELTA_SEVERITY_TIER: Record<"low" | "medium" | "high", SeverityTier> = {
+  low: "good",
+  medium: "moderate",
+  high: "high",
+};
+
+function deltaTier(severity: string): SeverityTier {
+  return DELTA_SEVERITY_TIER[severity as "low" | "medium" | "high"] || "informational";
 }
 
-function severityBg(severity: "low" | "medium" | "high") {
-  if (severity === "low") return "bg-green-50";
-  if (severity === "medium") return "bg-yellow-50";
-  return "bg-red-50";
+function severityColor(severity: string) {
+  return SEVERITY_CONFIG[deltaTier(severity)].textClass;
+}
+
+function severityBg(severity: string) {
+  return SEVERITY_CONFIG[deltaTier(severity)].badgeClass;
 }
 
 function DeltaIcon({ change, severity }: { change: number; severity: string }) {
   if (Math.abs(change) < 0.001) return <Minus className="w-3.5 h-3.5 text-gray-400" />;
-  if (change > 0)
-    return (
-      <TrendingUp
-        className={clsx(
-          "w-3.5 h-3.5",
-          severity === "low" ? "text-green-500" : severity === "medium" ? "text-yellow-500" : "text-red-500"
-        )}
-      />
-    );
-  return (
-    <TrendingDown
-      className={clsx(
-        "w-3.5 h-3.5",
-        severity === "low" ? "text-green-500" : severity === "medium" ? "text-yellow-500" : "text-red-500"
-      )}
-    />
-  );
-}
-
-// Loads a JWT-protected image via fetch (with the Authorization header) and
-// renders it from an object URL — a browser <img> never sends auth headers, so
-// a plain src would 401 under jwt and show only the alt text.
-function AuthImg({ src, alt, className }: { src: string; alt: string; className?: string }) {
-  const [objUrl, setObjUrl] = useState<string | null>(null);
-  const [failed, setFailed] = useState(false);
-
-  useEffect(() => {
-    let revoke: string | null = null;
-    setFailed(false);
-    setObjUrl(null);
-    const token = typeof window !== "undefined" ? localStorage.getItem("auth_token") : null;
-    fetch(src, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
-      .then((r) => { if (!r.ok) throw new Error(String(r.status)); return r.blob(); })
-      .then((b) => { const u = URL.createObjectURL(b); revoke = u; setObjUrl(u); })
-      .catch(() => setFailed(true));
-    return () => { if (revoke) URL.revokeObjectURL(revoke); };
-  }, [src]);
-
-  if (failed)
-    return (
-      <div className="w-full h-80 flex items-center justify-center text-xs text-gray-400 bg-black rounded border border-gray-200">
-        Not available
-      </div>
-    );
-  if (!objUrl)
-    return <div className="w-full h-80 bg-gray-900 rounded border border-gray-200 animate-pulse" />;
-  /* eslint-disable-next-line @next/next/no-img-element */
-  return <img src={objUrl} alt={alt} className={className} />;
+  const cls = clsx("w-3.5 h-3.5", severityColor(severity));
+  return change > 0 ? <TrendingUp className={cls} /> : <TrendingDown className={cls} />;
 }
 
 function PreviewPair({
@@ -104,6 +66,9 @@ function PreviewPair({
           src={getPreviewUrl(uidA, usecase, view)}
           alt={`${view} A`}
           className="w-full h-80 object-contain rounded border border-gray-200 bg-black"
+          fallback="Not available"
+          loadingClassName="w-full h-80 bg-gray-900 rounded border border-gray-200 animate-pulse motion-reduce:animate-none"
+          errorClassName="w-full h-80 flex items-center justify-center text-xs text-gray-400 bg-black rounded border border-gray-200"
         />
       </div>
       <div className="flex-1">
@@ -112,6 +77,9 @@ function PreviewPair({
           src={getPreviewUrl(uidB, usecase, view)}
           alt={`${view} B`}
           className="w-full h-80 object-contain rounded border border-gray-200 bg-black"
+          fallback="Not available"
+          loadingClassName="w-full h-80 bg-gray-900 rounded border border-gray-200 animate-pulse motion-reduce:animate-none"
+          errorClassName="w-full h-80 flex items-center justify-center text-xs text-gray-400 bg-black rounded border border-gray-200"
         />
       </div>
     </div>
@@ -156,24 +124,36 @@ export function ComparePanel({ data, labelA = "Study A", labelB = "Study B" }: P
               : `${delta.days_between} day${delta.days_between !== 1 ? "s" : ""} apart`}
           </div>
         )}
-        {highCount > 0 && (
-          <span className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-red-50 text-red-700 text-xs font-medium">
-            <AlertTriangle className="w-3.5 h-3.5" />
-            {highCount} high-change metric{highCount > 1 ? "s" : ""}
-          </span>
-        )}
-        {medCount > 0 && (
-          <span className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-yellow-50 text-yellow-700 text-xs font-medium">
-            <AlertTriangle className="w-3.5 h-3.5" />
-            {medCount} medium-change metric{medCount > 1 ? "s" : ""}
-          </span>
-        )}
-        {highCount === 0 && medCount === 0 && measurementEntries.length > 0 && (
-          <span className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-green-50 text-green-700 text-xs font-medium">
-            <CheckCircle className="w-3.5 h-3.5" />
-            All changes within normal range
-          </span>
-        )}
+        {highCount > 0 && (() => {
+          const cfg = SEVERITY_CONFIG.high;
+          const Icon = cfg.icon;
+          return (
+            <span className={clsx("flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium", cfg.badgeClass)}>
+              <Icon className="w-3.5 h-3.5" />
+              {highCount} high-change metric{highCount > 1 ? "s" : ""}
+            </span>
+          );
+        })()}
+        {medCount > 0 && (() => {
+          const cfg = SEVERITY_CONFIG.moderate;
+          const Icon = cfg.icon;
+          return (
+            <span className={clsx("flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium", cfg.badgeClass)}>
+              <Icon className="w-3.5 h-3.5" />
+              {medCount} medium-change metric{medCount > 1 ? "s" : ""}
+            </span>
+          );
+        })()}
+        {highCount === 0 && medCount === 0 && measurementEntries.length > 0 && (() => {
+          const cfg = SEVERITY_CONFIG.good;
+          const Icon = cfg.icon;
+          return (
+            <span className={clsx("flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium", cfg.badgeClass)}>
+              <Icon className="w-3.5 h-3.5" />
+              All changes within normal range
+            </span>
+          );
+        })()}
       </div>
 
       {/* Result headers */}
@@ -255,7 +235,7 @@ export function ComparePanel({ data, labelA = "Study A", labelB = "Study B" }: P
                         <span
                           className={clsx(
                             "font-semibold tabular-nums",
-                            severityColor(d.severity, d.change)
+                            severityColor(d.severity)
                           )}
                         >
                           {d.change > 0 ? "+" : ""}
@@ -264,7 +244,7 @@ export function ComparePanel({ data, labelA = "Study A", labelB = "Study B" }: P
                         <span
                           className={clsx(
                             "text-xs tabular-nums",
-                            severityColor(d.severity, d.change)
+                            severityColor(d.severity)
                           )}
                         >
                           ({d.change_pct > 0 ? "+" : ""}

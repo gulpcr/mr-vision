@@ -70,7 +70,7 @@ export default function DashboardPage() {
 
   return (
     <div>
-      <h1 className="text-2xl font-bold text-gray-900 mb-6">Dashboard</h1>
+      <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100 mb-6">Dashboard</h1>
 
       {/* Stats Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
@@ -79,12 +79,12 @@ export default function DashboardPage() {
           return (
             <div
               key={s.label}
-              className="bg-white rounded-lg shadow-sm border border-gray-200 p-5"
+              className="bg-white dark:bg-surface rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-5"
             >
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm text-gray-500">{s.label}</p>
-                  <p className="text-2xl font-bold text-gray-900 mt-1">{s.value}</p>
+                  <p className="text-sm text-gray-500 dark:text-gray-400 dark:text-gray-500">{s.label}</p>
+                  <p className="text-2xl font-bold text-gray-900 dark:text-gray-100 mt-1">{s.value}</p>
                 </div>
                 <div className={`p-3 rounded-lg ${s.color}`}>
                   <Icon className="w-6 h-6" />
@@ -97,9 +97,9 @@ export default function DashboardPage() {
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Recent Studies */}
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200">
-          <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
-            <h2 className="font-semibold text-gray-900">Recent Studies</h2>
+        <div className="bg-white dark:bg-surface rounded-lg shadow-sm border border-gray-200 dark:border-gray-700">
+          <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 dark:border-gray-800">
+            <h2 className="font-semibold text-gray-900 dark:text-gray-100">Recent Studies</h2>
             <Link
               href="/worklist"
               className="text-sm text-primary-600 hover:text-primary-700 flex items-center gap-1"
@@ -107,38 +107,38 @@ export default function DashboardPage() {
               View all <ArrowRight className="w-3.5 h-3.5" />
             </Link>
           </div>
-          <div className="divide-y divide-gray-50">
+          <div className="divide-y divide-gray-50 dark:divide-gray-800">
             {studiesLoading ? (
-              <div className="p-5 text-sm text-gray-400">Loading...</div>
+              <div className="p-5 text-sm text-gray-400 dark:text-gray-500">Loading...</div>
             ) : studyData?.studies?.length ? (
               studyData.studies.slice(0, 6).map((s) => (
                 <Link
                   key={s.study_instance_uid}
                   href={`/study/${s.study_instance_uid}`}
-                  className="flex items-center justify-between px-5 py-3 hover:bg-gray-50 transition-colors"
+                  className="flex items-center justify-between px-5 py-3 hover:bg-gray-50 dark:hover:bg-surface-raised transition-colors"
                 >
                   <div>
-                    <p className="text-sm font-medium text-gray-900">
+                    <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
                       {formatPatientName(s.patient_name)}
                     </p>
-                    <p className="text-xs text-gray-500">
+                    <p className="text-xs text-gray-500 dark:text-gray-400 dark:text-gray-500">
                       {s.modality} &middot; {s.body_part_examined || "N/A"} &middot;{" "}
                       {formatDate(s.study_date)}
                     </p>
                   </div>
-                  <ArrowRight className="w-4 h-4 text-gray-400" />
+                  <ArrowRight className="w-4 h-4 text-gray-400 dark:text-gray-500" />
                 </Link>
               ))
             ) : (
-              <div className="p-5 text-sm text-gray-400">No studies found</div>
+              <div className="p-5 text-sm text-gray-400 dark:text-gray-500">No studies found</div>
             )}
           </div>
         </div>
 
         {/* AI Models */}
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200">
-          <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
-            <h2 className="font-semibold text-gray-900">AI Models</h2>
+        <div className="bg-white dark:bg-surface rounded-lg shadow-sm border border-gray-200 dark:border-gray-700">
+          <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 dark:border-gray-800">
+            <h2 className="font-semibold text-gray-900 dark:text-gray-100">AI Models</h2>
             <Link
               href="/admin/usecases"
               className="text-sm text-primary-600 hover:text-primary-700 flex items-center gap-1"
@@ -146,24 +146,24 @@ export default function DashboardPage() {
               Manage <ArrowRight className="w-3.5 h-3.5" />
             </Link>
           </div>
-          <div className="divide-y divide-gray-50">
+          <div className="divide-y divide-gray-50 dark:divide-gray-800">
             {usecases?.length ? (
               usecases.map((uc) => (
                 <div key={uc.name} className="flex items-center justify-between px-5 py-3">
                   <div className="flex items-center gap-3">
                     <Brain className="w-5 h-5 text-primary-600" />
                     <div>
-                      <p className="text-sm font-medium text-gray-900">
+                      <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
                         {uc.name.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
                       </p>
-                      <p className="text-xs text-gray-500">v{uc.version} &middot; {uc.model_type}</p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400 dark:text-gray-500">v{uc.version} &middot; {uc.model_type}</p>
                     </div>
                   </div>
                   <span
                     className={`text-xs px-2 py-0.5 rounded-full font-medium ${
                       uc.enabled
-                        ? "bg-green-50 text-green-700"
-                        : "bg-gray-100 text-gray-500"
+                        ? "bg-green-50 dark:bg-green-950 text-green-700 dark:text-green-300"
+                        : "bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 dark:text-gray-500"
                     }`}
                   >
                     {uc.enabled ? "Enabled" : "Disabled"}
@@ -171,7 +171,7 @@ export default function DashboardPage() {
                 </div>
               ))
             ) : (
-              <div className="p-5 text-sm text-gray-400">No models registered</div>
+              <div className="p-5 text-sm text-gray-400 dark:text-gray-500">No models registered</div>
             )}
           </div>
         </div>

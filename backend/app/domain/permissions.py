@@ -12,6 +12,7 @@ PERMISSIONS: dict[str, str] = {
     "study.view": "View the worklist, studies, results, and reports",
     "study.upload": "Upload / ingest DICOM studies",
     "study.claim": "Claim, assign, or reassign studies for reading",
+    "study.escalate": "Escalate a study to an available radiologist for reading (auto-assign only)",
     "study.delete": "Delete a study from the platform",
     "job.run": "Run AI pipelines on a study",
     "job.manage": "Cancel or retry AI jobs",
@@ -37,13 +38,14 @@ ALL_PERMISSIONS: frozenset[str] = frozenset(PERMISSIONS)
 SYSTEM_ROLE_PERMISSIONS: dict[str, list[str]] = {
     "admin": sorted(ALL_PERMISSIONS),
     "receptionist": ["patient.onboard", "study.view"],
-    "technician": ["job.manage", "job.run", "study.upload", "study.view"],
+    "technician": ["job.manage", "job.run", "study.escalate", "study.upload", "study.view"],
     "radiologist": [
         "alert.acknowledge",
         "alert.view",
         "result.approve",
         "result.export",
         "study.claim",
+        "study.escalate",
         "study.view",
     ],
     "viewer": ["study.view"],

@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { api, CapacityMetrics } from "@/lib/api";
+import { ErrorBanner } from "@/components/ui/ErrorBanner";
+import { EmptyState } from "@/components/ui/EmptyState";
 import { BarChart2, TrendingUp, Clock, RefreshCw, Cpu } from "lucide-react";
 
 const USECASE_COLORS: Record<string, string> = {
@@ -119,7 +121,7 @@ export default function CapacityPage() {
       {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Capacity Analytics</h1>
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Capacity Analytics</h1>
           <p className="text-sm text-gray-500 mt-0.5">Scanner utilization, volume trends, and 7-day demand forecast</p>
         </div>
         <div className="flex items-center gap-3">
@@ -137,20 +139,18 @@ export default function CapacityPage() {
             disabled={loading}
             className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-gray-700 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50"
           >
-            <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
+            <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin motion-reduce:animate-none" : ""}`} />
             Refresh
           </button>
         </div>
       </div>
 
-      {error && (
-        <div className="bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-sm text-red-700">{error}</div>
-      )}
+      {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
 
       {loading && !metrics ? (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {[...Array(4)].map((_, i) => (
-            <div key={i} className="bg-white rounded-xl border border-gray-200 p-5 animate-pulse h-48" />
+            <div key={i} className="bg-white dark:bg-surface rounded-xl border border-gray-200 dark:border-gray-700 p-5 animate-pulse motion-reduce:animate-none h-48" />
           ))}
         </div>
       ) : metrics ? (
@@ -298,7 +298,9 @@ export default function CapacityPage() {
             </div>
           )}
         </>
-      ) : null}
+      ) : (
+        <EmptyState icon={BarChart2} title="No capacity data available" description="Try refreshing or selecting a different time range." />
+      )}
     </div>
   );
 }

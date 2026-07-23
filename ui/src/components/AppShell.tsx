@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { Sidebar } from "./Sidebar";
 import { NotificationToast } from "./NotificationToast";
+import { AuthProvider } from "@/lib/auth";
 
 const PUBLIC_PATHS = ["/login", "/portal/"];
 
@@ -44,14 +45,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <>
+    <AuthProvider>
       <div className="flex min-h-screen">
         <Sidebar />
-        <main className="flex-1 bg-gray-50 overflow-auto">
+        <main className="flex-1 bg-gray-50 dark:bg-surface overflow-auto">
           <div className="max-w-7xl mx-auto px-6 py-6">{children}</div>
         </main>
       </div>
       <NotificationToast />
-    </>
+    </AuthProvider>
   );
 }

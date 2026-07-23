@@ -115,7 +115,8 @@
       "Bash(python3 -c \"import json;m=json.load\\(open\\('meta.json'\\)\\);print\\(m['views']['coronal']//2\\)\")",
       "Bash(grep -i \"volume\\\\|\\\\./\\\\|app:\")",
       "Bash(cd /c/sistems/projects/MR_Computer-Visuion)",
-      "Bash(docker restart *)"
+      "Bash(docker restart *)",
+      "WebFetch(domain:103.93.216.37)"
     ]
   }
 }

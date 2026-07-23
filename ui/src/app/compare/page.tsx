@@ -94,18 +94,18 @@ function ComparePageInner() {
     <div className="space-y-6">
       <div className="flex items-center gap-3">
         <ArrowLeftRight className="w-6 h-6 text-primary-600" />
-        <h1 className="text-2xl font-bold text-gray-900">Compare Reports</h1>
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Compare Reports</h1>
       </div>
 
       {/* Selector card */}
-      <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-5">
+      <div className="bg-white dark:bg-surface rounded-lg border border-gray-200 dark:border-gray-700 shadow-sm p-5">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
-            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">
+            <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-1.5">
               Result A
             </label>
             {loadingStudies ? (
-              <div className="h-10 bg-gray-100 rounded-lg animate-pulse" />
+              <div className="h-10 bg-gray-100 dark:bg-gray-800 rounded-lg animate-pulse motion-reduce:animate-none" />
             ) : (
               <select
                 value={selectedIdA}
@@ -114,7 +114,7 @@ function ComparePageInner() {
                   setSelectedIdB("");
                   setComparison(null);
                 }}
-                className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
               >
                 <option value="">— Select a result —</option>
                 {allResults.map((r) => (
@@ -127,11 +127,11 @@ function ComparePageInner() {
           </div>
 
           <div>
-            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">
-              Result B {usecaseA && <span className="text-gray-400 normal-case font-normal">(filtered to {usecaseA.replace(/_/g, " ")})</span>}
+            <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-1.5">
+              Result B {usecaseA && <span className="text-gray-400 dark:text-gray-500 normal-case font-normal">(filtered to {usecaseA.replace(/_/g, " ")})</span>}
             </label>
             {loadingStudies ? (
-              <div className="h-10 bg-gray-100 rounded-lg animate-pulse" />
+              <div className="h-10 bg-gray-100 dark:bg-gray-800 rounded-lg animate-pulse motion-reduce:animate-none" />
             ) : (
               <select
                 value={selectedIdB}
@@ -140,7 +140,7 @@ function ComparePageInner() {
                   setComparison(null);
                 }}
                 disabled={!selectedIdA}
-                className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50"
+                className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50"
               >
                 <option value="">— Select a result —</option>
                 {resultsForB.map((r) => (
@@ -160,13 +160,13 @@ function ComparePageInner() {
             className="flex items-center gap-2 px-5 py-2 bg-primary-600 text-white text-sm font-medium rounded-lg hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
             {comparing ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
+              <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none" />
             ) : (
               <ArrowLeftRight className="w-4 h-4" />
             )}
             {comparing ? "Comparing…" : "Compare"}
           </button>
-          {error && <p className="text-sm text-red-600">{error}</p>}
+          {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
         </div>
       </div>
 
@@ -180,7 +180,7 @@ function ComparePageInner() {
 
 export default function ComparePage() {
   return (
-    <Suspense fallback={<div className="p-8 text-center text-gray-400">Loading…</div>}>
+    <Suspense fallback={<div className="p-8 text-center text-gray-400 dark:text-gray-500">Loading…</div>}>
       <ComparePageInner />
     </Suspense>
   );

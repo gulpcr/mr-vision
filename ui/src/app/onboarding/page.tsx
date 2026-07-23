@@ -161,37 +161,37 @@ export default function OnboardingPage() {
   return (
     <div>
       <div className="mb-5">
-        <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100 flex items-center gap-2">
           <UserPlus className="w-6 h-6 text-primary-600" /> Patient Intake
         </h1>
-        <p className="text-sm text-gray-500 mt-0.5">
+        <p className="text-sm text-gray-500 dark:text-gray-400 dark:text-gray-500 mt-0.5">
           Record a patient&apos;s clinical data and order. The clinical details appear on the
           report and link to the patient&apos;s DICOM study by MRN.
         </p>
       </div>
 
       {success && (
-        <div className="flex items-center gap-3 bg-green-50 border border-green-200 rounded-xl px-4 py-3 mb-3">
+        <div className="flex items-center gap-3 bg-green-50 dark:bg-green-950 border border-green-200 rounded-xl px-4 py-3 mb-3">
           <CheckCircle2 className="w-4 h-4 text-green-500 shrink-0" />
           <p className="text-sm text-green-800 flex-1">{success}</p>
-          <button onClick={() => setSuccess(null)} className="text-green-400 hover:text-green-600"><X className="w-4 h-4" /></button>
+          <button onClick={() => setSuccess(null)} className="text-green-400 hover:text-green-600 dark:hover:text-green-400"><X className="w-4 h-4" /></button>
         </div>
       )}
       {error && (
-        <div className="flex items-start gap-3 bg-red-50 border border-red-200 rounded-xl px-4 py-3 mb-3">
+        <div className="flex items-start gap-3 bg-red-50 dark:bg-red-950 border border-red-200 rounded-xl px-4 py-3 mb-3">
           <AlertTriangle className="w-4 h-4 text-red-500 mt-0.5 shrink-0" />
-          <p className="text-sm text-red-700 flex-1">{error}</p>
-          <button onClick={() => setError(null)} className="text-red-400 hover:text-red-600"><X className="w-4 h-4" /></button>
+          <p className="text-sm text-red-700 dark:text-red-300 flex-1">{error}</p>
+          <button onClick={() => setError(null)} className="text-red-400 hover:text-red-600 dark:hover:text-red-400"><X className="w-4 h-4" /></button>
         </div>
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
         {/* Intake form */}
-        <form onSubmit={submit} className="lg:col-span-2 bg-white rounded-xl shadow-sm border border-gray-200 p-5 space-y-4">
+        <form onSubmit={submit} className="lg:col-span-2 bg-white dark:bg-surface rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-5 space-y-4">
           {editPatientId && (
-            <div className="flex items-center justify-between bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
-              <span className="text-xs text-blue-700">Editing <b>{form.patient_ref}</b></span>
-              <button type="button" onClick={resetForm} className="text-xs font-medium text-blue-600 hover:underline">
+            <div className="flex items-center justify-between bg-blue-50 dark:bg-blue-950 border border-blue-200 rounded-lg px-3 py-2">
+              <span className="text-xs text-blue-700 dark:text-blue-300">Editing <b>{form.patient_ref}</b></span>
+              <button type="button" onClick={resetForm} className="text-xs font-medium text-blue-600 dark:text-blue-400 hover:underline">
                 + New patient
               </button>
             </div>
@@ -199,7 +199,7 @@ export default function OnboardingPage() {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
               <label className={labelCls}>Patient Ref / MRN *</label>
-              <input className={`${inputCls} ${editPatientId ? "bg-gray-100 text-gray-500" : ""}`} value={form.patient_ref} onChange={(e) => set("patient_ref", e.target.value)} required readOnly={!!editPatientId} placeholder="e.g. PT-0123" />
+              <input className={`${inputCls} ${editPatientId ? "bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 dark:text-gray-500" : ""}`} value={form.patient_ref} onChange={(e) => set("patient_ref", e.target.value)} required readOnly={!!editPatientId} placeholder="e.g. PT-0123" />
             </div>
             <div>
               <label className={labelCls}>Sex *</label>
@@ -258,8 +258,8 @@ export default function OnboardingPage() {
 
           {/* Clinical detail that populates the PET-CT report — shown only for PET-CT. */}
           {["PET-CT", "PET-CT Brain"].includes(form.modality) && (
-          <div className="pt-2 border-t border-gray-100">
-            <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-3">Report detail (PET-CT)</p>
+          <div className="pt-2 border-t border-gray-100 dark:border-gray-800">
+            <p className="text-[11px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-3">Report detail (PET-CT)</p>
             <div className="space-y-4">
               <div>
                 <label className={labelCls}>Clinical history</label>
@@ -270,7 +270,7 @@ export default function OnboardingPage() {
                 <div><label className={labelCls}>Weight (kg)</label><input className={inputCls} type="number" step="any" value={form.weight_kg} onChange={(e) => set("weight_kg", e.target.value)} /></div>
                 <div>
                   <label className={labelCls}>BMI (kg/m²)</label>
-                  <input className={`${inputCls} bg-gray-100 text-gray-600`} value={calcBmi(form.height_cm, form.weight_kg)} readOnly placeholder="Auto-calculated" title="Auto-calculated from height and weight" />
+                  <input className={`${inputCls} bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 dark:text-gray-500`} value={calcBmi(form.height_cm, form.weight_kg)} readOnly placeholder="Auto-calculated" title="Auto-calculated from height and weight" />
                 </div>
                 <div><label className={labelCls}>Fasting glucose (mg/dl)</label><input className={inputCls} value={form.fasting_glucose} onChange={(e) => set("fasting_glucose", e.target.value)} /></div>
                 <div><label className={labelCls}>Creatinine (mg/dl)</label><input className={inputCls} type="number" step="any" value={form.creatinine} onChange={(e) => set("creatinine", e.target.value)} /></div>
@@ -284,7 +284,7 @@ export default function OnboardingPage() {
           </div>
           )}
 
-          <label className="flex items-center gap-2 text-sm text-gray-700">
+          <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
             <input type="checkbox" checked={form.consent_ack} onChange={(e) => set("consent_ack", e.target.checked)} className="w-4 h-4" />
             Consent acknowledged (required)
           </label>
@@ -296,22 +296,22 @@ export default function OnboardingPage() {
         </form>
 
         {/* Recent patients */}
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
-          <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Patients</h2>
+        <div className="bg-white dark:bg-surface rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-5">
+          <h2 className="text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-3">Patients</h2>
           <div className="relative mb-3">
-            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 dark:text-gray-500" />
             <input className={`${inputCls} pl-9`} value={search}
               onChange={(e) => { setSearch(e.target.value); loadPatients(e.target.value); }}
               placeholder="Search MRN…" />
           </div>
           <div className="space-y-2 max-h-[460px] overflow-y-auto">
             {patients.length === 0 ? (
-              <p className="text-sm text-gray-400">No patients yet.</p>
+              <p className="text-sm text-gray-400 dark:text-gray-500">No patients yet.</p>
             ) : patients.map((p) => (
-              <div key={p.id} className="flex items-center justify-between border border-gray-100 rounded-lg px-3 py-2">
+              <div key={p.id} className="flex items-center justify-between border border-gray-100 dark:border-gray-800 rounded-lg px-3 py-2">
                 <div>
-                  <p className="text-sm font-medium text-gray-800">{p.patient_ref}</p>
-                  <p className="text-xs text-gray-400">{p.sex || "—"} · {p.age_band || "—"}</p>
+                  <p className="text-sm font-medium text-gray-800 dark:text-gray-200">{p.patient_ref}</p>
+                  <p className="text-xs text-gray-400 dark:text-gray-500">{p.sex || "—"} · {p.age_band || "—"}</p>
                 </div>
                 <button onClick={() => startEdit(p.id)} className="inline-flex items-center gap-1 text-xs text-primary-600 hover:underline">
                   <Pencil className="w-3 h-3" /> Edit

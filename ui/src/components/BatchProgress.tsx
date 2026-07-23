@@ -50,7 +50,7 @@ export function BatchProgress({ batchId }: BatchProgressProps) {
           </span>
           {batch.status === "in_progress" && (
             <span className="flex items-center gap-1">
-              <Loader2 className="w-3 h-3 animate-spin text-blue-500" /> Processing
+              <Loader2 className="w-3 h-3 animate-spin motion-reduce:animate-none text-blue-500" /> Processing
             </span>
           )}
         </div>

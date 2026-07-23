@@ -289,6 +289,17 @@ export interface UseCase {
   enabled: boolean;
 }
 
+export interface UserResponse {
+  id: string;
+  username: string;
+  email: string;
+  full_name: string;
+  role: string;
+  tenant_id: string;
+  is_active: boolean;
+  created_at: string | null;
+}
+
 export interface AuditEntry {
   id: string;
   action: string;
@@ -332,6 +343,17 @@ export interface ShareLink {
   expires_at: string;
   is_active: boolean;
   created_at: string;
+}
+
+// Returned by GET /results/{id}/shares — token is truncated server-side, so
+// this is a distinct (narrower) shape from ShareLink, not the same object.
+export interface ShareLinkSummary {
+  id: string;
+  token: string;
+  expires_at: string | null;
+  is_active: boolean;
+  created_by: string;
+  created_at: string | null;
 }
 
 export interface TrendTimepoint {
@@ -552,7 +574,7 @@ export const api = {
   },
   admin: {
     getRoutingRules: () =>
-      fetchAPI<{ routing_rules: Record<string, any[]> }>("/admin/routing-rules"),
+      fetchAPI<{ routing_rules: Record<string, any[]>; site_overrides: any[] }>("/admin/routing-rules"),
     updateRoutingRules: (rules: any[]) =>
       fetchAPI("/admin/routing-rules", {
         method: "PUT",
@@ -580,11 +602,17 @@ export const api = {
         { method: "POST", body: JSON.stringify({ username, password }) }
       ),
     register: (data: { username: string; email: string; password: string; full_name?: string }) =>
-      fetchAPI<any>("/auth/register", {
+      fetchAPI<UserResponse>("/auth/register", {
         method: "POST",
         body: JSON.stringify(data),
       }),
-    listUsers: () => fetchAPI<any[]>("/auth/users"),
+    listUsers: () => fetchAPI<UserResponse[]>("/auth/users"),
+    updateUserRole: (userId: string, role: string) =>
+      fetchAPI(`/auth/users/${userId}/role?${new URLSearchParams({ role }).toString()}`, {
+        method: "PUT",
+      }),
+    deactivateUser: (userId: string) =>
+      fetchAPI(`/auth/users/${userId}`, { method: "DELETE" }),
   },
   audit: {
     list: (params?: Record<string, string>) => {
@@ -719,6 +747,10 @@ export const api = {
         method: "POST",
         body: JSON.stringify({ created_by: createdBy, ttl_days: ttlDays }),
       }),
+    listShares: (resultId: string) =>
+      fetchAPI<{ shares: ShareLinkSummary[] }>(`/results/${resultId}/shares`),
+    revokeShare: (linkId: string) =>
+      fetchAPI(`/portal/shares/${linkId}/revoke`, { method: "POST" }),
     getByToken: (token: string) =>
       fetchAPI<{
         portal: boolean;

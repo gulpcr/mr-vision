@@ -2,10 +2,16 @@
 
 import { useEffect, useState } from "react";
 import { api, Study, Result, ClinicalForStudy } from "@/lib/api";
+import { fmtAge, fmtSex, fmtDate as fmtReportDate } from "@/lib/reportFormat";
+import { StatusBadge } from "@/components/ui/StatusBadge";
+import { AIProvenanceBanner } from "@/components/ui/AIProvenanceBanner";
+import { ReportShell } from "@/components/reports/ReportShell";
 import { Printer } from "lucide-react";
 
 // Standalone formal departmental FDG PET-CT report (mirrors the downloadable
-// PDF). Rendered on its own screen — NOT mixed into the generic ReportView.
+// PDF). Logic moved verbatim from the former MolecularReport.tsx — only the
+// surrounding chrome now goes through ReportShell. No PDF download exists for
+// this use case today (print only) — preserved as-is, not added.
 
 const REGION_TO_SECTION: Record<string, string> = {
   Brain: "HEAD & NECK",
@@ -35,31 +41,6 @@ const REPORT_SECTION_TO_AI_KEY: Record<string, string> = {
 
 const REPORT_INSTITUTION = "DEPARTMENT OF MOLECULAR IMAGING";
 const REPORT_SIGNATORIES = ["Dr. Salman Habib", "Dr. Saifullah Sethar"];
-
-function fmtAge(raw: string | null): string {
-  if (!raw) return "—";
-  const s = String(raw).trim();
-  const m = s.match(/^(\d{3})([YMWD])$/i);
-  if (m) {
-    const unit = { Y: "Yrs", M: "Mos", W: "Wks", D: "Days" }[m[2].toUpperCase() as "Y" | "M" | "W" | "D"];
-    return `${parseInt(m[1], 10)} ${unit}`;
-  }
-  return s;
-}
-
-function fmtSex(raw: string | null): string {
-  if (!raw) return "—";
-  return ({ M: "Male", F: "Female", O: "Other" } as Record<string, string>)[raw.trim().toUpperCase()] || raw;
-}
-
-function fmtReportDate(raw: string | null): string {
-  if (!raw) return "—";
-  const d = new Date(raw);
-  if (isNaN(d.getTime())) return raw;
-  const dd = String(d.getDate()).padStart(2, "0");
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  return `${dd}/${mm}/${d.getFullYear()}`;
-}
 
 // TotalSegmentator label → human-readable structure (mirrors pdf_generator.py).
 function prettifyStructure(name: string | null | undefined): string {
@@ -164,12 +145,13 @@ function buildConclusions(summary: any, lesions: any[]): string[] {
   return bullets;
 }
 
-interface MolecularReportProps {
+interface MolecularContentProps {
   study: Study;
   result: Result;
+  onSignedOff?: () => void;
 }
 
-export function MolecularReport({ study, result }: MolecularReportProps) {
+export function MolecularContent({ study, result, onSignedOff }: MolecularContentProps) {
   const summary: any = result.summary || {};
   const measurements: any = result.measurements || {};
   const lesions: any[] = Array.isArray(measurements.lesions) ? measurements.lesions : [];
@@ -205,18 +187,6 @@ export function MolecularReport({ study, result }: MolecularReportProps) {
   // Reading / report status (radiologist workflow) — shown on the report.
   const rs = study.reading_status || "unread";
   const by = study.assigned_to_username;
-  const statusBadge = (
-    {
-      unread: { label: "Unclaimed", cls: "bg-gray-100 text-gray-600 border-gray-300" },
-      in_progress: { label: by ? `Reading — ${by}` : "Reading", cls: "bg-blue-100 text-blue-700 border-blue-300" },
-      reported: { label: by ? `Reported — ${by}` : "Reported", cls: "bg-amber-100 text-amber-800 border-amber-300" },
-      signed: {
-        label: `Signed off${by ? ` — ${by}` : ""}${study.signed_at ? ` · ${fmtReportDate(study.signed_at)}` : ""}`,
-        cls: "bg-green-100 text-green-700 border-green-400",
-      },
-    } as Record<string, { label: string; cls: string }>
-  )[rs] || { label: rs, cls: "bg-gray-100 text-gray-600 border-gray-300" };
-  const isPreliminary = rs !== "signed";
 
   const grouped: Record<string, any[]> = {};
   for (const l of lesions) {
@@ -245,9 +215,10 @@ export function MolecularReport({ study, result }: MolecularReportProps) {
   );
 
   return (
-    <div className="molecular-report mx-auto max-w-3xl bg-white text-gray-900">
-      {/* Toolbar (hidden in print) */}
-      <div className="no-print flex justify-end mb-3">
+    <ReportShell
+      study={study}
+      onSignedOff={onSignedOff}
+      toolbar={
         <button
           onClick={() => window.print()}
           className="flex items-center gap-2 px-3 py-2 text-sm bg-primary-900 text-white rounded-lg hover:bg-primary-800 transition-colors"
@@ -255,146 +226,145 @@ export function MolecularReport({ study, result }: MolecularReportProps) {
           <Printer className="w-4 h-4" />
           Print
         </button>
-      </div>
-
-      <div className="border border-gray-300 rounded-lg p-8 text-sm leading-relaxed print:border-0 print:p-0">
-        <h1 className="text-center text-lg font-bold tracking-wide mb-2">{REPORT_INSTITUTION}</h1>
-
-        {/* Report status (reading workflow) */}
-        <div className="flex justify-center mb-3">
-          <span className={`px-3 py-1 rounded-full text-xs font-bold border ${statusBadge.cls}`}>
-            {isPreliminary ? "PRELIMINARY · " : ""}{statusBadge.label}
-          </span>
-        </div>
-
-        {lowConfidence && (
-          <div className="mb-4 rounded-md border-2 border-amber-500 bg-amber-50 px-4 py-3 print:border print:border-black">
-            <p className="font-bold text-amber-900 uppercase tracking-wide text-[13px]">
-              ⚠ Low-confidence result — interpret with caution
-            </p>
-            {summary.quantitative === false && (
-              <p className="text-amber-900 mt-1">
-                Quantitative SUV could not be calibrated; uptake values are relative,
-                not absolute SUV.
-              </p>
-            )}
-            {confidenceReasons.length > 0 && (
-              <ul className="list-disc pl-6 mt-1 text-amber-900 space-y-0.5">
-                {confidenceReasons.map((r, i) => (
-                  <li key={i}>{r}</li>
-                ))}
-              </ul>
-            )}
-          </div>
-        )}
-
-        {/* Patient table */}
-        <div className="grid grid-cols-3 gap-x-6 gap-y-1 border border-gray-800 rounded p-3 mb-4">
-          <Field label="Name" value={study.patient_name || "—"} />
-          <Field label="PRN" value={study.patient_id || "—"} />
-          <Field label="Date" value={fmtReportDate(study.study_date)} />
-          <Field label="Ref. Dr / Hosp" value={refDr} />
-          <Field label="Age" value={ageDisplay} />
-          <Field label="Sex" value={fmtSex(study.patient_sex)} />
-        </div>
-
-        <p className="text-center font-bold mb-3">
-          <sup>18</sup>F-FDG POSITRON EMISSION-COMPUTERIZED TOMOGRAPHY (FDG PET-CT)
-        </p>
-
-        <p className="mb-2 text-justify"><span className="font-bold">EXAMINATION:</span> {tracer} PET-CT scan, {coverage}.</p>
-        <p className="mb-2 text-justify"><span className="font-bold">CLINICAL HISTORY:</span> {clinicalHistory}</p>
-        <p className="mb-2 text-justify"><span className="font-bold">COMPARATIVE STUDY:</span> {comparative}</p>
-        <p className="mb-2 text-justify">
-          <span className="font-bold">PROCEDURE:</span> Approximately 60 minutes after the intravenous administration of {tracer},
-          PET images were acquired from the {coverage} using 3-D acquisition. A low-dose CT was obtained for attenuation
-          correction and anatomical localisation. Images were displayed in the axial, coronal and sagittal planes.
-          Maximum Standardized Uptake Value (SUVmax) normalized for body weight was used.
-        </p>
-
-        <p className="font-bold mt-3 mb-1">TECHNIQUE:</p>
-        <ul className="list-none pl-5 mb-3 space-y-0.5">
-          <li>Height: {heightVal != null ? `${heightVal}` : "_____"} cm</li>
-          <li>Weight: {weightVal != null ? `${weightVal}` : "_____"} kg</li>
-          <li>BMI: {bmiVal != null ? `${bmiVal}` : "_____"} kg/m²</li>
-          <li>Fasting blood sugar: {clinical?.fasting_glucose || "_____"} mg/dl</li>
-          <li>Serum creatinine: {clinical?.creatinine || "_____"} mg/dl</li>
-          <li>Site of injection: {clinical?.injection_site || "_____"}</li>
-          <li>Normal blood pool liver demonstrates SUVmean {typeof liver === "number" ? liver.toFixed(2) : "_____"}</li>
-        </ul>
-
-        <p className="font-bold mt-3 mb-1">SCAN FINDINGS:</p>
-        {REPORT_SECTIONS.map(([name, fallback]) => {
-          const aiText = aiScanFindings[REPORT_SECTION_TO_AI_KEY[name]];
-          let text = aiText;
-          if (!text) {
-            const secLesions = grouped[name] || [];
-            text = secLesions.length > 0 ? aggregateSectionFindings(secLesions) : fallback;
-          }
-          return (
-            <p key={name} className="mb-2 text-justify">
-              <span className="font-bold italic">{name}:</span> {text}
-            </p>
-          );
-        })}
-
-        <p className="font-bold mt-3 mb-1">CONCLUSIONS:</p>
-        <ul className="list-disc pl-8 mb-4 space-y-1">
-          {(aiConclusions || buildConclusions(summary, lesions)).map((b, i) => (
-            <li key={i}>{b}</li>
-          ))}
-        </ul>
-
-        {aiReport?.disclaimer && (
-          <p className="mb-4 italic text-gray-700">{aiReport.disclaimer}</p>
-        )}
-
-        {/* Appendix: raw AI-detected foci — printed regardless of whether ai_report
-            is present, so the (AI-based, not ground-truth) detections stay
-            auditable against the prose above. Mirrors pdf_generator.py. */}
-        {lesions.length > 0 && (
-          <>
-            <p className="font-bold mt-3 mb-1">APPENDIX: AI-DETECTED FOCI (for radiologist cross-reference)</p>
-            <table className="w-full text-xs border border-gray-400 mb-4">
-              <thead>
-                <tr className="bg-gray-100">
-                  <th className="border border-gray-400 px-2 py-1 text-left">#</th>
-                  <th className="border border-gray-400 px-2 py-1 text-left">Region</th>
-                  <th className="border border-gray-400 px-2 py-1 text-left">Structure</th>
-                  <th className="border border-gray-400 px-2 py-1 text-left">SUVmax</th>
-                  <th className="border border-gray-400 px-2 py-1 text-left">Vol (mL)</th>
-                  <th className="border border-gray-400 px-2 py-1 text-left">CT (HU)</th>
-                </tr>
-              </thead>
-              <tbody>
-                {[...lesions]
-                  .sort((a, b) => (a.id ?? 0) - (b.id ?? 0))
-                  .map((le, i) => (
-                    <tr key={i}>
-                      <td className="border border-gray-400 px-2 py-1">{le.id ?? ""}</td>
-                      <td className="border border-gray-400 px-2 py-1">{le.anatomical_region || "—"}</td>
-                      <td className="border border-gray-400 px-2 py-1">{prettifyStructure(le.structure)}</td>
-                      <td className="border border-gray-400 px-2 py-1">
-                        {typeof le.suv_max === "number" ? le.suv_max.toFixed(1) : "—"}
-                      </td>
-                      <td className="border border-gray-400 px-2 py-1">
-                        {typeof le.volume_ml === "number" ? le.volume_ml.toFixed(1) : "—"}
-                      </td>
-                      <td className="border border-gray-400 px-2 py-1">
-                        {typeof le.ct_mean_hu === "number" ? le.ct_mean_hu.toFixed(0) : "—"}
-                      </td>
-                    </tr>
-                  ))}
-              </tbody>
-            </table>
-          </>
-        )}
-
+      }
+      footerBanner={<AIProvenanceBanner variant="footer" additionalNote={aiReport?.disclaimer} className="mb-4" />}
+      signatory={
         <div className="flex justify-between mt-10 font-bold">
           <span>{REPORT_SIGNATORIES[0]}</span>
           <span>{REPORT_SIGNATORIES[1]}</span>
         </div>
+      }
+    >
+      <h1 className="text-center text-lg font-bold tracking-wide mb-2">{REPORT_INSTITUTION}</h1>
+
+      {/* Report status (reading workflow) */}
+      <div className="flex justify-center mb-3">
+        <StatusBadge
+          variant="reading"
+          status={rs}
+          assignedTo={by}
+          signedAt={study.signed_at ? fmtReportDate(study.signed_at) : null}
+        />
       </div>
-    </div>
+
+      {lowConfidence && (
+        <div className="mb-4 rounded-md border-2 border-amber-500 bg-amber-50 px-4 py-3 print:border print:border-black">
+          <p className="font-bold text-amber-900 uppercase tracking-wide text-[13px]">
+            ⚠ Low-confidence result — interpret with caution
+          </p>
+          {summary.quantitative === false && (
+            <p className="text-amber-900 mt-1">
+              Quantitative SUV could not be calibrated; uptake values are relative,
+              not absolute SUV.
+            </p>
+          )}
+          {confidenceReasons.length > 0 && (
+            <ul className="list-disc pl-6 mt-1 text-amber-900 space-y-0.5">
+              {confidenceReasons.map((r, i) => (
+                <li key={i}>{r}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {/* Patient table */}
+      <div className="grid grid-cols-3 gap-x-6 gap-y-1 border border-gray-800 rounded p-3 mb-4">
+        <Field label="Name" value={study.patient_name || "—"} />
+        <Field label="PRN" value={study.patient_id || "—"} />
+        <Field label="Date" value={fmtReportDate(study.study_date)} />
+        <Field label="Ref. Dr / Hosp" value={refDr} />
+        <Field label="Age" value={ageDisplay} />
+        <Field label="Sex" value={fmtSex(study.patient_sex)} />
+      </div>
+
+      <p className="text-center font-bold mb-3">
+        <sup>18</sup>F-FDG POSITRON EMISSION-COMPUTERIZED TOMOGRAPHY (FDG PET-CT)
+      </p>
+
+      <p className="mb-2 text-justify"><span className="font-bold">EXAMINATION:</span> {tracer} PET-CT scan, {coverage}.</p>
+      <p className="mb-2 text-justify"><span className="font-bold">CLINICAL HISTORY:</span> {clinicalHistory}</p>
+      <p className="mb-2 text-justify"><span className="font-bold">COMPARATIVE STUDY:</span> {comparative}</p>
+      <p className="mb-2 text-justify">
+        <span className="font-bold">PROCEDURE:</span> Approximately 60 minutes after the intravenous administration of {tracer},
+        PET images were acquired from the {coverage} using 3-D acquisition. A low-dose CT was obtained for attenuation
+        correction and anatomical localisation. Images were displayed in the axial, coronal and sagittal planes.
+        Maximum Standardized Uptake Value (SUVmax) normalized for body weight was used.
+      </p>
+
+      <p className="font-bold mt-3 mb-1">TECHNIQUE:</p>
+      <ul className="list-none pl-5 mb-3 space-y-0.5">
+        <li>Height: {heightVal != null ? `${heightVal}` : "_____"} cm</li>
+        <li>Weight: {weightVal != null ? `${weightVal}` : "_____"} kg</li>
+        <li>BMI: {bmiVal != null ? `${bmiVal}` : "_____"} kg/m²</li>
+        <li>Fasting blood sugar: {clinical?.fasting_glucose || "_____"} mg/dl</li>
+        <li>Serum creatinine: {clinical?.creatinine || "_____"} mg/dl</li>
+        <li>Site of injection: {clinical?.injection_site || "_____"}</li>
+        <li>Normal blood pool liver demonstrates SUVmean {typeof liver === "number" ? liver.toFixed(2) : "_____"}</li>
+      </ul>
+
+      <p className="font-bold mt-3 mb-1">SCAN FINDINGS:</p>
+      {REPORT_SECTIONS.map(([name, fallback]) => {
+        const aiText = aiScanFindings[REPORT_SECTION_TO_AI_KEY[name]];
+        let text = aiText;
+        if (!text) {
+          const secLesions = grouped[name] || [];
+          text = secLesions.length > 0 ? aggregateSectionFindings(secLesions) : fallback;
+        }
+        return (
+          <p key={name} className="mb-2 text-justify">
+            <span className="font-bold italic">{name}:</span> {text}
+          </p>
+        );
+      })}
+
+      <p className="font-bold mt-3 mb-1">CONCLUSIONS:</p>
+      <ul className="list-disc pl-8 mb-4 space-y-1">
+        {(aiConclusions || buildConclusions(summary, lesions)).map((b, i) => (
+          <li key={i}>{b}</li>
+        ))}
+      </ul>
+
+      {/* Appendix: raw AI-detected foci — printed regardless of whether ai_report
+          is present, so the (AI-based, not ground-truth) detections stay
+          auditable against the prose above. Mirrors pdf_generator.py. */}
+      {lesions.length > 0 && (
+        <>
+          <p className="font-bold mt-3 mb-1">APPENDIX: AI-DETECTED FOCI (for radiologist cross-reference)</p>
+          <table className="w-full text-xs border border-gray-400 mb-4">
+            <thead>
+              <tr className="bg-gray-100">
+                <th className="border border-gray-400 px-2 py-1 text-left">#</th>
+                <th className="border border-gray-400 px-2 py-1 text-left">Region</th>
+                <th className="border border-gray-400 px-2 py-1 text-left">Structure</th>
+                <th className="border border-gray-400 px-2 py-1 text-left">SUVmax</th>
+                <th className="border border-gray-400 px-2 py-1 text-left">Vol (mL)</th>
+                <th className="border border-gray-400 px-2 py-1 text-left">CT (HU)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[...lesions]
+                .sort((a, b) => (a.id ?? 0) - (b.id ?? 0))
+                .map((le, i) => (
+                  <tr key={i}>
+                    <td className="border border-gray-400 px-2 py-1">{le.id ?? ""}</td>
+                    <td className="border border-gray-400 px-2 py-1">{le.anatomical_region || "—"}</td>
+                    <td className="border border-gray-400 px-2 py-1">{prettifyStructure(le.structure)}</td>
+                    <td className="border border-gray-400 px-2 py-1">
+                      {typeof le.suv_max === "number" ? le.suv_max.toFixed(1) : "—"}
+                    </td>
+                    <td className="border border-gray-400 px-2 py-1">
+                      {typeof le.volume_ml === "number" ? le.volume_ml.toFixed(1) : "—"}
+                    </td>
+                    <td className="border border-gray-400 px-2 py-1">
+                      {typeof le.ct_mean_hu === "number" ? le.ct_mean_hu.toFixed(0) : "—"}
+                    </td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
+        </>
+      )}
+    </ReportShell>
   );
 }

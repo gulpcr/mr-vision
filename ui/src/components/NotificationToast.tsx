@@ -92,7 +92,11 @@ export function NotificationToast() {
   if (notifications.length === 0) return null;
 
   return (
-    <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-sm">
+    <div
+      role="status"
+      aria-live="polite"
+      className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-sm"
+    >
       {notifications.map((n) => (
         <div
           key={n.id}
@@ -100,7 +104,11 @@ export function NotificationToast() {
         >
           {getIcon(n.type)}
           <p className="text-sm text-gray-700 flex-1">{n.message}</p>
-          <button onClick={() => dismiss(n.id)} className="text-gray-400 hover:text-gray-600">
+          <button
+            onClick={() => dismiss(n.id)}
+            aria-label="Dismiss notification"
+            className="text-gray-400 hover:text-gray-600"
+          >
             <X className="w-4 h-4" />
           </button>
         </div>
