@@ -76,7 +76,7 @@ export function Sidebar() {
               href={item.href}
               title={collapsed ? item.label : undefined}
               className={clsx(
-                "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors",
+                "flex items-center gap-3 px-3 py-2.5 rounded text-sm font-medium transition-colors",
                 active
                   ? "bg-primary-700 text-white"
                   : "text-gray-300 hover:bg-primary-800 hover:text-white"
@@ -109,7 +109,7 @@ export function Sidebar() {
           onClick={() => setLocale(locale === "ur" ? "en" : "ur")}
           aria-label={locale === "ur" ? "Switch to English" : "اردو میں تبدیل کریں"}
           title={collapsed ? (locale === "ur" ? "Switch to English" : "اردو میں تبدیل کریں") : undefined}
-          className="flex items-center gap-2 w-full px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-primary-800 rounded-lg transition-colors"
+          className="flex items-center gap-2 w-full px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-primary-800 rounded transition-colors"
         >
           <Languages className="w-4 h-4 shrink-0" />
           {!collapsed && <span>{locale === "ur" ? "English" : "اردو"}</span>}
@@ -118,7 +118,7 @@ export function Sidebar() {
           onClick={toggleTheme}
           aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
           title={collapsed ? (theme === "dark" ? "Switch to light mode" : "Switch to dark mode") : undefined}
-          className="flex items-center gap-2 w-full px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-primary-800 rounded-lg transition-colors"
+          className="flex items-center gap-2 w-full px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-primary-800 rounded transition-colors"
         >
           {theme === "dark" ? <Sun className="w-4 h-4 shrink-0" /> : <Moon className="w-4 h-4 shrink-0" />}
           {!collapsed && <span>{theme === "dark" ? "Light mode" : "Dark mode"}</span>}
@@ -130,7 +130,7 @@ export function Sidebar() {
               localStorage.removeItem("user");
               window.location.href = "/login";
             }}
-            className="flex items-center gap-2 w-full px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-primary-800 rounded-lg transition-colors"
+            className="flex items-center gap-2 w-full px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-primary-800 rounded transition-colors"
           >
             <LogOut className="w-4 h-4" />
             <span>Sign Out</span>

@@ -90,14 +90,14 @@ function StatCard({
   label: string; value: number | string; sub?: string;
   color?: "gray" | "red" | "amber" | "green";
 }) {
-  const ring = { gray: "border-gray-200", red: "border-red-200", amber: "border-amber-200", green: "border-green-200" }[color];
-  const bg   = { gray: "bg-white", red: "bg-red-50", amber: "bg-amber-50", green: "bg-green-50" }[color];
-  const val  = { gray: "text-gray-900", red: "text-red-700", amber: "text-amber-700", green: "text-green-700" }[color];
+  const ring = { gray: "border-gray-200 dark:border-gray-700", red: "border-red-200 dark:border-red-900", amber: "border-amber-200 dark:border-amber-900", green: "border-green-200 dark:border-green-900" }[color];
+  const bg   = { gray: "bg-white dark:bg-surface", red: "bg-red-50 dark:bg-red-950", amber: "bg-amber-50 dark:bg-amber-950", green: "bg-green-50 dark:bg-green-950" }[color];
+  const val  = { gray: "text-gray-900 dark:text-gray-100", red: "text-red-700 dark:text-red-300", amber: "text-amber-700 dark:text-amber-300", green: "text-green-700 dark:text-green-300" }[color];
   return (
-    <div className={`rounded-xl border ${ring} ${bg} px-5 py-4`}>
-      <p className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-1">{label}</p>
+    <div className={`rounded border ${ring} ${bg} px-3 py-2.5`}>
+      <p className="text-xs font-medium text-gray-500 dark:text-gray-400 dark:text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-1">{label}</p>
       <p className={`text-2xl font-bold ${val}`}>{value}</p>
-      {sub && <p className="text-xs mt-0.5 text-gray-500">{sub}</p>}
+      {sub && <p className="text-xs mt-0.5 text-gray-500 dark:text-gray-400 dark:text-gray-500 dark:text-gray-400 dark:text-gray-500">{sub}</p>}
     </div>
   );
 }
@@ -116,7 +116,7 @@ function UsecaseModal({
       <button
         onClick={() => onSelect(studyUid)}
         disabled={running}
-        className="w-full flex items-center gap-2 px-3 py-2.5 text-sm font-medium text-left rounded-lg text-primary-700 bg-primary-50 hover:bg-primary-100 disabled:opacity-50 transition-colors mb-1"
+        className="w-full flex items-center gap-2 px-3 py-2.5 text-sm font-medium text-left rounded text-primary-700 bg-primary-50 hover:bg-primary-100 disabled:opacity-50 transition-colors mb-1"
       >
         <Zap className="w-4 h-4 shrink-0" />
         <div>
@@ -126,7 +126,7 @@ function UsecaseModal({
       </button>
       {usecases.filter((uc) => uc.enabled).length > 0 && (
         <>
-          <div className="text-[10px] uppercase tracking-wider text-gray-400 px-3 py-1.5">
+          <div className="text-[10px] uppercase tracking-wider text-gray-400 dark:text-gray-500 px-3 py-1.5">
             Or choose a specific pipeline
           </div>
           {usecases.filter((uc) => uc.enabled).map((uc) => (
@@ -134,9 +134,9 @@ function UsecaseModal({
               key={uc.name}
               onClick={() => onSelect(studyUid, [uc.name])}
               disabled={running}
-              className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left rounded-lg text-gray-700 hover:bg-gray-50 disabled:opacity-50 transition-colors"
+              className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left rounded text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-surface-raised disabled:opacity-50 transition-colors"
             >
-              <ChevronRight className="w-3.5 h-3.5 text-gray-400 shrink-0" />
+              <ChevronRight className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500 shrink-0" />
               {uc.name.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
             </button>
           ))}
@@ -375,11 +375,11 @@ export default function WorklistPage() {
       {/* Header ──────────────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between mb-5">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">{strings.worklist.title}</h1>
-          <p className="text-sm text-gray-500 mt-0.5">
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100 dark:text-gray-100">{strings.worklist.title}</h1>
+          <p className="text-sm text-gray-500 dark:text-gray-400 dark:text-gray-500 mt-0.5">
             {total} stud{total === 1 ? "y" : "ies"}
             {lastRefreshed && (
-              <span className="ms-2 text-gray-400">
+              <span className="ms-2 text-gray-400 dark:text-gray-500 dark:text-gray-500 dark:text-gray-400 dark:text-gray-500">
                 · Updated {relativeTime(lastRefreshed.toISOString())}
               </span>
             )}
@@ -391,13 +391,13 @@ export default function WorklistPage() {
             disabled={refreshing}
             aria-label="Refresh worklist"
             title="Refresh worklist"
-            className="p-2 text-gray-500 hover:text-gray-800 hover:bg-gray-100 rounded-lg transition-colors disabled:opacity-40"
+            className="p-2 text-gray-500 dark:text-gray-400 dark:text-gray-500 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 rounded transition-colors disabled:opacity-40"
           >
             <RefreshCw className={`w-4 h-4 ${refreshing ? "animate-spin motion-reduce:animate-none" : ""}`} />
           </button>
           <Link
             href="/upload"
-            className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-primary-600 rounded-lg hover:bg-primary-700 transition-colors"
+            className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-primary-600 rounded hover:bg-primary-700 transition-colors"
           >
             <Upload className="w-4 h-4" /> Upload DICOM
           </Link>
@@ -434,12 +434,16 @@ export default function WorklistPage() {
 
       {/* Run AI success banner */}
       {runSuccess && (
-        <div className="flex items-center gap-3 bg-green-50 border border-green-200 rounded-xl px-4 py-3 mb-2">
+        <div className="flex items-center gap-3 bg-green-50 dark:bg-green-950 dark:bg-green-950 border border-green-200 dark:border-green-900 rounded px-3 py-2 mb-2">
           <CheckCircle2 className="w-4 h-4 text-green-500 shrink-0" />
-          <p className="text-sm text-green-800 flex-1">
+          <p className="text-sm text-green-800 dark:text-green-300 flex-1">
             <span className="font-semibold">Pipeline queued:</span> {runSuccess} — the worker will start processing shortly.
           </p>
-          <button onClick={() => setRunSuccess(null)} className="text-green-400 hover:text-green-600">
+          <button
+            onClick={() => setRunSuccess(null)}
+            aria-label="Dismiss"
+            className="text-green-400 hover:text-green-600 dark:hover:text-green-400 dark:hover:text-green-300"
+          >
             <X className="w-4 h-4" />
           </button>
         </div>
@@ -456,29 +460,29 @@ export default function WorklistPage() {
       )}
 
       {/* Filters ─────────────────────────────────────────────────────────── */}
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 mb-4">
-        <div className="flex flex-wrap items-center gap-2 px-4 py-3">
+      <div className="bg-white dark:bg-surface dark:bg-surface rounded border border-gray-200 dark:border-gray-700 dark:border-gray-700 mb-4">
+        <div className="flex flex-wrap items-center gap-2 px-3 py-2">
           {/* Search */}
           <div className="relative flex-1 min-w-[220px]">
-            <Search className="w-4 h-4 absolute start-3 top-1/2 -translate-y-1/2 text-gray-400" />
+            <Search className="w-4 h-4 absolute start-3 top-1/2 -translate-y-1/2 text-gray-400 dark:text-gray-500 dark:text-gray-500 dark:text-gray-400 dark:text-gray-500" />
             <input
               ref={searchRef}
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder={strings.worklist.searchPlaceholder}
-              className="w-full ps-9 pe-4 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+              className="w-full ps-9 pe-4 py-1.5 text-sm border border-gray-200 dark:border-gray-700 dark:border-gray-700 dark:bg-surface rounded focus:outline-none focus:ring-2 focus:ring-primary-500"
             />
           </div>
 
           {/* Date toggle */}
-          <div className="flex rounded-lg border border-gray-200 overflow-hidden text-sm shrink-0">
+          <div className="flex rounded border border-gray-200 dark:border-gray-700 dark:border-gray-700 overflow-hidden text-sm shrink-0">
             {(["today", "week", "all"] as DateFilter[]).map((d) => (
               <button
                 key={d}
                 onClick={() => setDateFilter(d)}
-                className={`px-3 py-2 transition-colors ${
-                  dateFilter === d ? "bg-primary-600 text-white" : "text-gray-600 hover:bg-gray-50"
+                className={`px-2.5 py-1.5 transition-colors ${
+                  dateFilter === d ? "bg-primary-600 text-white" : "text-gray-600 dark:text-gray-400 dark:text-gray-500 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-surface-raised dark:hover:bg-gray-800"
                 }`}
               >
                 {d === "today" ? "Today" : d === "week" ? "7 Days" : "All Time"}
@@ -491,7 +495,7 @@ export default function WorklistPage() {
             <select
               value={modalityFilter}
               onChange={(e) => setModalityFilter(e.target.value)}
-              className="text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500"
+              className="text-sm border border-gray-200 dark:border-gray-700 dark:border-gray-700 dark:bg-surface rounded px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-primary-500"
             >
               <option value="">All Modalities</option>
               {modalities.map((m) => <option key={m} value={m!}>{m}</option>)}
@@ -503,7 +507,7 @@ export default function WorklistPage() {
             <select
               value={bodyPartFilter}
               onChange={(e) => setBodyPartFilter(e.target.value)}
-              className="text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500"
+              className="text-sm border border-gray-200 dark:border-gray-700 dark:border-gray-700 dark:bg-surface rounded px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-primary-500"
             >
               <option value="">All Body Parts</option>
               {bodyParts.map((bp) => <option key={bp} value={bp!}>{bp}</option>)}
@@ -515,7 +519,7 @@ export default function WorklistPage() {
             <select
               value={referrerFilter}
               onChange={(e) => setReferrerFilter(e.target.value)}
-              className="text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 max-w-[180px]"
+              className="text-sm border border-gray-200 dark:border-gray-700 dark:border-gray-700 dark:bg-surface rounded px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-primary-500 max-w-[180px]"
             >
               <option value="">All Referrers</option>
               {referrers.map((r) => <option key={r} value={r!}>{r}</option>)}
@@ -526,7 +530,7 @@ export default function WorklistPage() {
           <select
             value={priorityFilter}
             onChange={(e) => setPriorityFilter(e.target.value)}
-            className="text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500"
+            className="text-sm border border-gray-200 dark:border-gray-700 dark:border-gray-700 dark:bg-surface rounded px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-primary-500"
           >
             <option value="">All Priorities</option>
             <option value="STAT">STAT</option>
@@ -539,7 +543,7 @@ export default function WorklistPage() {
           <select
             value={aiStatusFilter}
             onChange={(e) => setAIStatusFilter(e.target.value as AIStatusFilter)}
-            className="text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500"
+            className="text-sm border border-gray-200 dark:border-gray-700 dark:border-gray-700 dark:bg-surface rounded px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-primary-500"
           >
             <option value="any">Any AI Status</option>
             <option value="not_started">Not Started</option>
@@ -552,7 +556,7 @@ export default function WorklistPage() {
           {activeFilters > 0 && (
             <button
               onClick={clearFilters}
-              className="flex items-center gap-1.5 px-3 py-2 text-sm text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors shrink-0"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 text-sm text-gray-600 dark:text-gray-400 dark:text-gray-500 dark:text-gray-300 bg-gray-100 dark:bg-gray-800 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 rounded transition-colors shrink-0"
             >
               <X className="w-3.5 h-3.5" />
               Clear ({activeFilters})
@@ -562,11 +566,11 @@ export default function WorklistPage() {
       </div>
 
       {/* Table ───────────────────────────────────────────────────────────── */}
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+      <div className="bg-white dark:bg-surface dark:bg-surface rounded border border-gray-200 dark:border-gray-700 dark:border-gray-700 overflow-hidden">
         <Table>
           <Caption>Worklist of studies with AI job status and reading workflow</Caption>
           <thead>
-            <tr className="border-b border-gray-100 dark:border-gray-800 bg-white dark:bg-surface">
+            <tr className="border-b border-gray-100 dark:border-gray-800 dark:border-gray-800 bg-white dark:bg-surface dark:bg-surface">
               <SortableTh label={strings.worklist.columnPriority} field="urgency" activeField={sortField} dir={sortDir} onSort={(f) => toggleSort(f as SortField)} />
               <SortableTh label={strings.worklist.columnPatient} field="patient_name" activeField={sortField} dir={sortDir} onSort={(f) => toggleSort(f as SortField)} />
               <Th>{strings.worklist.columnStudy}</Th>
@@ -576,7 +580,7 @@ export default function WorklistPage() {
               <Th className="w-[170px]" />
             </tr>
           </thead>
-          <tbody className="divide-y divide-gray-50 dark:divide-gray-800">
+          <tbody className="divide-y divide-gray-50 dark:divide-gray-800 dark:divide-gray-800">
             {loading && studies.length === 0 ? (
               <TableSkeleton rows={7} columnWidths={[44, 130, 180, 90, 88, 150, 112]} subtextColumns={[1, 3]} />
             ) : filtered.length === 0 ? (
@@ -594,14 +598,14 @@ export default function WorklistPage() {
                       activeFilters > 0 ? (
                         <button
                           onClick={clearFilters}
-                          className="text-xs px-3 py-1.5 border border-gray-200 dark:border-gray-700 rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800"
+                          className="text-xs px-3 py-1.5 border border-gray-200 dark:border-gray-700 dark:border-gray-700 rounded text-gray-600 dark:text-gray-400 dark:text-gray-500 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-surface-raised dark:hover:bg-gray-800"
                         >
                           {strings.worklist.clearFilters}
                         </button>
                       ) : (
                         <Link
                           href="/upload"
-                          className="text-xs px-3 py-1.5 bg-primary-600 text-white rounded-lg hover:bg-primary-700"
+                          className="text-xs px-3 py-1.5 bg-primary-600 text-white rounded hover:bg-primary-700"
                         >
                           {strings.worklist.uploadCta}
                         </Link>
@@ -623,16 +627,23 @@ export default function WorklistPage() {
                     <tr
                       key={study.study_instance_uid}
                       onClick={() => router.push(`/study/${study.study_instance_uid}`)}
-                      className={`cursor-pointer transition-colors ${
-                        urgency?.priority === "STAT"
-                          ? "bg-red-50/40 hover:bg-red-50"
-                          : urgency?.priority === "HIGH"
-                          ? "bg-orange-50/20 hover:bg-orange-50/40"
-                          : "hover:bg-gray-50"
-                      }`}
+                      className="cursor-pointer transition-colors hover:bg-gray-50 dark:hover:bg-surface-raised dark:hover:bg-gray-800/50"
                     >
-                      {/* Priority */}
-                      <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
+                      {/* Priority — a left-border accent stripe signals urgency at a
+                          glance without washing the whole row in color (the badge +
+                          icon below still carry the same signal for anyone who can't
+                          see the stripe). Physical border side, not logical — a minor,
+                          accepted RTL-mirroring gap for this one accent. */}
+                      <td
+                        className={`py-2 px-3 border-l-2 ${
+                          urgency?.priority === "STAT"
+                            ? "border-l-red-500"
+                            : urgency?.priority === "HIGH"
+                            ? "border-l-orange-400"
+                            : "border-l-transparent"
+                        }`}
+                        onClick={(e) => e.stopPropagation()}
+                      >
                         <div className="flex flex-col gap-1.5">
                           <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-bold border w-fit ${priorityConf.bg} ${priorityConf.text} ${priorityConf.border}`}>
                             {urgency?.priority === "STAT" && <AlertTriangle className="w-3 h-3" />}
@@ -641,7 +652,7 @@ export default function WorklistPage() {
                           </span>
                           {urgency && (
                             <div className="flex items-center gap-1.5">
-                              <div className="w-14 bg-gray-100 rounded-full h-1.5">
+                              <div className="w-14 bg-gray-100 dark:bg-gray-800 rounded-full h-1.5">
                                 <div
                                   className={`h-1.5 rounded-full transition-all ${
                                     urgency.score >= 75 ? "bg-red-500"
@@ -652,29 +663,29 @@ export default function WorklistPage() {
                                   style={{ width: `${urgency.score}%` }}
                                 />
                               </div>
-                              <span className="text-[11px] text-gray-400 tabular-nums">{urgency.score}</span>
+                              <span className="text-[11px] text-gray-400 dark:text-gray-500 tabular-nums">{urgency.score}</span>
                             </div>
                           )}
                         </div>
                       </td>
 
                       {/* Patient */}
-                      <td className="py-3 px-4">
-                        <p className="font-semibold text-gray-900">
+                      <td className="py-2 px-3">
+                        <p className="font-semibold text-gray-900 dark:text-gray-100">
                           {formatPatientName(study.patient_name)}
                         </p>
-                        <p className="text-xs text-gray-400">{study.patient_id || "—"}</p>
+                        <p className="text-xs text-gray-400 dark:text-gray-500">{study.patient_id || "—"}</p>
                       </td>
 
                       {/* Study */}
-                      <td className="py-3 px-4 max-w-[200px]">
-                        <p className="text-gray-800 truncate">{study.study_description || "—"}</p>
+                      <td className="py-2 px-3 max-w-[200px]">
+                        <p className="text-gray-800 dark:text-gray-200 truncate">{study.study_description || "—"}</p>
                         <div className="flex items-center gap-2 mt-0.5">
-                          <p className="text-xs text-gray-400 font-mono truncate">
+                          <p className="text-xs text-gray-400 dark:text-gray-500 font-mono truncate">
                             {study.accession_number || study.study_instance_uid.slice(0, 16) + "…"}
                           </p>
                           {study.series?.length > 0 && (
-                            <span className="inline-flex items-center gap-0.5 text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded-full shrink-0">
+                            <span className="inline-flex items-center gap-0.5 text-[10px] text-gray-400 dark:text-gray-500 bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded-full shrink-0">
                               <Layers className="w-2.5 h-2.5" />
                               {study.series.length}
                             </span>
@@ -683,32 +694,32 @@ export default function WorklistPage() {
                       </td>
 
                       {/* Date */}
-                      <td className="py-3 px-4 whitespace-nowrap">
-                        <p className="text-gray-700">{formatDate(study.study_date)}</p>
-                        <p className="text-xs text-gray-400 flex items-center gap-1 mt-0.5">
+                      <td className="py-2 px-3 whitespace-nowrap">
+                        <p className="text-gray-700 dark:text-gray-300">{formatDate(study.study_date)}</p>
+                        <p className="text-xs text-gray-400 dark:text-gray-500 flex items-center gap-1 mt-0.5">
                           <Clock className="w-2.5 h-2.5 shrink-0" />
                           {relativeTime(study.created_at)}
                         </p>
                       </td>
 
                       {/* Body Part */}
-                      <td className="py-3 px-4">
+                      <td className="py-2 px-3">
                         {study.body_part_examined ? (
-                          <span className="px-2 py-0.5 bg-blue-50 text-blue-700 text-xs rounded-full font-medium">
+                          <span className="px-2 py-0.5 bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-300 text-xs rounded-full font-medium">
                             {study.body_part_examined}
                           </span>
                         ) : (
-                          <span className="text-gray-400 text-xs">—</span>
+                          <span className="text-gray-400 dark:text-gray-500 text-xs">—</span>
                         )}
                         {study.modality && (
-                          <p className="text-[11px] text-gray-400 mt-0.5">{study.modality}</p>
+                          <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-0.5">{study.modality}</p>
                         )}
                       </td>
 
                       {/* AI Status */}
-                      <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
+                      <td className="py-2 px-3" onClick={(e) => e.stopPropagation()}>
                         {latestJobs.length === 0 ? (
-                          <span className="text-xs text-gray-400 italic">Not started</span>
+                          <span className="text-xs text-gray-400 dark:text-gray-500 italic">Not started</span>
                         ) : (
                           <div className="space-y-1">
                             {latestJobs.map((job) => {
@@ -718,7 +729,7 @@ export default function WorklistPage() {
                               return (
                                 <div key={job.id} className="flex items-center gap-1.5 flex-wrap">
                                   <StatusBadge variant="job" status={stale ? "failed" : job.status} />
-                                  <span className="text-xs text-gray-500 truncate max-w-[80px]">
+                                  <span className="text-xs text-gray-500 dark:text-gray-400 dark:text-gray-500 truncate max-w-[80px]">
                                     {job.usecase_name.replace(/_/g, " ")}
                                   </span>
                                   {active && !stale && (
@@ -728,7 +739,7 @@ export default function WorklistPage() {
                                   )}
                                   {stale && (
                                     <span
-                                      className="text-[10px] font-medium text-red-600 bg-red-50 border border-red-200 px-1.5 py-0.5 rounded-full flex items-center gap-0.5 shrink-0"
+                                      className="text-[10px] font-medium text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950 border border-red-200 px-1.5 py-0.5 rounded-full flex items-center gap-0.5 shrink-0"
                                       title="No update in 15+ minutes — task may be stuck. Check worker logs."
                                     >
                                       <AlertTriangle className="w-2.5 h-2.5" />
@@ -752,7 +763,7 @@ export default function WorklistPage() {
                                       }}
                                       disabled={cancellingJob === job.id}
                                       title="Stop this job"
-                                      className="flex items-center gap-0.5 text-[10px] text-gray-500 hover:text-red-600 bg-gray-100 hover:bg-red-50 px-1.5 py-0.5 rounded-full transition-colors shrink-0 disabled:opacity-60"
+                                      className="flex items-center gap-0.5 text-[10px] text-gray-500 dark:text-gray-400 dark:text-gray-500 hover:text-red-600 dark:hover:text-red-400 bg-gray-100 dark:bg-gray-800 hover:bg-red-50 dark:hover:bg-red-950 px-1.5 py-0.5 rounded-full transition-colors shrink-0 disabled:opacity-60"
                                     >
                                       {cancellingJob === job.id ? (
                                         <>
@@ -773,13 +784,13 @@ export default function WorklistPage() {
                                         try { await api.jobs.retry(job.id); await loadStudies(); } catch {}
                                       }}
                                       title="Retry this job"
-                                      className="flex items-center gap-0.5 text-[10px] text-gray-500 hover:text-primary-600 bg-gray-100 hover:bg-primary-50 px-1.5 py-0.5 rounded-full transition-colors shrink-0"
+                                      className="flex items-center gap-0.5 text-[10px] text-gray-500 dark:text-gray-400 dark:text-gray-500 hover:text-primary-600 bg-gray-100 dark:bg-gray-800 hover:bg-primary-50 px-1.5 py-0.5 rounded-full transition-colors shrink-0"
                                     >
                                       <RotateCcw className="w-2.5 h-2.5" /> Retry
                                     </button>
                                   )}
                                   {runCount > 1 && (
-                                    <span className="text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded-full shrink-0">
+                                    <span className="text-[10px] text-gray-400 dark:text-gray-500 bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded-full shrink-0">
                                       ×{runCount}
                                     </span>
                                   )}
@@ -791,18 +802,18 @@ export default function WorklistPage() {
                       </td>
 
                       {/* Actions */}
-                      <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
+                      <td className="py-2 px-3" onClick={(e) => e.stopPropagation()}>
                         <div className="flex items-center gap-1.5 flex-wrap">
                           <Link
                             href={`/study/${study.study_instance_uid}`}
-                            className="px-2.5 py-1.5 text-xs font-medium text-primary-600 border border-primary-200 rounded-lg hover:bg-primary-50 transition-colors whitespace-nowrap"
+                            className="px-2.5 py-1.5 text-xs font-medium text-primary-600 border border-primary-200 rounded hover:bg-primary-50 transition-colors whitespace-nowrap"
                           >
                             View
                           </Link>
                           <button
                             onClick={() => setModalStudyUid(study.study_instance_uid)}
                             disabled={isRunning}
-                            className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-white bg-green-600 rounded-lg hover:bg-green-700 disabled:opacity-50 transition-colors whitespace-nowrap"
+                            className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-white bg-green-600 rounded hover:bg-green-700 disabled:opacity-50 transition-colors whitespace-nowrap"
                           >
                             {isRunning
                               ? <RefreshCw className="w-3 h-3 animate-spin motion-reduce:animate-none" />
@@ -815,7 +826,7 @@ export default function WorklistPage() {
                               href={`/admin/patients/${encodeURIComponent(study.patient_id)}/trend/${completedJob.usecase_name}`}
                               aria-label="View longitudinal trend"
                               title="Longitudinal trend"
-                              className="p-1.5 text-purple-600 border border-purple-200 rounded-lg hover:bg-purple-50 transition-colors"
+                              className="p-1.5 text-purple-600 border border-purple-200 rounded hover:bg-purple-50 transition-colors"
                             >
                               <TrendingUp className="w-3.5 h-3.5" />
                             </Link>
@@ -835,7 +846,7 @@ export default function WorklistPage() {
                               onClick={() => setConfirmDelete(study.study_instance_uid)}
                               aria-label="Remove study from platform"
                               title="Remove study from platform"
-                              className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                              className="p-1.5 text-gray-400 dark:text-gray-500 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-950 rounded transition-colors"
                             >
                               <Trash2 className="w-3.5 h-3.5" />
                             </button>
@@ -850,11 +861,11 @@ export default function WorklistPage() {
         </Table>
 
         {/* Table footer */}
-        <div className="px-4 py-3 bg-gray-50 border-t border-gray-100 flex items-center justify-between text-xs text-gray-500">
+        <div className="px-3 py-2 bg-gray-50 dark:bg-surface-raised dark:bg-surface-raised border-t border-gray-100 dark:border-gray-800 dark:border-gray-800 flex items-center justify-between text-xs text-gray-500 dark:text-gray-400 dark:text-gray-500 dark:text-gray-400 dark:text-gray-500">
           <span>
             Showing{" "}
-            <span className="font-medium text-gray-700">{filtered.length}</span> of{" "}
-            <span className="font-medium text-gray-700">{total}</span> studies
+            <span className="font-medium text-gray-700 dark:text-gray-300 dark:text-gray-300">{filtered.length}</span> of{" "}
+            <span className="font-medium text-gray-700 dark:text-gray-300 dark:text-gray-300">{total}</span> studies
             {activeFilters > 0 && (
               <span className="ms-1 text-primary-500">
                 · {activeFilters} filter{activeFilters > 1 ? "s" : ""} active
@@ -862,7 +873,7 @@ export default function WorklistPage() {
             )}
           </span>
           {urgencyLoading && (
-            <span className="flex items-center gap-1 text-gray-400">
+            <span className="flex items-center gap-1 text-gray-400 dark:text-gray-500">
               <RefreshCw className="w-3 h-3 animate-spin motion-reduce:animate-none" /> Loading priority scores…
             </span>
           )}

@@ -90,14 +90,14 @@ function ModalConfirm({
           <button
             onClick={onCancel}
             disabled={busy}
-            className="px-4 py-2 text-sm font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700 rounded-lg transition-colors disabled:opacity-50"
+            className="px-3 py-1.5 text-sm font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700 rounded transition-colors disabled:opacity-50"
           >
             {cancelLabel}
           </button>
           <button
             onClick={handleConfirm}
             disabled={busy}
-            className={`flex items-center gap-2 px-4 py-2 text-sm font-medium text-white rounded-lg transition-colors disabled:opacity-50 ${
+            className={`flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-white rounded transition-colors disabled:opacity-50 ${
               danger ? "bg-red-600 hover:bg-red-700" : "bg-primary-600 hover:bg-primary-700"
             }`}
           >
@@ -174,7 +174,7 @@ function TypeToConfirmModal({
               onChange={(e) => setText(e.target.value)}
               placeholder={confirmPhrase}
               aria-label={`Type ${confirmPhrase} to confirm`}
-              className="w-full px-3 py-2 text-sm border-2 border-red-300 dark:border-red-800 dark:bg-surface-raised rounded-lg focus:outline-none focus:border-red-500 font-mono"
+              className="w-full px-3 py-1.5 text-sm border-2 border-red-300 dark:border-red-800 dark:bg-surface-raised rounded focus:outline-none focus:border-red-500 font-mono"
               onKeyDown={(e) => {
                 if (e.key === "Enter" && matches) handleConfirm();
               }}
@@ -183,13 +183,13 @@ function TypeToConfirmModal({
               <button
                 onClick={handleConfirm}
                 disabled={!matches}
-                className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg transition-colors"
+                className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-white bg-red-600 hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed rounded transition-colors"
               >
                 {confirmLabel}
               </button>
               <button
                 onClick={handleClose}
-                className="px-4 py-2 text-sm font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700 rounded-lg transition-colors"
+                className="px-3 py-1.5 text-sm font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700 rounded transition-colors"
               >
                 {cancelLabel}
               </button>

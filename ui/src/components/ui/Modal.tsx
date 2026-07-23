@@ -43,10 +43,10 @@ export function Modal({ open, onClose, title, children, footer, size = "sm" }: M
         aria-modal="true"
         aria-labelledby={titleId}
         tabIndex={-1}
-        className={`bg-surface rounded-xl shadow-2xl border border-border w-full ${SIZE_CLASS[size]} overflow-hidden outline-none`}
+        className={`bg-surface rounded-md border border-border w-full ${SIZE_CLASS[size]} overflow-hidden outline-none`}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+        <div className="flex items-center justify-between px-3 py-2.5 border-b border-border">
           <span id={titleId} className="font-semibold text-sm text-gray-800 dark:text-gray-100">
             {title}
           </span>
@@ -58,9 +58,9 @@ export function Modal({ open, onClose, title, children, footer, size = "sm" }: M
             <X className="w-4 h-4" />
           </button>
         </div>
-        <div className="p-4">{children}</div>
+        <div className="p-3">{children}</div>
         {footer && (
-          <div className="px-4 py-3 border-t border-border bg-surface-raised">{footer}</div>
+          <div className="px-3 py-2.5 border-t border-border bg-surface-raised">{footer}</div>
         )}
       </div>
     </div>,

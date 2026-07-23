@@ -19,7 +19,7 @@ export function Th({ children, className, ...rest }: React.ThHTMLAttributes<HTML
     <th
       scope="col"
       className={clsx(
-        "text-left py-3 px-4 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider",
+        "text-left py-2 px-3 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider",
         className
       )}
       {...rest}
@@ -42,7 +42,7 @@ export function SortableTh({ label, field, activeField, dir, onSort, className }
   const active = activeField === field;
   const ariaSort: "ascending" | "descending" | "none" = active ? (dir === "asc" ? "ascending" : "descending") : "none";
   return (
-    <th scope="col" aria-sort={ariaSort} className={clsx("text-left py-3 px-4", className)}>
+    <th scope="col" aria-sort={ariaSort} className={clsx("text-left py-2 px-3", className)}>
       <button
         type="button"
         onClick={() => onSort(field)}

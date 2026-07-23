@@ -15,7 +15,7 @@ export function ErrorBanner({ title = "Something went wrong", message, onDismiss
     <div
       role="alert"
       className={clsx(
-        "flex items-start gap-3 bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-900 rounded-xl px-4 py-3",
+        "flex items-start gap-3 bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-900 rounded-md px-3 py-2.5",
         className
       )}
     >
