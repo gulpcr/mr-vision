@@ -74,19 +74,19 @@ export function NotificationToast() {
 
   const getIcon = (type: string) => {
     switch (type) {
-      case "success": return <CheckCircle className="w-5 h-5 text-green-500" />;
-      case "error": return <XCircle className="w-5 h-5 text-red-500" />;
-      case "critical": return <AlertTriangle className="w-5 h-5 text-red-500" />;
-      case "warning": return <Bell className="w-5 h-5 text-amber-500" />;
-      default: return <Package className="w-5 h-5 text-blue-500" />;
+      case "success": return <CheckCircle className="w-5 h-5 text-green-500 dark:text-green-400" />;
+      case "error": return <XCircle className="w-5 h-5 text-red-500 dark:text-red-400" />;
+      case "critical": return <AlertTriangle className="w-5 h-5 text-red-500 dark:text-red-400" />;
+      case "warning": return <Bell className="w-5 h-5 text-amber-500 dark:text-amber-400" />;
+      default: return <Package className="w-5 h-5 text-blue-500 dark:text-blue-400" />;
     }
   };
 
   const getBorderColor = (type: string) => {
-    if (type === "critical") return "border-red-300 bg-red-50";
-    if (type === "error") return "border-red-200";
-    if (type === "warning") return "border-amber-200";
-    return "border-gray-200";
+    if (type === "critical") return "border-red-300 bg-red-50 dark:bg-red-950";
+    if (type === "error") return "border-red-200 dark:border-red-800";
+    if (type === "warning") return "border-amber-200 dark:border-amber-800";
+    return "border-gray-200 dark:border-gray-700";
   };
 
   if (notifications.length === 0) return null;
@@ -100,14 +100,14 @@ export function NotificationToast() {
       {notifications.map((n) => (
         <div
           key={n.id}
-          className={`bg-white rounded-lg shadow-lg border p-3 flex items-start gap-3 animate-in slide-in-from-right ${getBorderColor(n.type)}`}
+          className={`bg-white dark:bg-surface rounded-lg shadow-lg border p-3 flex items-start gap-3 animate-in slide-in-from-right ${getBorderColor(n.type)}`}
         >
           {getIcon(n.type)}
-          <p className="text-sm text-gray-700 flex-1">{n.message}</p>
+          <p className="text-sm text-gray-700 dark:text-gray-300 flex-1">{n.message}</p>
           <button
             onClick={() => dismiss(n.id)}
             aria-label="Dismiss notification"
-            className="text-gray-400 hover:text-gray-600"
+            className="text-gray-400 dark:text-gray-500 hover:text-gray-600"
           >
             <X className="w-4 h-4" />
           </button>

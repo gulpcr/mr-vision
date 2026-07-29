@@ -20,7 +20,7 @@ export function AuthImg({
   className,
   fallback = "Image not available",
   loadingClassName = "h-48 bg-gray-900 rounded-lg animate-pulse motion-reduce:animate-none",
-  errorClassName = "flex items-center justify-center h-48 text-gray-500 text-xs bg-black rounded-lg",
+  errorClassName = "flex items-center justify-center h-48 text-gray-500 dark:text-gray-400 text-xs bg-black rounded-lg",
 }: AuthImgProps) {
   const { objectUrl, loading, error } = useAuthenticatedImage(src);
 

@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import { api, Result } from "@/lib/api";
 import { formatDate } from "@/lib/format";
 import { FileDown, AlertTriangle, CheckCircle, Activity, Clock, Building2, User, Hash } from "lucide-react";
+import { CortexMark } from "@/components/ui/CortexMark";
 
 interface PortalData {
   portal: boolean;
@@ -82,9 +83,9 @@ export default function PortalPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gray-50 dark:bg-surface-raised flex items-center justify-center">
+      <div className="min-h-screen bg-gray-50 dark:bg-gray-800 dark:bg-surface-raised flex items-center justify-center">
         <div className="text-center">
-          <Activity className="w-10 h-10 text-blue-500 mx-auto mb-3 animate-pulse motion-reduce:animate-none" />
+          <Activity className="w-10 h-10 text-blue-500 dark:text-blue-400 mx-auto mb-3 animate-pulse motion-reduce:animate-none" />
           <p className="text-gray-500 dark:text-gray-400 dark:text-gray-500">Loading report...</p>
         </div>
       </div>
@@ -93,7 +94,7 @@ export default function PortalPage() {
 
   if (error || !data) {
     return (
-      <div className="min-h-screen bg-gray-50 dark:bg-surface-raised flex items-center justify-center">
+      <div className="min-h-screen bg-gray-50 dark:bg-gray-800 dark:bg-surface-raised flex items-center justify-center">
         <div className="bg-white dark:bg-surface rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-8 max-w-md w-full mx-4">
           <AlertTriangle className="w-10 h-10 text-red-400 mx-auto mb-3" />
           <h1 className="text-lg font-semibold text-gray-900 dark:text-gray-100 text-center mb-2">Access Denied</h1>
@@ -113,14 +114,16 @@ export default function PortalPage() {
   const daysLeft = Math.ceil((expiresAt.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-surface-raised">
+    <div className="min-h-screen bg-gray-50 dark:bg-gray-800 dark:bg-surface-raised">
       {/* Portal Header */}
       <header className="bg-white dark:bg-surface border-b border-gray-200 dark:border-gray-700 sticky top-0 z-10">
         <div className="max-w-4xl mx-auto px-4 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <Activity className="w-7 h-7 text-blue-600 dark:text-blue-400" />
+            <CortexMark className="w-7 h-7" />
             <div>
-              <h1 className="text-base font-bold text-gray-900 dark:text-gray-100">MRI AI Platform</h1>
+              <h1 className="text-base font-bold text-gray-900 dark:text-gray-100">
+                <span className="text-gradient">CORTEX</span> Radiology
+              </h1>
               <p className="text-xs text-gray-500 dark:text-gray-400 dark:text-gray-500">Referring Physician Portal — Read Only</p>
             </div>
           </div>
@@ -182,14 +185,14 @@ export default function PortalPage() {
 
         {/* QA Flags */}
         {result.qa_flags.length > 0 && (
-          <div className="bg-amber-50 dark:bg-amber-950 border border-amber-200 rounded-xl p-4">
+          <div className="bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-xl p-4">
             <div className="flex items-center gap-2 mb-2">
-              <AlertTriangle className="w-4 h-4 text-amber-600" />
+              <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400" />
               <h3 className="text-sm font-semibold text-amber-800">Quality Assurance Flags</h3>
             </div>
             <div className="flex flex-wrap gap-2">
               {result.qa_flags.map((flag) => (
-                <span key={flag} className="px-2 py-1 bg-amber-100 text-amber-800 text-xs rounded-lg font-medium">
+                <span key={flag} className="px-2 py-1 bg-amber-100 dark:bg-amber-900 text-amber-800 text-xs rounded-lg font-medium">
                   {flag}
                 </span>
               ))}
@@ -205,7 +208,7 @@ export default function PortalPage() {
             </div>
             <div className="px-6 py-4 grid grid-cols-1 md:grid-cols-2 gap-3">
               {summaryEntries.map(({ key, value }) => (
-                <div key={key} className="flex justify-between items-center py-1.5 border-b border-gray-50">
+                <div key={key} className="flex justify-between items-center py-1.5 border-b border-gray-50 dark:border-gray-800">
                   <span className="text-sm text-gray-600 dark:text-gray-400 dark:text-gray-500">{formatKey(key)}</span>
                   <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">{formatValue(value)}</span>
                 </div>
@@ -225,14 +228,14 @@ export default function PortalPage() {
             </div>
             <table className="w-full">
               <thead>
-                <tr className="bg-gray-50 dark:bg-surface-raised border-b border-gray-100 dark:border-gray-800">
+                <tr className="bg-gray-50 dark:bg-gray-800 dark:bg-surface-raised border-b border-gray-100 dark:border-gray-800">
                   <th className="text-left px-6 py-2.5 text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase">Parameter</th>
                   <th className="text-right px-6 py-2.5 text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase">Value</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50 dark:divide-gray-800">
                 {measurements.map(({ key, value }) => (
-                  <tr key={key} className="hover:bg-gray-50 dark:hover:bg-surface-raised">
+                  <tr key={key} className="hover:bg-gray-50 dark:hover:bg-gray-800 dark:hover:bg-surface-raised">
                     <td className="px-6 py-3 text-sm text-gray-700 dark:text-gray-300">{formatKey(key)}</td>
                     <td className="px-6 py-3 text-sm font-semibold text-gray-900 dark:text-gray-100 text-right">{formatValue(value)}</td>
                   </tr>
@@ -244,7 +247,7 @@ export default function PortalPage() {
 
         {/* No QA flags = passed */}
         {result.qa_flags.length === 0 && (
-          <div className="bg-green-50 dark:bg-green-950 border border-green-200 rounded-xl p-4 flex items-center gap-3">
+          <div className="bg-green-50 dark:bg-green-950 border border-green-200 dark:border-green-800 rounded-xl p-4 flex items-center gap-3">
             <CheckCircle className="w-5 h-5 text-green-600 dark:text-green-400 shrink-0" />
             <div>
               <p className="text-sm font-semibold text-green-800">Quality Check Passed</p>

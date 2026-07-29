@@ -42,6 +42,8 @@ dependencies = [
     "reportlab>=4.0",
     # FHIR (F11)
     "fhir.resources>=7.0.0",
+    # HL7 v2 messaging (F21) — inbound ADT/ORM + outbound ORU over MLLP
+    "hl7apy>=1.3.4",
     # WebSocket
     "websockets>=12.0",
     # LLM Report Generation (Phase 1)

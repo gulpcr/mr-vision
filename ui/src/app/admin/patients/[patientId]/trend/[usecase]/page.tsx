@@ -8,10 +8,10 @@ import Link from "next/link";
 import { ArrowLeft, TrendingUp, TrendingDown, Minus, AlertTriangle, Activity } from "lucide-react";
 
 const RANO_CONFIG: Record<string, { label: string; bg: string; text: string; icon: React.ElementType }> = {
-  CR: { label: "Complete Response", bg: "bg-green-100", text: "text-green-800", icon: TrendingDown },
-  PR: { label: "Partial Response", bg: "bg-blue-100", text: "text-blue-800", icon: TrendingDown },
-  SD: { label: "Stable Disease", bg: "bg-gray-100", text: "text-gray-700", icon: Minus },
-  PD: { label: "Progressive Disease", bg: "bg-red-100", text: "text-red-800", icon: TrendingUp },
+  CR: { label: "Complete Response", bg: "bg-green-100 dark:bg-green-900", text: "text-green-800", icon: TrendingDown },
+  PR: { label: "Partial Response", bg: "bg-blue-100 dark:bg-blue-900", text: "text-blue-800", icon: TrendingDown },
+  SD: { label: "Stable Disease", bg: "bg-gray-100 dark:bg-gray-800", text: "text-gray-700 dark:text-gray-300", icon: Minus },
+  PD: { label: "Progressive Disease", bg: "bg-red-100 dark:bg-red-900", text: "text-red-800", icon: TrendingUp },
 };
 
 function flattenMeasurements(obj: Record<string, any>, prefix = ""): Record<string, number> {
@@ -87,7 +87,7 @@ export default function PatientTrendPage() {
   if (loading) {
     return (
       <div className="flex items-center justify-center py-20">
-        <Activity className="w-6 h-6 text-blue-500 animate-pulse motion-reduce:animate-none mr-2" />
+        <Activity className="w-6 h-6 text-blue-500 dark:text-blue-400 animate-pulse motion-reduce:animate-none mr-2" />
         <p className="text-gray-500 dark:text-gray-400 dark:text-gray-500">Loading longitudinal data...</p>
       </div>
     );
@@ -99,10 +99,10 @@ export default function PatientTrendPage() {
         <Link href="/worklist" className="inline-flex items-center gap-1.5 text-sm text-gray-500 dark:text-gray-400 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">
           <ArrowLeft className="w-4 h-4" /> Back to Worklist
         </Link>
-        <div className="bg-red-50 dark:bg-red-950 border border-red-200 rounded-lg px-4 py-6 text-center">
+        <div className="bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-800 rounded-lg px-4 py-6 text-center">
           <AlertTriangle className="w-8 h-8 text-red-400 mx-auto mb-2" />
           <p className="text-red-700 dark:text-red-300 font-medium">No longitudinal data available</p>
-          <p className="text-red-500 text-sm mt-1">{error || "No prior studies found for this patient."}</p>
+          <p className="text-red-500 dark:text-red-400 text-sm mt-1">{error || "No prior studies found for this patient."}</p>
         </div>
       </div>
     );
@@ -115,7 +115,7 @@ export default function PatientTrendPage() {
         <Link href="/worklist" className="inline-flex items-center gap-1.5 text-sm text-gray-500 dark:text-gray-400 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">
           <ArrowLeft className="w-4 h-4" /> Back to Worklist
         </Link>
-        <div className="bg-amber-50 dark:bg-amber-950 border border-amber-200 rounded-lg p-6 text-center">
+        <div className="bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-lg p-6 text-center">
           <p className="text-amber-700 dark:text-amber-300">Only one study found. Longitudinal tracking requires at least 2 time points.</p>
         </div>
       </div>
@@ -177,10 +177,10 @@ export default function PatientTrendPage() {
                       rano === "CR" ? "bg-green-400" :
                       rano === "PR" ? "bg-blue-400" :
                       rano === "SD" ? "bg-gray-300" :
-                      rano === "PD" ? "bg-red-400" : "bg-gray-200"
+                      rano === "PD" ? "bg-red-400" : "bg-gray-200 dark:bg-gray-700"
                     }`} />
                     <div className={`flex items-center gap-3 p-3 rounded-lg border ${
-                      conf ? `${conf.bg} border-opacity-50` : "bg-gray-50 border-gray-100"
+                      conf ? `${conf.bg} border-opacity-50` : "bg-gray-50 dark:bg-gray-800 border-gray-100 dark:border-gray-800"
                     }`}>
                       <div className="flex-1">
                         <div className="flex items-center gap-2">
@@ -188,10 +188,10 @@ export default function PatientTrendPage() {
                             {formatDate(tp.study_date || tp.created_at)}
                           </span>
                           {i === 0 && (
-                            <span className="text-xs bg-gray-200 text-gray-600 dark:text-gray-400 dark:text-gray-500 px-1.5 py-0.5 rounded font-medium">Baseline</span>
+                            <span className="text-xs bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-400 dark:text-gray-500 px-1.5 py-0.5 rounded font-medium">Baseline</span>
                           )}
                           {i === timepoints.length - 1 && timepoints.length > 1 && (
-                            <span className="text-xs bg-blue-100 text-blue-600 dark:text-blue-400 px-1.5 py-0.5 rounded font-medium">Latest</span>
+                            <span className="text-xs bg-blue-100 dark:bg-blue-900 text-blue-600 dark:text-blue-400 px-1.5 py-0.5 rounded font-medium">Latest</span>
                           )}
                         </div>
                       </div>
@@ -215,7 +215,7 @@ export default function PatientTrendPage() {
       {Object.keys(series).length > 0 ? (
         <div className="bg-white dark:bg-surface rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-5">
           <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-4 flex items-center gap-2">
-            <TrendingUp className="w-4 h-4 text-blue-500" />
+            <TrendingUp className="w-4 h-4 text-blue-500 dark:text-blue-400" />
             Measurement Trends
           </h2>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -235,8 +235,8 @@ export default function PatientTrendPage() {
                       </p>
                     </div>
                     <div className={`flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-lg ${
-                      isUp ? "bg-red-100 text-red-600 dark:text-red-400" :
-                      isDown ? "bg-green-100 text-green-600 dark:text-green-400" :
+                      isUp ? "bg-red-100 dark:bg-red-900 text-red-600 dark:text-red-400" :
+                      isDown ? "bg-green-100 dark:bg-green-900 text-green-600 dark:text-green-400" :
                       "bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 dark:text-gray-500"
                     }`}>
                       {isUp ? <TrendingUp className="w-3 h-3" /> : isDown ? <TrendingDown className="w-3 h-3" /> : <Minus className="w-3 h-3" />}
@@ -267,7 +267,7 @@ export default function PatientTrendPage() {
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="bg-gray-50 dark:bg-surface-raised border-b border-gray-100 dark:border-gray-800">
+              <tr className="bg-gray-50 dark:bg-gray-800 dark:bg-surface-raised border-b border-gray-100 dark:border-gray-800">
                 <th className="text-left px-5 py-3 text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase whitespace-nowrap">Date</th>
                 {timepoints.some((tp) => tp.rano_classification) && (
                   <th className="text-left px-5 py-3 text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase">RANO</th>
@@ -283,10 +283,10 @@ export default function PatientTrendPage() {
               {timepoints.map((tp, i) => {
                 const flat = flattenMeasurements(tp.measurements);
                 return (
-                  <tr key={tp.result_id} className={`hover:bg-gray-50 dark:hover:bg-surface-raised ${i === 0 ? "bg-blue-50/30" : ""}`}>
+                  <tr key={tp.result_id} className={`hover:bg-gray-50 dark:hover:bg-gray-800 dark:hover:bg-surface-raised ${i === 0 ? "bg-blue-50/30" : ""}`}>
                     <td className="px-5 py-3 font-medium text-gray-900 dark:text-gray-100 whitespace-nowrap">
                       {formatDate(tp.study_date || tp.created_at)}
-                      {i === 0 && <span className="ml-2 text-xs text-blue-500 font-medium">Baseline</span>}
+                      {i === 0 && <span className="ml-2 text-xs text-blue-500 dark:text-blue-400 font-medium">Baseline</span>}
                     </td>
                     {timepoints.some((tp2) => tp2.rano_classification) && (
                       <td className="px-5 py-3">

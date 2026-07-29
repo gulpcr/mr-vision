@@ -74,7 +74,7 @@ export default function SettingsPage() {
               </div>
               <div className="text-sm">
                 <span className="text-gray-500 dark:text-gray-400 dark:text-gray-500">Configuration:</span>
-                <pre className="mt-2 p-4 bg-gray-50 dark:bg-surface-raised rounded-lg text-xs overflow-auto max-h-64 text-gray-700 dark:text-gray-300">
+                <pre className="mt-2 p-4 bg-gray-50 dark:bg-gray-800 dark:bg-surface-raised rounded-lg text-xs overflow-auto max-h-64 text-gray-700 dark:text-gray-300">
                   {JSON.stringify(siteConfig.config || siteConfig, null, 2)}
                 </pre>
               </div>
@@ -93,7 +93,7 @@ export default function SettingsPage() {
         <div className="p-5 space-y-2 text-sm">
           <div className="flex gap-3">
             <span className="text-gray-500 dark:text-gray-400 dark:text-gray-500 w-32">Platform:</span>
-            <span className="text-gray-900 dark:text-gray-100">MRI AI Platform</span>
+            <span className="text-gray-900 dark:text-gray-100">Cortex Radiology</span>
           </div>
           <div className="flex gap-3">
             <span className="text-gray-500 dark:text-gray-400 dark:text-gray-500 w-32">API Version:</span>
@@ -139,7 +139,7 @@ function StatusCard({
           <span className="font-medium text-gray-900 dark:text-gray-100">{label}</span>
         </div>
         {status ? (
-          <CheckCircle className="w-5 h-5 text-green-500" />
+          <CheckCircle className="w-5 h-5 text-green-500 dark:text-green-400" />
         ) : (
           <XCircle className="w-5 h-5 text-red-400" />
         )}

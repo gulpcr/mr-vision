@@ -39,12 +39,12 @@ export default function ExperimentsPage() {
       </div>
 
       {showForm && (
-        <form onSubmit={handleCreate} className="bg-white rounded-lg shadow-sm border border-gray-200 p-4 mb-4 grid grid-cols-2 gap-3">
-          <div><label className="block text-xs font-medium text-gray-500 mb-1">Name</label><input value={form.name} onChange={(e) => setForm({...form, name: e.target.value})} className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2" required /></div>
-          <div><label className="block text-xs font-medium text-gray-500 mb-1">Use Case</label><input value={form.usecase_name} onChange={(e) => setForm({...form, usecase_name: e.target.value})} className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2" required /></div>
-          <div><label className="block text-xs font-medium text-gray-500 mb-1">Control Version</label><input value={form.control_version} onChange={(e) => setForm({...form, control_version: e.target.value})} className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2" required /></div>
-          <div><label className="block text-xs font-medium text-gray-500 mb-1">Treatment Version</label><input value={form.treatment_version} onChange={(e) => setForm({...form, treatment_version: e.target.value})} className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2" required /></div>
-          <div><label className="block text-xs font-medium text-gray-500 mb-1">Traffic Split</label><input type="number" step="0.05" min="0" max="1" value={form.traffic_split} onChange={(e) => setForm({...form, traffic_split: Number(e.target.value)})} className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2" /></div>
+        <form onSubmit={handleCreate} className="bg-white dark:bg-surface rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-4 mb-4 grid grid-cols-2 gap-3">
+          <div><label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Name</label><input value={form.name} onChange={(e) => setForm({...form, name: e.target.value})} className="w-full text-sm border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2" required /></div>
+          <div><label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Use Case</label><input value={form.usecase_name} onChange={(e) => setForm({...form, usecase_name: e.target.value})} className="w-full text-sm border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2" required /></div>
+          <div><label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Control Version</label><input value={form.control_version} onChange={(e) => setForm({...form, control_version: e.target.value})} className="w-full text-sm border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2" required /></div>
+          <div><label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Treatment Version</label><input value={form.treatment_version} onChange={(e) => setForm({...form, treatment_version: e.target.value})} className="w-full text-sm border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2" required /></div>
+          <div><label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Traffic Split</label><input type="number" step="0.05" min="0" max="1" value={form.traffic_split} onChange={(e) => setForm({...form, traffic_split: Number(e.target.value)})} className="w-full text-sm border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2" /></div>
           <div className="flex items-end"><button type="submit" className="px-4 py-2 text-sm font-medium text-white bg-green-600 rounded-lg hover:bg-green-700">Create</button></div>
         </form>
       )}
@@ -93,7 +93,7 @@ export default function ExperimentsPage() {
                     {exp.is_active && (
                       <button
                         onClick={() => setPendingStopId(exp.id)}
-                        className="text-red-500 hover:text-red-700"
+                        className="text-red-500 dark:text-red-400 hover:text-red-700"
                         aria-label={`Stop experiment ${exp.name}`}
                         title="Stop"
                       >

@@ -34,7 +34,7 @@ export function Modal({ open, onClose, title, children, footer, size = "sm" }: M
 
   return createPortal(
     <div
-      className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4"
+      className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in"
       onClick={onClose}
     >
       <div
@@ -43,10 +43,10 @@ export function Modal({ open, onClose, title, children, footer, size = "sm" }: M
         aria-modal="true"
         aria-labelledby={titleId}
         tabIndex={-1}
-        className={`bg-surface rounded-md border border-border w-full ${SIZE_CLASS[size]} overflow-hidden outline-none`}
+        className={`glass-raised rounded-2xl shadow-glow-lg w-full ${SIZE_CLASS[size]} overflow-hidden outline-none animate-scale-in`}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between px-3 py-2.5 border-b border-border">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-border">
           <span id={titleId} className="font-semibold text-sm text-gray-800 dark:text-gray-100">
             {title}
           </span>

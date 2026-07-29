@@ -108,9 +108,9 @@ function ResultDeliveryCard({
               <div key={s.id} className="flex items-center justify-between gap-3 text-sm border border-gray-100 dark:border-gray-800 rounded-lg px-3 py-2">
                 <div className="flex items-center gap-2 min-w-0">
                   {status === "active" ? (
-                    <CheckCircle2 className="w-4 h-4 text-green-500 shrink-0" />
+                    <CheckCircle2 className="w-4 h-4 text-green-500 dark:text-green-400 shrink-0" />
                   ) : (
-                    <XCircle className="w-4 h-4 text-gray-400 shrink-0" />
+                    <XCircle className="w-4 h-4 text-gray-400 dark:text-gray-500 shrink-0" />
                   )}
                   <span className="font-mono text-xs text-gray-500 dark:text-gray-400 truncate">{s.token}</span>
                   <span className={`text-xs font-medium px-2 py-0.5 rounded-full shrink-0 ${
@@ -134,7 +134,7 @@ function ResultDeliveryCard({
                     <button
                       onClick={() => setPendingRevokeId(s.id)}
                       aria-label="Revoke this share link"
-                      className="p-1 text-gray-400 hover:text-red-600 dark:hover:text-red-400"
+                      className="p-1 text-gray-400 dark:text-gray-500 hover:text-red-600 dark:hover:text-red-400"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
@@ -154,7 +154,7 @@ function ResultDeliveryCard({
               <input readOnly value={newLinkUrl} className="flex-1 text-xs font-mono border border-gray-200 dark:border-gray-700 dark:bg-surface-raised rounded-lg px-2 py-1.5" />
               <button
                 onClick={() => { navigator.clipboard.writeText(newLinkUrl); }}
-                className="p-2 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 border border-gray-200 dark:border-gray-700 rounded-lg"
+                className="p-2 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 border border-gray-200 dark:border-gray-700 rounded-lg"
                 aria-label="Copy link"
               >
                 <Copy className="w-4 h-4" />
@@ -179,7 +179,7 @@ function ResultDeliveryCard({
               />
             </label>
             <div className="flex justify-end gap-2 pt-2">
-              <button onClick={closeCreate} className="px-4 py-2 text-sm font-medium text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-lg transition-colors">
+              <button onClick={closeCreate} className="px-4 py-2 text-sm font-medium text-gray-600 dark:text-gray-400 dark:text-gray-300 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-lg transition-colors">
                 Cancel
               </button>
               <button

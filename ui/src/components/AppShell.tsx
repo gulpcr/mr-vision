@@ -46,10 +46,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <AuthProvider>
-      <div className="flex min-h-screen">
+      <div className="flex h-screen overflow-hidden">
         <Sidebar />
-        <main className="flex-1 bg-gray-50 dark:bg-surface overflow-auto">
-          <div className="max-w-7xl mx-auto px-6 py-6">{children}</div>
+        <main className="flex-1 bg-transparent overflow-y-auto">
+          {/* Keyed by route so each navigation re-triggers the entrance animation,
+              giving the app a consistent sense of "flow" between pages. */}
+          <div key={pathname} className="max-w-[1760px] mx-auto px-6 py-6 animate-fade-up">
+            {children}
+          </div>
         </main>
       </div>
       <NotificationToast />

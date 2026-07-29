@@ -2,31 +2,362 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ──────────────────────────────────────────────────────────────────────────
+   Design tokens. Premium, dark-first palette. Light mode is kept refined and
+   fully functional; dark mode is the marquee look (deep navy canvas, glass
+   surfaces, indigo/cyan accent glow). Token *names* are unchanged from the
+   previous theme so every existing `bg-surface` / `border-border` usage across
+   the app keeps working — only the values were upgraded.
+   ────────────────────────────────────────────────────────────────────────── */
+/* Palette mirrors the Cortex Radiology brand site (cortexradiology.ai):
+   cyan accent (#2DE1E6 / #0894AB), violet secondary (#8B7BFF / #6A4CE0),
+   amber signal (#FFB020), on a deep navy canvas (#070B14). */
 :root {
-  --foreground: #171717;
-  --background: #f8fafc;
-  --surface: 255 255 255;
-  --surface-raised: 249 250 251;
-  --border: 229 231 235;
+  --foreground: #0b1526;      /* Cortex --text (light) */
+  --background: #eef3f9;       /* Cortex --bg (light) */
+  --surface: 255 255 255;      /* Cortex --bg-elev */
+  --surface-raised: 244 248 252; /* Cortex --bg-elev-2 */
+  --border: 209 219 230;
+  /* Accent used by glow/gradient utilities (space-separated RGB for /alpha). */
+  --accent: 8 148 171;         /* Cortex teal #0894AB */
+  --accent-2: 106 76 224;      /* Cortex violet #6A4CE0 */
+  --signal: 184 116 0;         /* Cortex amber #B87400 */
 }
 
 .dark {
-  --foreground: #f1f5f9;
-  --background: #0f172a;
-  --surface: 15 23 42;
-  --surface-raised: 30 41 59;
-  --border: 51 65 85;
+  --foreground: #e9f0f8;       /* Cortex --text */
+  --background: #070b14;        /* Cortex --bg */
+  --surface: 13 20 36;          /* Cortex --bg-elev #0D1424 */
+  --surface-raised: 18 28 49;   /* Cortex --bg-elev-2 #121C31 */
+  --border: 30 46 60;           /* cyan-tinted navy line */
+  --accent: 45 225 230;         /* Cortex cyan #2DE1E6 */
+  --accent-2: 139 123 255;      /* Cortex violet #8B7BFF */
+  --signal: 255 176 32;         /* Cortex amber #FFB020 */
 }
 
 body {
   color: var(--foreground);
   background: var(--background);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Ambient, fixed radial glow behind everything in dark mode — the signature of
+   the "premium dark-first" look. Light mode gets a much softer wash. */
+body {
+  background-image:
+    radial-gradient(900px 480px at 12% -8%, rgba(8, 148, 171, 0.06), transparent 60%),
+    radial-gradient(800px 420px at 100% 0%, rgba(106, 76, 224, 0.05), transparent 55%);
+  background-attachment: fixed;
+  background-repeat: no-repeat;
+}
+
+.dark body {
+  background-image:
+    radial-gradient(1100px 560px at 12% -10%, rgba(45, 225, 230, 0.16), transparent 60%),
+    radial-gradient(950px 520px at 100% -5%, rgba(139, 123, 255, 0.14), transparent 55%),
+    radial-gradient(700px 700px at 85% 110%, rgba(45, 225, 230, 0.08), transparent 60%);
+  background-attachment: fixed;
+  background-repeat: no-repeat;
+}
+
+/* ── Reusable premium surface utilities ──────────────────────────────────── */
+@layer components {
+  /* Frosted glass panel — the default container for the redesigned surfaces. */
+  .glass {
+    background: rgba(255, 255, 255, 0.72);
+    backdrop-filter: blur(14px) saturate(150%);
+    -webkit-backdrop-filter: blur(14px) saturate(150%);
+    border: 1px solid rgba(226, 232, 240, 0.9);
+  }
+  .dark .glass {
+    background: rgba(20, 27, 45, 0.55);
+    backdrop-filter: blur(16px) saturate(140%);
+    -webkit-backdrop-filter: blur(16px) saturate(140%);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+  }
+
+  /* Elevated glass — a touch brighter, used for headers / hero cards. */
+  .glass-raised {
+    background: rgba(255, 255, 255, 0.85);
+    backdrop-filter: blur(16px) saturate(160%);
+    -webkit-backdrop-filter: blur(16px) saturate(160%);
+    border: 1px solid rgba(226, 232, 240, 0.95);
+  }
+  .dark .glass-raised {
+    background: linear-gradient(180deg, rgba(38, 49, 78, 0.65), rgba(20, 27, 45, 0.6));
+    backdrop-filter: blur(18px) saturate(150%);
+    -webkit-backdrop-filter: blur(18px) saturate(150%);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+  }
+
+  /* Soft accent glow shadow (interactive/hero elements). */
+  .glow {
+    box-shadow: 0 10px 40px -14px rgba(8, 148, 171, 0.4);
+  }
+  .dark .glow {
+    box-shadow: 0 0 0 1px rgba(45, 225, 230, 0.14), 0 18px 50px -16px rgba(45, 225, 230, 0.4);
+  }
+  .glow-sm {
+    box-shadow: 0 6px 22px -10px rgba(8, 148, 171, 0.32);
+  }
+  .dark .glow-sm {
+    box-shadow: 0 0 0 1px rgba(45, 225, 230, 0.12), 0 10px 30px -12px rgba(45, 225, 230, 0.32);
+  }
+
+  /* Gradient accent text (headings, brand). */
+  .text-gradient {
+    background: linear-gradient(120deg, rgb(var(--accent)), rgb(var(--accent-2)));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  /* Primary CTA button — Cortex cyan→teal with dark ink (matches the brand
+     site's solid-cyan primary button, kept as a subtle gradient for depth). */
+  .btn-gradient {
+    position: relative;
+    overflow: hidden;
+    background-image: linear-gradient(120deg, #0894ab, #2de1e6);
+    color: #04121a;
+    box-shadow: 0 8px 24px -10px rgba(45, 225, 230, 0.55);
+    transition: filter 160ms ease, transform 160ms ease, box-shadow 160ms ease;
+  }
+  /* Light sheen that sweeps across on hover. */
+  .btn-gradient::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(115deg, transparent 20%, rgba(255, 255, 255, 0.45) 50%, transparent 80%);
+    transform: translateX(-120%);
+    transition: transform 620ms cubic-bezier(0.22, 1, 0.36, 1);
+    pointer-events: none;
+  }
+  .btn-gradient:hover {
+    filter: brightness(1.08);
+    transform: translateY(-1px);
+    box-shadow: 0 14px 34px -10px rgba(45, 225, 230, 0.75);
+  }
+  .btn-gradient:hover::after {
+    transform: translateX(120%);
+  }
+  .btn-gradient:active {
+    transform: translateY(1px) scale(0.99);
+  }
+  .btn-gradient:disabled {
+    opacity: 0.55;
+    filter: none;
+    box-shadow: none;
+  }
+
+  /* Thin gradient top-accent for cards. */
+  .accent-top {
+    position: relative;
+    overflow: hidden;
+  }
+  .accent-top::before {
+    content: "";
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, rgb(var(--accent) / 0.8), transparent);
+    opacity: 0.7;
+  }
+}
+
+/* Dark-mode form controls. Many inputs/selects/textareas across the app carry
+   no explicit background class and would otherwise render with the browser's
+   default white fill on the dark canvas. This low-specificity base fixes them
+   globally; any element with an explicit Tailwind `dark:bg-*` / `dark:text-*`
+   still wins (higher specificity), so intentionally-styled controls are safe. */
+.dark input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+.dark select,
+.dark textarea {
+  background-color: rgb(var(--surface-raised));
+  color: var(--foreground);
+  border-color: rgb(var(--border));
+}
+.dark select option {
+  background-color: rgb(var(--surface-raised));
+  color: var(--foreground);
+}
+.dark select optgroup {
+  background-color: rgb(var(--surface));
+  color: rgb(var(--accent));
+  font-weight: 600;
+}
+.dark input::placeholder,
+.dark textarea::placeholder {
+  color: rgb(var(--border) / 1);
+  opacity: 0.9;
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Motion & interaction system. A small, cohesive vocabulary of entrance
+   animations and interaction affordances used across the app so every surface
+   moves with the same rhythm. All effects are CSS-only (no JS, no deps) and are
+   fully disabled under `prefers-reduced-motion` at the bottom of this block.
+   Easing: cubic-bezier(0.22, 1, 0.36, 1) — a soft "out-expo" that feels premium.
+   ────────────────────────────────────────────────────────────────────────── */
+html {
+  scroll-behavior: smooth;
+}
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(14px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes scale-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes float-y {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-6px); }
+}
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(45, 225, 230, 0.0); }
+  50%      { box-shadow: 0 0 0 4px rgba(45, 225, 230, 0.12); }
+}
+@keyframes shimmer {
+  100% { transform: translateX(100%); }
+}
+@keyframes grad-shift {
+  0%, 100% { background-position: 0% 50%; }
+  50%      { background-position: 100% 50%; }
+}
+
+@layer components {
+  /* Entrance animations. fill-mode is `backwards` (not `both`) on purpose: it
+     applies the start keyframe during the delay (no flash) but reverts to the
+     element's base style once finished — so a persisted animation transform
+     never blocks a subsequent `:hover` transform (hover-lift, nav slide, etc.). */
+  .animate-fade-up  { animation: fade-up 520ms cubic-bezier(0.22, 1, 0.36, 1) backwards; }
+  .animate-fade-in  { animation: fade-in 480ms ease backwards; }
+  .animate-scale-in { animation: scale-in 260ms cubic-bezier(0.22, 1, 0.36, 1) backwards; }
+
+  /* Staggered children — direct children fade-up in sequence. Cap at 12 so a
+     long list doesn't accumulate a visible lag. */
+  .stagger > * { animation: fade-up 520ms cubic-bezier(0.22, 1, 0.36, 1) backwards; }
+  .stagger > *:nth-child(1)  { animation-delay: 40ms; }
+  .stagger > *:nth-child(2)  { animation-delay: 90ms; }
+  .stagger > *:nth-child(3)  { animation-delay: 140ms; }
+  .stagger > *:nth-child(4)  { animation-delay: 190ms; }
+  .stagger > *:nth-child(5)  { animation-delay: 240ms; }
+  .stagger > *:nth-child(6)  { animation-delay: 290ms; }
+  .stagger > *:nth-child(7)  { animation-delay: 340ms; }
+  .stagger > *:nth-child(8)  { animation-delay: 390ms; }
+  .stagger > *:nth-child(9)  { animation-delay: 440ms; }
+  .stagger > *:nth-child(10) { animation-delay: 490ms; }
+  .stagger > *:nth-child(n+11) { animation-delay: 540ms; }
+
+  /* Interactive lift — cards/tiles rise and glow on hover. */
+  .hover-lift {
+    transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1),
+                box-shadow 220ms cubic-bezier(0.22, 1, 0.36, 1),
+                border-color 220ms ease;
+    will-change: transform;
+  }
+  .hover-lift:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 18px 44px -18px rgba(45, 225, 230, 0.45);
+  }
+
+  /* Press feedback for any clickable. */
+  .press { transition: transform 120ms ease; }
+  .press:active { transform: scale(0.97); }
+
+  /* Animated gradient underline for text links. */
+  .link-underline {
+    position: relative;
+  }
+  .link-underline::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    bottom: -2px;
+    height: 2px;
+    width: 100%;
+    background: linear-gradient(90deg, rgb(var(--accent)), rgb(var(--accent-2)));
+    transform: scaleX(0);
+    transform-origin: left;
+    transition: transform 260ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .link-underline:hover::after { transform: scaleX(1); }
+
+  /* Skeleton shimmer sweep. */
+  .shimmer {
+    position: relative;
+    overflow: hidden;
+  }
+  .shimmer::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background: linear-gradient(90deg, transparent, rgb(var(--accent) / 0.12), transparent);
+    animation: shimmer 1.6s infinite;
+  }
+
+  /* Slow-drifting gradient (hero/brand text accents). */
+  .text-gradient-anim {
+    background: linear-gradient(120deg, rgb(var(--accent)), rgb(var(--accent-2)), rgb(var(--accent)));
+    background-size: 200% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    animation: grad-shift 6s ease infinite;
+  }
+
+  .float { animation: float-y 5s ease-in-out infinite; }
+}
+
+/* Accent focus ring for keyboard users across all interactive elements. */
+:focus-visible {
+  outline: 2px solid rgb(var(--accent));
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Respect user motion preferences — kill all of the above for those who ask. */
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 /* Sidebar */
 .sidebar-transition {
   transition: width 200ms ease-in-out;
+}
+
+/* Custom scrollbar — tuned for the dark canvas. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(var(--border)) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: rgb(var(--border));
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: rgb(var(--accent) / 0.6);
+  background-clip: content-box;
 }
 
 /* Medical Report Print Styles */
@@ -41,7 +372,7 @@ body {
   .report-footer { border-top: 1px solid #ccc; page-break-inside: avoid; }
 }
 
-/* Report Styles */
+/* Report Styles — intentionally paper-white in both themes (printed output). */
 .report-container {
   @apply bg-white rounded-lg shadow-sm border border-gray-200;
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 
 const FOCUSABLE_SELECTOR =
   'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -15,6 +15,13 @@ export function useFocusTrap(
   active: boolean,
   onEscape: () => void
 ): void {
+  // Hold the latest onEscape in a ref so its (typically inline, unstable)
+  // identity does NOT re-trigger the effect. Without this, a parent that
+  // re-renders on every keystroke (e.g. a form modal) would re-run the effect
+  // and yank focus back to the first field on each character typed.
+  const onEscapeRef = useRef(onEscape);
+  onEscapeRef.current = onEscape;
+
   useEffect(() => {
     if (!active) return;
     const container = containerRef.current;
@@ -31,7 +38,7 @@ export function useFocusTrap(
     function onKeyDown(e: KeyboardEvent) {
       if (e.key === "Escape") {
         e.stopPropagation();
-        onEscape();
+        onEscapeRef.current();
         return;
       }
       if (e.key !== "Tab") return;
@@ -53,5 +60,5 @@ export function useFocusTrap(
       document.removeEventListener("keydown", onKeyDown, true);
       previouslyFocused?.focus?.();
     };
-  }, [active, containerRef, onEscape]);
+  }, [active, containerRef]);
 }

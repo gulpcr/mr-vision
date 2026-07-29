@@ -6,14 +6,16 @@ import { CheckCircle2, AlertTriangle, UserPlus, Search, X, Pencil } from "lucide
 
 const SEX = ["female", "male", "other"];
 const AGE_BANDS = ["0-17", "18-39", "40-64", "65+"];
-// Study / modality types selectable at intake. The first group mirrors the active
-// use-case plugins; the rest are general acquisition types.
-const MODALITIES = [
-  "Abdomen CT", "Brain CT", "Face CT", "Neck CT", "Chest CT", "Lumbar Spine CT", "Lower Limb CT",
-  "Abdomen MRI", "Brain MRI", "Chest MRI", "Coronary CTA",
-  "PET-CT", "PET-CT Brain", "Spine MRI",
-  "Bilateral Mammogram", "Right Mammogram", "Left Mammogram",
-  "CT Contrast", "CT Plain", "MRI Contrast", "MRI Plain",
+// Study / modality types selectable at intake, grouped by category so the (long)
+// list stays scannable and the dropdown reads clearly. Option *values* are
+// unchanged from the previous flat list — the backend/order payload is unaffected.
+const MODALITY_GROUPS: { label: string; items: string[] }[] = [
+  { label: "CT", items: ["Abdomen CT", "Brain CT", "Face CT", "Neck CT", "Chest CT", "Lumbar Spine CT", "Lower Limb CT"] },
+  { label: "MRI", items: ["Abdomen MRI", "Brain MRI", "Chest MRI", "Spine MRI"] },
+  { label: "PET / CT", items: ["PET-CT", "PET-CT Brain"] },
+  { label: "Cardiac", items: ["Coronary CTA"] },
+  { label: "Mammography", items: ["Bilateral Mammogram", "Right Mammogram", "Left Mammogram"] },
+  { label: "General", items: ["CT Contrast", "CT Plain", "MRI Contrast", "MRI Plain"] },
 ];
 const PRIORITIES = ["routine", "stat"];
 const REGION_PROFILES = ["PK-diagnostic-assist", "AU-decision-support"];
@@ -155,8 +157,8 @@ export default function OnboardingPage() {
     }
   };
 
-  const inputCls = "w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500";
-  const labelCls = "block text-xs font-medium text-gray-600 mb-1";
+  const inputCls = "w-full px-3 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500";
+  const labelCls = "block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1";
 
   return (
     <div>
@@ -171,15 +173,15 @@ export default function OnboardingPage() {
       </div>
 
       {success && (
-        <div className="flex items-center gap-3 bg-green-50 dark:bg-green-950 border border-green-200 rounded-xl px-4 py-3 mb-3">
-          <CheckCircle2 className="w-4 h-4 text-green-500 shrink-0" />
+        <div className="flex items-center gap-3 bg-green-50 dark:bg-green-950 border border-green-200 dark:border-green-800 rounded-xl px-4 py-3 mb-3">
+          <CheckCircle2 className="w-4 h-4 text-green-500 dark:text-green-400 shrink-0" />
           <p className="text-sm text-green-800 flex-1">{success}</p>
           <button onClick={() => setSuccess(null)} className="text-green-400 hover:text-green-600 dark:hover:text-green-400"><X className="w-4 h-4" /></button>
         </div>
       )}
       {error && (
-        <div className="flex items-start gap-3 bg-red-50 dark:bg-red-950 border border-red-200 rounded-xl px-4 py-3 mb-3">
-          <AlertTriangle className="w-4 h-4 text-red-500 mt-0.5 shrink-0" />
+        <div className="flex items-start gap-3 bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-800 rounded-xl px-4 py-3 mb-3">
+          <AlertTriangle className="w-4 h-4 text-red-500 dark:text-red-400 mt-0.5 shrink-0" />
           <p className="text-sm text-red-700 dark:text-red-300 flex-1">{error}</p>
           <button onClick={() => setError(null)} className="text-red-400 hover:text-red-600 dark:hover:text-red-400"><X className="w-4 h-4" /></button>
         </div>
@@ -189,7 +191,7 @@ export default function OnboardingPage() {
         {/* Intake form */}
         <form onSubmit={submit} className="lg:col-span-2 bg-white dark:bg-surface rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-5 space-y-4">
           {editPatientId && (
-            <div className="flex items-center justify-between bg-blue-50 dark:bg-blue-950 border border-blue-200 rounded-lg px-3 py-2">
+            <div className="flex items-center justify-between bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg px-3 py-2">
               <span className="text-xs text-blue-700 dark:text-blue-300">Editing <b>{form.patient_ref}</b></span>
               <button type="button" onClick={resetForm} className="text-xs font-medium text-blue-600 dark:text-blue-400 hover:underline">
                 + New patient
@@ -222,7 +224,11 @@ export default function OnboardingPage() {
               <label className={labelCls}>Modality *</label>
               <select className={inputCls} value={form.modality} onChange={(e) => set("modality", e.target.value)} required>
                 <option value="">Select…</option>
-                {MODALITIES.map((m) => <option key={m} value={m}>{m}</option>)}
+                {MODALITY_GROUPS.map((g) => (
+                  <optgroup key={g.label} label={g.label}>
+                    {g.items.map((m) => <option key={m} value={m}>{m}</option>)}
+                  </optgroup>
+                ))}
               </select>
             </div>
             <div>

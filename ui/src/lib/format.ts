@@ -51,22 +51,29 @@ export function setFormatLocale(locale: string): void {
 }
 
 export function formatDate(dateStr: string | null | undefined): string {
-  if (!dateStr) return "-";
+  if (!dateStr) return "—";
   try {
-    return parseUtcDate(dateStr).toLocaleDateString(activeLocale, {
+    const d = parseUtcDate(dateStr);
+    // toLocaleDateString does not throw on an unparseable date — it returns the
+    // string "Invalid Date". Guard against that so malformed/blank DICOM dates
+    // render as a clean dash rather than leaking "Invalid Date" to the UI.
+    if (isNaN(d.getTime())) return "—";
+    return d.toLocaleDateString(activeLocale, {
       year: "numeric",
       month: "short",
       day: "numeric",
     });
   } catch {
-    return dateStr;
+    return "—";
   }
 }
 
 export function formatDateTime(dateStr: string | null | undefined): string {
-  if (!dateStr) return "-";
+  if (!dateStr) return "—";
   try {
-    return parseUtcDate(dateStr).toLocaleString(activeLocale, {
+    const d = parseUtcDate(dateStr);
+    if (isNaN(d.getTime())) return "—";
+    return d.toLocaleString(activeLocale, {
       year: "numeric",
       month: "short",
       day: "numeric",
@@ -74,7 +81,7 @@ export function formatDateTime(dateStr: string | null | undefined): string {
       minute: "2-digit",
     });
   } catch {
-    return dateStr;
+    return "—";
   }
 }
 

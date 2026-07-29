@@ -42,7 +42,7 @@ function severityBg(severity: string) {
 }
 
 function DeltaIcon({ change, severity }: { change: number; severity: string }) {
-  if (Math.abs(change) < 0.001) return <Minus className="w-3.5 h-3.5 text-gray-400" />;
+  if (Math.abs(change) < 0.001) return <Minus className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500" />;
   const cls = clsx("w-3.5 h-3.5", severityColor(severity));
   return change > 0 ? <TrendingUp className={cls} /> : <TrendingDown className={cls} />;
 }
@@ -61,25 +61,25 @@ function PreviewPair({
   return (
     <div className="flex gap-2">
       <div className="flex-1">
-        <p className="text-xs text-center text-gray-500 mb-1 capitalize">{view} A</p>
+        <p className="text-xs text-center text-gray-500 dark:text-gray-400 mb-1 capitalize">{view} A</p>
         <AuthImg
           src={getPreviewUrl(uidA, usecase, view)}
           alt={`${view} A`}
-          className="w-full h-80 object-contain rounded border border-gray-200 bg-black"
+          className="w-full h-80 object-contain rounded border border-gray-200 dark:border-gray-700 bg-black"
           fallback="Not available"
-          loadingClassName="w-full h-80 bg-gray-900 rounded border border-gray-200 animate-pulse motion-reduce:animate-none"
-          errorClassName="w-full h-80 flex items-center justify-center text-xs text-gray-400 bg-black rounded border border-gray-200"
+          loadingClassName="w-full h-80 bg-gray-900 rounded border border-gray-200 dark:border-gray-700 animate-pulse motion-reduce:animate-none"
+          errorClassName="w-full h-80 flex items-center justify-center text-xs text-gray-400 dark:text-gray-500 bg-black rounded border border-gray-200 dark:border-gray-700"
         />
       </div>
       <div className="flex-1">
-        <p className="text-xs text-center text-gray-500 mb-1 capitalize">{view} B</p>
+        <p className="text-xs text-center text-gray-500 dark:text-gray-400 mb-1 capitalize">{view} B</p>
         <AuthImg
           src={getPreviewUrl(uidB, usecase, view)}
           alt={`${view} B`}
-          className="w-full h-80 object-contain rounded border border-gray-200 bg-black"
+          className="w-full h-80 object-contain rounded border border-gray-200 dark:border-gray-700 bg-black"
           fallback="Not available"
-          loadingClassName="w-full h-80 bg-gray-900 rounded border border-gray-200 animate-pulse motion-reduce:animate-none"
-          errorClassName="w-full h-80 flex items-center justify-center text-xs text-gray-400 bg-black rounded border border-gray-200"
+          loadingClassName="w-full h-80 bg-gray-900 rounded border border-gray-200 dark:border-gray-700 animate-pulse motion-reduce:animate-none"
+          errorClassName="w-full h-80 flex items-center justify-center text-xs text-gray-400 dark:text-gray-500 bg-black rounded border border-gray-200 dark:border-gray-700"
         />
       </div>
     </div>
@@ -109,16 +109,16 @@ export function ComparePanel({ data, labelA = "Study A", labelB = "Study B" }: P
   return (
     <div className="space-y-5">
       {/* Summary bar */}
-      <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-4 flex flex-wrap gap-6 items-center">
+      <div className="bg-white dark:bg-surface rounded-lg border border-gray-200 dark:border-gray-700 shadow-sm p-4 flex flex-wrap gap-6 items-center">
         <div>
-          <p className="text-xs text-gray-500 uppercase tracking-wider">Use Case</p>
-          <p className="font-semibold text-gray-900 mt-0.5">
+          <p className="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">Use Case</p>
+          <p className="font-semibold text-gray-900 dark:text-gray-100 mt-0.5">
             {usecase_name.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
           </p>
         </div>
         {delta.days_between !== null && (
-          <div className="flex items-center gap-1.5 text-sm text-gray-600">
-            <Calendar className="w-4 h-4 text-gray-400" />
+          <div className="flex items-center gap-1.5 text-sm text-gray-600 dark:text-gray-400">
+            <Calendar className="w-4 h-4 text-gray-400 dark:text-gray-500" />
             {delta.days_between === 0
               ? "Same day"
               : `${delta.days_between} day${delta.days_between !== 1 ? "s" : ""} apart`}
@@ -164,13 +164,13 @@ export function ComparePanel({ data, labelA = "Study A", labelB = "Study B" }: P
         ].map(({ label, result }) => (
           <div
             key={result.id}
-            className="bg-white rounded-lg border border-gray-200 shadow-sm p-4"
+            className="bg-white dark:bg-surface rounded-lg border border-gray-200 dark:border-gray-700 shadow-sm p-4"
           >
-            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">
+            <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">
               {label}
             </p>
-            <p className="text-sm font-medium text-gray-900">{result.model_version}</p>
-            <p className="text-xs text-gray-500 mt-0.5">
+            <p className="text-sm font-medium text-gray-900 dark:text-gray-100">{result.model_version}</p>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
               {formatDateTime(result.created_at)}
               {result.version ? ` · v${result.version}` : ""}
             </p>
@@ -179,7 +179,7 @@ export function ComparePanel({ data, labelA = "Study A", labelB = "Study B" }: P
                 {result.qa_flags.map((f) => (
                   <span
                     key={f}
-                    className="px-1.5 py-0.5 rounded bg-yellow-50 text-yellow-700 text-xs"
+                    className="px-1.5 py-0.5 rounded bg-yellow-50 dark:bg-yellow-950 text-yellow-700 dark:text-yellow-300 text-xs"
                   >
                     {f.replace(/_/g, " ")}
                   </span>
@@ -192,41 +192,41 @@ export function ComparePanel({ data, labelA = "Study A", labelB = "Study B" }: P
 
       {/* Measurement delta table */}
       {measurementEntries.length > 0 && (
-        <div className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden">
-          <div className="px-5 py-3 border-b border-gray-100">
-            <h3 className="text-sm font-semibold text-gray-700">Measurement Comparison</h3>
+        <div className="bg-white dark:bg-surface rounded-lg border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden">
+          <div className="px-5 py-3 border-b border-gray-100 dark:border-gray-800">
+            <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300">Measurement Comparison</h3>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-gray-100 bg-gray-50">
-                  <th className="text-left px-5 py-2.5 text-xs font-semibold text-gray-500 uppercase">
+                <tr className="border-b border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-800">
+                  <th className="text-left px-5 py-2.5 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">
                     Metric
                   </th>
-                  <th className="text-right px-4 py-2.5 text-xs font-semibold text-gray-500 uppercase">
+                  <th className="text-right px-4 py-2.5 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">
                     {labelA}
                   </th>
-                  <th className="text-right px-4 py-2.5 text-xs font-semibold text-gray-500 uppercase">
+                  <th className="text-right px-4 py-2.5 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">
                     {labelB}
                   </th>
-                  <th className="text-right px-5 py-2.5 text-xs font-semibold text-gray-500 uppercase">
+                  <th className="text-right px-5 py-2.5 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">
                     Change
                   </th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-gray-50">
+              <tbody className="divide-y divide-gray-50 dark:divide-gray-800">
                 {measurementEntries.map(([key, d]) => (
                   <tr
                     key={key}
                     className={clsx("transition-colors", severityBg(d.severity))}
                   >
-                    <td className="px-5 py-3 font-medium text-gray-800">
+                    <td className="px-5 py-3 font-medium text-gray-800 dark:text-gray-200">
                       {formatKey(key)}
                     </td>
-                    <td className="px-4 py-3 text-right text-gray-600 tabular-nums">
+                    <td className="px-4 py-3 text-right text-gray-600 dark:text-gray-400 tabular-nums">
                       {formatNum(d.a)}
                     </td>
-                    <td className="px-4 py-3 text-right text-gray-900 font-medium tabular-nums">
+                    <td className="px-4 py-3 text-right text-gray-900 dark:text-gray-100 font-medium tabular-nums">
                       {formatNum(d.b)}
                     </td>
                     <td className="px-5 py-3 text-right">
@@ -257,7 +257,7 @@ export function ComparePanel({ data, labelA = "Study A", labelB = "Study B" }: P
               </tbody>
             </table>
           </div>
-          <div className="px-5 py-2 border-t border-gray-100 bg-gray-50 flex gap-4 text-xs text-gray-500">
+          <div className="px-5 py-2 border-t border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-800 flex gap-4 text-xs text-gray-500 dark:text-gray-400">
             <span className="flex items-center gap-1">
               <span className="w-2 h-2 rounded-full bg-green-400 inline-block" /> &lt;10% change
             </span>
@@ -273,17 +273,17 @@ export function ComparePanel({ data, labelA = "Study A", labelB = "Study B" }: P
 
       {/* QA flag diff */}
       {(delta.qa_flags_new.length > 0 || delta.qa_flags_resolved.length > 0) && (
-        <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-4">
-          <h3 className="text-sm font-semibold text-gray-700 mb-3">QA Flag Changes</h3>
+        <div className="bg-white dark:bg-surface rounded-lg border border-gray-200 dark:border-gray-700 shadow-sm p-4">
+          <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">QA Flag Changes</h3>
           <div className="flex flex-wrap gap-4">
             {delta.qa_flags_new.length > 0 && (
               <div>
-                <p className="text-xs text-red-600 font-medium mb-1.5">New flags in {labelB}</p>
+                <p className="text-xs text-red-600 dark:text-red-400 font-medium mb-1.5">New flags in {labelB}</p>
                 <div className="flex flex-wrap gap-1.5">
                   {delta.qa_flags_new.map((f) => (
                     <span
                       key={f}
-                      className="px-2 py-0.5 rounded-full bg-red-50 text-red-700 text-xs border border-red-100"
+                      className="px-2 py-0.5 rounded-full bg-red-50 dark:bg-red-950 text-red-700 dark:text-red-300 text-xs border border-red-100 dark:border-red-900"
                     >
                       + {f.replace(/_/g, " ")}
                     </span>
@@ -293,12 +293,12 @@ export function ComparePanel({ data, labelA = "Study A", labelB = "Study B" }: P
             )}
             {delta.qa_flags_resolved.length > 0 && (
               <div>
-                <p className="text-xs text-green-600 font-medium mb-1.5">Resolved in {labelB}</p>
+                <p className="text-xs text-green-600 dark:text-green-400 font-medium mb-1.5">Resolved in {labelB}</p>
                 <div className="flex flex-wrap gap-1.5">
                   {delta.qa_flags_resolved.map((f) => (
                     <span
                       key={f}
-                      className="px-2 py-0.5 rounded-full bg-green-50 text-green-700 text-xs border border-green-100"
+                      className="px-2 py-0.5 rounded-full bg-green-50 dark:bg-green-950 text-green-700 dark:text-green-300 text-xs border border-green-100 dark:border-green-900"
                     >
                       ✓ {f.replace(/_/g, " ")}
                     </span>
@@ -311,9 +311,9 @@ export function ComparePanel({ data, labelA = "Study A", labelB = "Study B" }: P
       )}
 
       {/* Preview images */}
-      <div className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden">
-        <div className="px-5 py-3 border-b border-gray-100 flex items-center gap-3">
-          <h3 className="text-sm font-semibold text-gray-700">Segmentation Overlays</h3>
+      <div className="bg-white dark:bg-surface rounded-lg border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden">
+        <div className="px-5 py-3 border-b border-gray-100 dark:border-gray-800 flex items-center gap-3">
+          <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300">Segmentation Overlays</h3>
           <div className="flex gap-1 ml-auto">
             {(["axial", "coronal", "sagittal"] as const).map((v) => (
               <button
@@ -323,7 +323,7 @@ export function ComparePanel({ data, labelA = "Study A", labelB = "Study B" }: P
                   "px-3 py-1 rounded text-xs font-medium transition-colors",
                   activeView === v
                     ? "bg-primary-600 text-white"
-                    : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                    : "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700"
                 )}
               >
                 {v.charAt(0).toUpperCase() + v.slice(1)}

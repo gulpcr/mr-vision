@@ -117,6 +117,29 @@ class Settings(BaseSettings):
     worklist_scp_host: str = ""
     worklist_scp_port: int = 2575
 
+    # HL7 v2 messaging (F21)
+    # Inbound ADT (patient demographics) + ORM/OMG (imaging orders) received over
+    # MLLP by a standalone listener process (app.hl7_listener), and outbound ORU
+    # (results) sent back to the RIS/EHR. Fully gated: nothing runs unless enabled.
+    # NB: MLLP defaults to 2576 because worklist_scp_port already claims 2575.
+    hl7_enabled: bool = False
+    hl7_mllp_host: str = "0.0.0.0"
+    hl7_mllp_port: int = 2576
+    hl7_sending_application: str = "MRCV"
+    hl7_sending_facility: str = "MRCV_AI"
+    hl7_accept_version: str = "2.5.1"
+    hl7_default_tenant: str = "default"
+    # Store raw inbound message text at rest. When False (default), only a sha256
+    # hash + de-identified parsed fields are persisted (PHI minimisation); set True
+    # only where a signed retention policy permits raw HL7 with PHI on disk.
+    hl7_store_raw_messages: bool = False
+    # Outbound ORU (results → RIS/EHR). Sent from the post-result Celery hook.
+    hl7_outbound_enabled: bool = False
+    hl7_outbound_host: str = ""
+    hl7_outbound_port: int = 0
+    hl7_outbound_timeout_s: int = 30
+    hl7_outbound_max_retries: int = 3
+
     # Alerting (F14)
     alerting_enabled: bool = False
     alerting_default_webhook_url: str = ""

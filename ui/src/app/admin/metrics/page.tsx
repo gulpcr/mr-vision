@@ -32,15 +32,15 @@ function MetricCard({
   sub?: string;
 }) {
   return (
-    <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
+    <div className="bg-white dark:bg-surface rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-5">
       <div className="flex items-start justify-between">
         <div>
-          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">{label}</p>
-          <p className="text-2xl font-bold text-gray-900 mt-1">
+          <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">{label}</p>
+          <p className="text-2xl font-bold text-gray-900 dark:text-gray-100 mt-1">
             {value}
-            {unit && <span className="text-base font-medium text-gray-400 ml-1">{unit}</span>}
+            {unit && <span className="text-base font-medium text-gray-400 dark:text-gray-500 ml-1">{unit}</span>}
           </p>
-          {sub && <p className="text-xs text-gray-500 mt-1">{sub}</p>}
+          {sub && <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">{sub}</p>}
         </div>
         <div className={`p-2.5 rounded-lg ${color}`}>
           <Icon className="w-5 h-5" />
@@ -56,11 +56,11 @@ function ProgressBar({ value, max, color = "bg-blue-500", label }: {
   const pct = max > 0 ? Math.min(100, (value / max) * 100) : 0;
   return (
     <div className="flex items-center gap-3">
-      {label && <span className="text-xs text-gray-600 w-28 truncate shrink-0">{label}</span>}
-      <div className="flex-1 bg-gray-100 rounded-full h-2">
+      {label && <span className="text-xs text-gray-600 dark:text-gray-400 w-28 truncate shrink-0">{label}</span>}
+      <div className="flex-1 bg-gray-100 dark:bg-gray-800 rounded-full h-2">
         <div className={`${color} h-2 rounded-full transition-all`} style={{ width: `${pct}%` }} />
       </div>
-      <span className="text-xs font-medium text-gray-700 w-10 text-right shrink-0">{value.toFixed(1)}</span>
+      <span className="text-xs font-medium text-gray-700 dark:text-gray-300 w-10 text-right shrink-0">{value.toFixed(1)}</span>
     </div>
   );
 }
@@ -103,13 +103,13 @@ export default function QaDashboardPage() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">QA Dashboard</h1>
-          <p className="text-sm text-gray-500 mt-0.5">Radiologist agreement rates, turnaround times, and audit metrics</p>
+          <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">Radiologist agreement rates, turnaround times, and audit metrics</p>
         </div>
         <div className="flex items-center gap-3">
           <select
             value={usecase}
             onChange={(e) => setUsecase(e.target.value)}
-            className="text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500"
+            className="text-sm border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500"
           >
             <option value="">All Use Cases</option>
             {Object.entries(USECASE_LABELS).map(([k, v]) => (
@@ -119,7 +119,7 @@ export default function QaDashboardPage() {
           <select
             value={days}
             onChange={(e) => setDays(Number(e.target.value))}
-            className="text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500"
+            className="text-sm border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500"
           >
             <option value={7}>Last 7 days</option>
             <option value={30}>Last 30 days</option>
@@ -128,7 +128,7 @@ export default function QaDashboardPage() {
           <button
             onClick={load}
             disabled={loading}
-            className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-gray-700 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50"
+            className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 border border-gray-200 dark:border-gray-700 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors disabled:opacity-50"
           >
             <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin motion-reduce:animate-none" : ""}`} />
             Refresh
@@ -141,9 +141,9 @@ export default function QaDashboardPage() {
       {loading && !metrics ? (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           {[...Array(4)].map((_, i) => (
-            <div key={i} className="bg-white rounded-xl border border-gray-200 p-5 animate-pulse motion-reduce:animate-none">
-              <div className="h-4 bg-gray-100 rounded w-20 mb-3" />
-              <div className="h-8 bg-gray-100 rounded w-16" />
+            <div key={i} className="bg-white dark:bg-surface rounded-xl border border-gray-200 dark:border-gray-700 p-5 animate-pulse motion-reduce:animate-none">
+              <div className="h-4 bg-gray-100 dark:bg-gray-800 rounded w-20 mb-3" />
+              <div className="h-8 bg-gray-100 dark:bg-gray-800 rounded w-16" />
             </div>
           ))}
         </div>
@@ -156,7 +156,7 @@ export default function QaDashboardPage() {
               value={metrics.tat_median_minutes.toFixed(1)}
               unit="min"
               icon={Clock}
-              color="bg-blue-100 text-blue-600"
+              color="bg-blue-100 dark:bg-blue-900 text-blue-600 dark:text-blue-400"
               sub="Median turnaround time"
             />
             <MetricCard
@@ -164,7 +164,7 @@ export default function QaDashboardPage() {
               value={metrics.tat_p95_minutes.toFixed(1)}
               unit="min"
               icon={TrendingUp}
-              color="bg-purple-100 text-purple-600"
+              color="bg-purple-100 dark:bg-purple-900 text-purple-600 dark:text-purple-400"
               sub="95th percentile"
             />
             <MetricCard
@@ -172,7 +172,7 @@ export default function QaDashboardPage() {
               value={metrics.correction_rate_pct.toFixed(1)}
               unit="%"
               icon={metrics.correction_rate_pct > 10 ? TrendingUp : TrendingDown}
-              color={metrics.correction_rate_pct > 10 ? "bg-red-100 text-red-500" : "bg-green-100 text-green-600"}
+              color={metrics.correction_rate_pct > 10 ? "bg-red-100 dark:bg-red-900 text-red-500 dark:text-red-400" : "bg-green-100 dark:bg-green-900 text-green-600 dark:text-green-400"}
               sub="Radiologist corrections"
             />
             <MetricCard
@@ -180,16 +180,16 @@ export default function QaDashboardPage() {
               value={metrics.qa_flag_rate_pct.toFixed(1)}
               unit="%"
               icon={AlertTriangle}
-              color={metrics.qa_flag_rate_pct > 15 ? "bg-amber-100 text-amber-600" : "bg-green-100 text-green-600"}
+              color={metrics.qa_flag_rate_pct > 15 ? "bg-amber-100 dark:bg-amber-900 text-amber-600 dark:text-amber-400" : "bg-green-100 dark:bg-green-900 text-green-600 dark:text-green-400"}
               sub="Studies with QA flags"
             />
           </div>
 
           {/* Throughput + Queue */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div className="md:col-span-2 bg-white rounded-xl shadow-sm border border-gray-200 p-5">
-              <h2 className="text-sm font-semibold text-gray-900 mb-4 flex items-center gap-2">
-                <Clock className="w-4 h-4 text-blue-500" />
+            <div className="md:col-span-2 bg-white dark:bg-surface rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-5">
+              <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-4 flex items-center gap-2">
+                <Clock className="w-4 h-4 text-blue-500 dark:text-blue-400" />
                 Turnaround Time Breakdown
               </h2>
               <div className="space-y-4">
@@ -213,7 +213,7 @@ export default function QaDashboardPage() {
                 />
               </div>
               <div className="mt-6">
-                <h3 className="text-xs font-semibold text-gray-500 uppercase mb-3">Median TAT by Use Case (min)</h3>
+                <h3 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase mb-3">Median TAT by Use Case (min)</h3>
                 <div className="space-y-3">
                   {Object.entries(metrics.tat_by_usecase).map(([uc, tat]) => (
                     <ProgressBar
@@ -225,20 +225,20 @@ export default function QaDashboardPage() {
                     />
                   ))}
                   {Object.keys(metrics.tat_by_usecase).length === 0 && (
-                    <p className="text-sm text-gray-400">No data for selected period</p>
+                    <p className="text-sm text-gray-400 dark:text-gray-500">No data for selected period</p>
                   )}
                 </div>
               </div>
             </div>
 
-            <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
-              <h2 className="text-sm font-semibold text-gray-900 mb-4 flex items-center gap-2">
-                <BarChart3 className="w-4 h-4 text-purple-500" />
+            <div className="bg-white dark:bg-surface rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-5">
+              <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-4 flex items-center gap-2">
+                <BarChart3 className="w-4 h-4 text-purple-500 dark:text-purple-400" />
                 Review Queue
               </h2>
               <div className="space-y-3">
                 {Object.entries(metrics.review_queue_stats).map(([status, count]) => (
-                  <div key={status} className="flex items-center justify-between py-2 border-b border-gray-50">
+                  <div key={status} className="flex items-center justify-between py-2 border-b border-gray-50 dark:border-gray-800">
                     <div className="flex items-center gap-2">
                       <span
                         className={`w-2 h-2 rounded-full ${
@@ -247,24 +247,24 @@ export default function QaDashboardPage() {
                           status === "corrected" ? "bg-red-400" : "bg-gray-300"
                         }`}
                       />
-                      <span className="text-sm text-gray-700 capitalize">{status}</span>
+                      <span className="text-sm text-gray-700 dark:text-gray-300 capitalize">{status}</span>
                     </div>
-                    <span className="text-sm font-bold text-gray-900">{count}</span>
+                    <span className="text-sm font-bold text-gray-900 dark:text-gray-100">{count}</span>
                   </div>
                 ))}
                 {Object.keys(metrics.review_queue_stats).length === 0 && (
-                  <p className="text-sm text-gray-400">Review queue is empty</p>
+                  <p className="text-sm text-gray-400 dark:text-gray-500">Review queue is empty</p>
                 )}
               </div>
               {reviewTotal > 0 && (
-                <div className="mt-4 pt-3 border-t border-gray-100">
+                <div className="mt-4 pt-3 border-t border-gray-100 dark:border-gray-800">
                   <div className="flex justify-between text-sm">
-                    <span className="text-gray-500">Total reviewed</span>
-                    <span className="font-semibold text-gray-900">{reviewTotal}</span>
+                    <span className="text-gray-500 dark:text-gray-400">Total reviewed</span>
+                    <span className="font-semibold text-gray-900 dark:text-gray-100">{reviewTotal}</span>
                   </div>
                   <div className="flex justify-between text-sm mt-1">
-                    <span className="text-gray-500">Correction rate</span>
-                    <span className={`font-semibold ${metrics.correction_rate_pct > 10 ? "text-red-600" : "text-green-600"}`}>
+                    <span className="text-gray-500 dark:text-gray-400">Correction rate</span>
+                    <span className={`font-semibold ${metrics.correction_rate_pct > 10 ? "text-red-600 dark:text-red-400" : "text-green-600 dark:text-green-400"}`}>
                       {metrics.correction_rate_pct.toFixed(1)}%
                     </span>
                   </div>
@@ -274,22 +274,22 @@ export default function QaDashboardPage() {
           </div>
 
           {/* Job Stats */}
-          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
-            <h2 className="text-sm font-semibold text-gray-900 mb-4 flex items-center gap-2">
-              <CheckCircle className="w-4 h-4 text-green-500" />
+          <div className="bg-white dark:bg-surface rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-5">
+            <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-4 flex items-center gap-2">
+              <CheckCircle className="w-4 h-4 text-green-500 dark:text-green-400" />
               Job Completion Statistics ({days}-day window)
             </h2>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <div className="text-center p-4 bg-green-50 rounded-lg">
-                <p className="text-2xl font-bold text-green-700">{metrics.jobs_completed}</p>
-                <p className="text-xs text-green-600 mt-1">Completed</p>
+              <div className="text-center p-4 bg-green-50 dark:bg-green-950 rounded-lg">
+                <p className="text-2xl font-bold text-green-700 dark:text-green-300">{metrics.jobs_completed}</p>
+                <p className="text-xs text-green-600 dark:text-green-400 mt-1">Completed</p>
               </div>
-              <div className="text-center p-4 bg-red-50 rounded-lg">
-                <p className="text-2xl font-bold text-red-700">{metrics.jobs_failed}</p>
-                <p className="text-xs text-red-600 mt-1">Failed</p>
+              <div className="text-center p-4 bg-red-50 dark:bg-red-950 rounded-lg">
+                <p className="text-2xl font-bold text-red-700 dark:text-red-300">{metrics.jobs_failed}</p>
+                <p className="text-xs text-red-600 dark:text-red-400 mt-1">Failed</p>
               </div>
-              <div className="text-center p-4 bg-blue-50 rounded-lg">
-                <p className="text-2xl font-bold text-blue-700">
+              <div className="text-center p-4 bg-blue-50 dark:bg-blue-950 rounded-lg">
+                <p className="text-2xl font-bold text-blue-700 dark:text-blue-300">
                   {metrics.jobs_completed + metrics.jobs_failed > 0
                     ? (
                         (metrics.jobs_completed /
@@ -298,11 +298,11 @@ export default function QaDashboardPage() {
                       ).toFixed(1)
                     : "0"}%
                 </p>
-                <p className="text-xs text-blue-600 mt-1">Success Rate</p>
+                <p className="text-xs text-blue-600 dark:text-blue-400 mt-1">Success Rate</p>
               </div>
-              <div className="text-center p-4 bg-amber-50 rounded-lg">
-                <p className="text-2xl font-bold text-amber-700">{metrics.qa_flag_rate_pct.toFixed(1)}%</p>
-                <p className="text-xs text-amber-600 mt-1">QA Flag Rate</p>
+              <div className="text-center p-4 bg-amber-50 dark:bg-amber-950 rounded-lg">
+                <p className="text-2xl font-bold text-amber-700 dark:text-amber-300">{metrics.qa_flag_rate_pct.toFixed(1)}%</p>
+                <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">QA Flag Rate</p>
               </div>
             </div>
           </div>

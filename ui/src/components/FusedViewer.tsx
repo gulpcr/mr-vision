@@ -115,7 +115,7 @@ function FusedPane({
     <div className="flex flex-col bg-black rounded-md overflow-hidden border border-gray-800">
       <div className="px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-gray-300 border-b border-gray-800 flex items-center justify-between">
         <span className="capitalize">{view}</span>
-        <span className="text-gray-500 tabular-nums normal-case">
+        <span className="text-gray-500 dark:text-gray-400 tabular-nums normal-case">
           {slice + 1} / {count}
         </span>
       </div>
@@ -125,7 +125,7 @@ function FusedPane({
       >
         {imgLoading && (
           <div className="absolute top-1.5 right-1.5 z-10">
-            <Loader2 className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none text-gray-500" />
+            <Loader2 className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none text-gray-500 dark:text-gray-400" />
           </div>
         )}
         {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -144,7 +144,7 @@ function FusedPane({
         <button
           onClick={() => setSlice((s) => clamp(s - 1))}
           disabled={slice <= 0}
-          className="text-gray-400 hover:text-white disabled:opacity-30"
+          className="text-gray-400 dark:text-gray-500 hover:text-white disabled:opacity-30"
           aria-label="Previous slice"
         >
           <ChevronLeft className="w-4 h-4" />
@@ -160,7 +160,7 @@ function FusedPane({
         <button
           onClick={() => setSlice((s) => clamp(s + 1))}
           disabled={slice >= count - 1}
-          className="text-gray-400 hover:text-white disabled:opacity-30"
+          className="text-gray-400 dark:text-gray-500 hover:text-white disabled:opacity-30"
           aria-label="Next slice"
         >
           <ChevronRight className="w-4 h-4" />
@@ -189,7 +189,7 @@ function ModeRow({
   return (
     <div>
       {label && (
-        <div className="text-[11px] font-bold uppercase tracking-wider text-gray-400 mb-1.5 px-1">
+        <div className="text-[11px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500 mb-1.5 px-1">
           {label}
         </div>
       )}
@@ -256,14 +256,14 @@ export function FusedViewer({
 
   if (error) {
     return (
-      <div className="flex items-center justify-center h-[360px] bg-black text-gray-400 text-sm">
+      <div className="flex items-center justify-center h-[360px] bg-black text-gray-400 dark:text-gray-500 text-sm">
         Fused viewer unavailable — {error}
       </div>
     );
   }
   if (!meta) {
     return (
-      <div className="flex items-center justify-center h-[360px] bg-black text-gray-400 text-sm gap-2">
+      <div className="flex items-center justify-center h-[360px] bg-black text-gray-400 dark:text-gray-500 text-sm gap-2">
         <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none" /> Loading fused viewer…
       </div>
     );
@@ -308,7 +308,7 @@ export function FusedViewer({
           </div>
         );
       })()}
-      <p className="text-[11px] text-gray-500 mt-2 px-1">
+      <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-2 px-1">
         {modes.length === 1 && modes[0] === "fused"
           ? `CT anatomy with PET SUV hot-colormap overlay${meta.has_lesions ? "; detected lesions outlined in cyan" : ""}`
           : `${meta.has_ct ? "CT anatomy (grayscale) above, PET SUV (hot colormap) below" : "PET SUV (hot colormap)"}${meta.has_lesions ? "; detected lesions outlined in cyan" : ""}`}

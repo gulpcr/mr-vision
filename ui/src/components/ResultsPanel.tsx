@@ -33,9 +33,9 @@ export function ResultsPanel({ studyUid, usecaseName }: ResultsPanelProps) {
     load();
   }, [studyUid, usecaseName]);
 
-  if (loading) return <div className="p-4 text-gray-500">Loading results...</div>;
-  if (error) return <div className="p-4 text-red-600">Error: {error}</div>;
-  if (!result) return <div className="p-4 text-gray-500">No results available</div>;
+  if (loading) return <div className="p-4 text-gray-500 dark:text-gray-400">Loading results...</div>;
+  if (error) return <div className="p-4 text-red-600 dark:text-red-400">Error: {error}</div>;
+  if (!result) return <div className="p-4 text-gray-500 dark:text-gray-400">No results available</div>;
 
   return (
     <div className="space-y-6">
@@ -43,11 +43,11 @@ export function ResultsPanel({ studyUid, usecaseName }: ResultsPanelProps) {
         {uiSchema?.title || usecaseName}
       </h2>
       {uiSchema?.description && (
-        <p className="text-sm text-gray-500">{uiSchema.description}</p>
+        <p className="text-sm text-gray-500 dark:text-gray-400">{uiSchema.description}</p>
       )}
 
       {uiSchema?.sections?.map((section: any) => (
-        <div key={section.id} className="bg-white rounded-lg shadow p-4">
+        <div key={section.id} className="bg-white dark:bg-surface rounded-lg shadow p-4">
           <h3 className="font-medium mb-3">{section.title}</h3>
           {renderSection(section, result)}
         </div>
@@ -90,7 +90,7 @@ function renderKeyValue(section: any, result: Result) {
           : data?.[field.key];
         return (
           <div key={field.key}>
-            <dt className="text-gray-500">{field.label}</dt>
+            <dt className="text-gray-500 dark:text-gray-400">{field.label}</dt>
             <dd className="font-medium">
               {formatValue(value, field.format, field.precision, field.unit)}
             </dd>
@@ -103,7 +103,7 @@ function renderKeyValue(section: any, result: Result) {
 
 function renderTable(section: any, result: Result) {
   const data = getNestedValue(result, section.data_path);
-  if (!data) return <p className="text-sm text-gray-400">No data</p>;
+  if (!data) return <p className="text-sm text-gray-400 dark:text-gray-500">No data</p>;
 
   // data_path may point to an array of row objects (e.g. measurements.lesions)
   // or a plain key→value object (legacy). Normalise to an array of row objects.
@@ -113,7 +113,7 @@ function renderTable(section: any, result: Result) {
   } else if (typeof data === "object") {
     rows = Object.entries(data).map(([k, v]) => ({ _key: k, _value: v }));
   } else {
-    return <p className="text-sm text-gray-400">No data</p>;
+    return <p className="text-sm text-gray-400 dark:text-gray-500">No data</p>;
   }
 
   return (
@@ -121,7 +121,7 @@ function renderTable(section: any, result: Result) {
       <thead>
         <tr className="border-b">
           {section.columns?.map((col: any) => (
-            <th key={col.key} className="text-left py-2 px-2 font-medium text-gray-600">
+            <th key={col.key} className="text-left py-2 px-2 font-medium text-gray-600 dark:text-gray-400">
               {col.label}
             </th>
           ))}
@@ -129,7 +129,7 @@ function renderTable(section: any, result: Result) {
       </thead>
       <tbody>
         {rows.map((row: any, idx: number) => (
-          <tr key={row.id ?? idx} className="border-b border-gray-100">
+          <tr key={row.id ?? idx} className="border-b border-gray-100 dark:border-gray-800">
             {section.columns?.map((col: any) => (
               <td key={col.key} className="py-2 px-2">
                 {col.key === "_key"
@@ -155,10 +155,10 @@ function renderOverlayInfo(section: any, result: Result) {
           <p className="mb-2">Segmentation overlays available:</p>
           {segArtifacts.map((a) => (
             <div key={a.name} className="flex items-center gap-2 mb-1">
-              <span className="font-mono text-xs bg-gray-100 px-2 py-1 rounded">
+              <span className="font-mono text-xs bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded">
                 {a.name}
               </span>
-              <span className="text-gray-400 text-xs">
+              <span className="text-gray-400 dark:text-gray-500 text-xs">
                 ({(a.size_bytes / 1024).toFixed(0)} KB)
               </span>
             </div>
@@ -178,7 +178,7 @@ function renderOverlayInfo(section: any, result: Result) {
           )}
         </div>
       ) : (
-        <p className="text-gray-400">No overlays generated</p>
+        <p className="text-gray-400 dark:text-gray-500">No overlays generated</p>
       )}
     </div>
   );

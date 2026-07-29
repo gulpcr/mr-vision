@@ -26,28 +26,28 @@ function getSeqBadge(desc: string | null, protocol: string | null): SeqBadge | n
   if (!d) return null;
 
   // Setup / non-diagnostic
-  if (/\bloc\b|localiz|scout/.test(d))           return { label: "LOC",    cls: "bg-gray-100 text-gray-500",    type: "setup" };
-  if (/shim/.test(d))                             return { label: "SHIM",   cls: "bg-gray-100 text-gray-400",    type: "setup" };
-  if (/survey/.test(d))                           return { label: "SURVEY", cls: "bg-gray-100 text-gray-400",    type: "setup" };
+  if (/\bloc\b|localiz|scout/.test(d))           return { label: "LOC",    cls: "bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400",    type: "setup" };
+  if (/shim/.test(d))                             return { label: "SHIM",   cls: "bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500",    type: "setup" };
+  if (/survey/.test(d))                           return { label: "SURVEY", cls: "bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500",    type: "setup" };
 
   // Anatomical sequences
-  if (/flair|dark.?fluid/.test(d))                return { label: "FLAIR",  cls: "bg-purple-100 text-purple-700", type: "flair" };
-  if (/\bt2\b|t2w|fse|tse/.test(d))              return { label: "T2",     cls: "bg-green-100 text-green-700",   type: "t2" };
+  if (/flair|dark.?fluid/.test(d))                return { label: "FLAIR",  cls: "bg-purple-100 dark:bg-purple-900 text-purple-700 dark:text-purple-300", type: "flair" };
+  if (/\bt2\b|t2w|fse|tse/.test(d))              return { label: "T2",     cls: "bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300",   type: "t2" };
   if (/\bt1\b|t1w|mprage|bravo|spgr|vibe|flash/.test(d))
-                                                  return { label: "T1",     cls: "bg-blue-100 text-blue-700",     type: "t1" };
+                                                  return { label: "T1",     cls: "bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300",     type: "t1" };
 
   // Functional / advanced
-  if (/cistern|ssfp|fiesta|trufi|bssfp/.test(d)) return { label: "SSFP",   cls: "bg-indigo-100 text-indigo-700", type: "ssfp" };
-  if (/dwi|diffusion|adc|dti|ivim/.test(d))      return { label: "DWI",    cls: "bg-orange-100 text-orange-700", type: "dwi" };
-  if (/\bmap\b|adc/.test(d))                     return { label: "MAP",    cls: "bg-yellow-100 text-yellow-700", type: "map" };
-  if (/swi|suscept|gre/.test(d))                 return { label: "SWI",    cls: "bg-red-100 text-red-700",       type: "swi" };
+  if (/cistern|ssfp|fiesta|trufi|bssfp/.test(d)) return { label: "SSFP",   cls: "bg-indigo-100 dark:bg-indigo-900 text-indigo-700 dark:text-indigo-300", type: "ssfp" };
+  if (/dwi|diffusion|adc|dti|ivim/.test(d))      return { label: "DWI",    cls: "bg-orange-100 dark:bg-orange-900 text-orange-700 dark:text-orange-300", type: "dwi" };
+  if (/\bmap\b|adc/.test(d))                     return { label: "MAP",    cls: "bg-yellow-100 dark:bg-yellow-900 text-yellow-700 dark:text-yellow-300", type: "map" };
+  if (/swi|suscept|gre/.test(d))                 return { label: "SWI",    cls: "bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300",       type: "swi" };
   if (/mra|angio/.test(d))                       return { label: "MRA",    cls: "bg-pink-100 text-pink-700",     type: "mra" };
-  if (/perf|dsc|dce|asl/.test(d))               return { label: "PERF",   cls: "bg-rose-100 text-rose-700",     type: "perf" };
+  if (/perf|dsc|dce|asl/.test(d))               return { label: "PERF",   cls: "bg-rose-100 dark:bg-rose-900 text-rose-700 dark:text-rose-300",     type: "perf" };
   if (/spec|mrsi|mrs/.test(d))                   return { label: "SPEC",   cls: "bg-teal-100 text-teal-700",     type: "spec" };
 
   // PET/CT
   if (/\bct\b|attenuat|transmi/.test(d))         return { label: "CT",     cls: "bg-slate-100 text-slate-700",   type: "ct" };
-  if (/\bpt\b|\bpet\b|emission/.test(d))         return { label: "PET",    cls: "bg-amber-100 text-amber-700",   type: "pet" };
+  if (/\bpt\b|\bpet\b|emission/.test(d))         return { label: "PET",    cls: "bg-amber-100 dark:bg-amber-900 text-amber-700 dark:text-amber-300",   type: "pet" };
 
   return null;
 }
@@ -288,7 +288,7 @@ export default function StudyPage() {
   };
 
   if (loading) return <p className="text-gray-500 dark:text-gray-400 dark:text-gray-500 p-4">Loading study...</p>;
-  if (!study) return <p className="text-red-500 p-4">Study not found</p>;
+  if (!study) return <p className="text-red-500 dark:text-red-400 p-4">Study not found</p>;
 
   // All studies open in the OHIF v3 / Cornerstone3D viewer; the mode is chosen
   // by content:
@@ -377,7 +377,7 @@ export default function StudyPage() {
                     <button disabled={readingBusy} onClick={() => runReading(() => api.reading.report(uid))}
                       className={`${btn} text-white bg-amber-600 hover:bg-amber-700`}>Mark Reported</button>
                     <button disabled={readingBusy} onClick={() => runReading(() => api.reading.unclaim(uid))}
-                      className={`${btn} text-gray-600 dark:text-gray-400 dark:text-gray-500 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-surface-raised`}>Release</button>
+                      className={`${btn} text-gray-600 dark:text-gray-400 dark:text-gray-500 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 dark:hover:bg-surface-raised`}>Release</button>
                   </>
                 )}
                 {rs === "reported" && (
@@ -444,7 +444,7 @@ export default function StudyPage() {
                 return (
                   <div
                     key={s.series_instance_uid}
-                    className={`text-sm border-b border-gray-50 pb-2 ${isSetup ? "opacity-50" : ""}`}
+                    className={`text-sm border-b border-gray-50 dark:border-gray-800 pb-2 ${isSetup ? "opacity-50" : ""}`}
                   >
                     <div className="flex items-center gap-1.5 flex-wrap">
                       {badge && (
@@ -478,7 +478,7 @@ export default function StudyPage() {
               })}
           </div>
           {/* Legend */}
-          <div className="mt-2 pt-2 border-t border-gray-50 flex flex-wrap gap-1.5">
+          <div className="mt-2 pt-2 border-t border-gray-50 dark:border-gray-800 flex flex-wrap gap-1.5">
             {Array.from(
               new Map(
                 study.series
@@ -517,7 +517,7 @@ export default function StudyPage() {
                       />
                     </div>
                   )}
-                  {job.error_detail && <p className="text-xs text-red-500 mt-1 truncate">{job.error_detail}</p>}
+                  {job.error_detail && <p className="text-xs text-red-500 dark:text-red-400 mt-1 truncate">{job.error_detail}</p>}
                 </div>
               ))}
             </div>
@@ -531,11 +531,11 @@ export default function StudyPage() {
           <div className="flex items-center gap-2">
             <h2 className="text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase tracking-wider">DICOM Viewer</h2>
             {showNativeFused ? (
-              <span className="text-xs bg-amber-100 text-amber-700 dark:text-amber-300 px-2 py-0.5 rounded-full font-medium">
+              <span className="text-xs bg-amber-100 dark:bg-amber-900 text-amber-700 dark:text-amber-300 px-2 py-0.5 rounded-full font-medium">
                 CT + PET
               </span>
             ) : hasPetSeries ? (
-              <span className="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full font-medium">
+              <span className="text-xs bg-orange-100 dark:bg-orange-900 text-orange-700 dark:text-orange-300 px-2 py-0.5 rounded-full font-medium">
                 OHIF — PET/CT Fusion
               </span>
             ) : null}
@@ -575,7 +575,7 @@ export default function StudyPage() {
                   className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
                     selectedUsecase === r.usecase_name
                       ? "bg-primary-600 text-white"
-                      : "bg-white dark:bg-surface text-gray-700 dark:text-gray-300 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-surface-raised"
+                      : "bg-white dark:bg-surface text-gray-700 dark:text-gray-300 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 dark:hover:bg-surface-raised"
                   }`}
                 >
                   {r.usecase_name.replace(/_/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase())}
@@ -596,7 +596,7 @@ export default function StudyPage() {
                   <button
                     onClick={loadCptSuggestions}
                     disabled={cptLoading}
-                    className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-emerald-700 border border-emerald-200 rounded-lg hover:bg-emerald-50 transition-colors disabled:opacity-50"
+                    className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 rounded-lg hover:bg-emerald-50 transition-colors disabled:opacity-50"
                   >
                     <DollarSign className="w-4 h-4" />
                     {cptLoading ? "Loading..." : "CPT Codes"}
@@ -612,7 +612,7 @@ export default function StudyPage() {
                   <button
                     onClick={loadPriorComparison}
                     disabled={priorLoading}
-                    className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-amber-700 dark:text-amber-300 border border-amber-200 rounded-lg hover:bg-amber-50 dark:hover:bg-amber-950 transition-colors disabled:opacity-50"
+                    className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800 rounded-lg hover:bg-amber-50 dark:hover:bg-amber-950 transition-colors disabled:opacity-50"
                   >
                     <ArrowLeftRight className="w-4 h-4" />
                     {priorLoading ? "Loading..." : "Prior Comparison"}
@@ -620,7 +620,7 @@ export default function StudyPage() {
                   {["pet_ct", "pet_ct_brain"].includes(selectedResult.usecase_name) && (
                     <Link
                       href={`/study/${uid}/report/${selectedResult.usecase_name}`}
-                      className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-indigo-700 border border-indigo-200 rounded-lg hover:bg-indigo-50 transition-colors"
+                      className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 rounded-lg hover:bg-indigo-50 transition-colors"
                     >
                       <FileText className="w-4 h-4" /> PET-CT Report
                     </Link>
@@ -639,7 +639,7 @@ export default function StudyPage() {
                   {selectedResult.usecase_name === "mammography" && (
                     <Link
                       href={`/study/${uid}/report/mammography`}
-                      className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-rose-700 border border-rose-200 rounded-lg hover:bg-rose-50 transition-colors"
+                      className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800 rounded-lg hover:bg-rose-50 transition-colors"
                     >
                       <FileText className="w-4 h-4" /> Mammography Report
                     </Link>
@@ -655,7 +655,7 @@ export default function StudyPage() {
                   <button
                     onClick={handleDownloadPdf}
                     disabled={pdfLoading}
-                    className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 border border-gray-200 dark:border-gray-700 rounded-lg hover:bg-gray-50 dark:hover:bg-surface-raised transition-colors disabled:opacity-50"
+                    className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 border border-gray-200 dark:border-gray-700 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800 dark:hover:bg-surface-raised transition-colors disabled:opacity-50"
                   >
                     <FileDown className="w-4 h-4" />
                     {pdfLoading ? "Generating..." : "Download PDF"}
@@ -663,21 +663,21 @@ export default function StudyPage() {
                   <button
                     onClick={handleCreateShareLink}
                     disabled={shareLoading}
-                    className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-blue-700 dark:text-blue-300 border border-blue-200 rounded-lg hover:bg-blue-50 dark:hover:bg-blue-950 transition-colors disabled:opacity-50"
+                    className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 rounded-lg hover:bg-blue-50 dark:hover:bg-blue-950 transition-colors disabled:opacity-50"
                   >
                     <Share2 className="w-4 h-4" />
                     {shareLoading ? "Creating..." : "Share"}
                   </button>
                   <Link
                     href={`/study/${uid}/delivery`}
-                    className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 border border-gray-200 dark:border-gray-700 rounded-lg hover:bg-gray-50 dark:hover:bg-surface-raised transition-colors"
+                    className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 border border-gray-200 dark:border-gray-700 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800 dark:hover:bg-surface-raised transition-colors"
                   >
                     <Truck className="w-4 h-4" /> Delivery Status
                   </Link>
                   {study.patient_id && (
                     <Link
                       href={`/admin/patients/${encodeURIComponent(study.patient_id)}/trend/${selectedUsecase}`}
-                      className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-purple-700 border border-purple-200 rounded-lg hover:bg-purple-50 transition-colors"
+                      className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-800 rounded-lg hover:bg-purple-50 transition-colors"
                     >
                       <TrendingUp className="w-4 h-4" /> Trend
                     </Link>
@@ -689,7 +689,7 @@ export default function StudyPage() {
 
           {/* Share link display */}
           {shareLink && (
-            <div className="mb-4 bg-blue-50 dark:bg-blue-950 border border-blue-200 rounded-lg p-4 flex items-center gap-3">
+            <div className="mb-4 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg p-4 flex items-center gap-3">
               <Link2 className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0" />
               <div className="flex-1 min-w-0">
                 <p className="text-xs font-semibold text-blue-700 dark:text-blue-300 mb-1">Referring Physician Portal Link (expires in 7 days)</p>
@@ -697,7 +697,7 @@ export default function StudyPage() {
               </div>
               <button
                 onClick={copyShareLink}
-                className="px-3 py-1.5 text-xs font-medium text-blue-700 dark:text-blue-300 bg-blue-100 hover:bg-blue-200 rounded-lg transition-colors shrink-0"
+                className="px-3 py-1.5 text-xs font-medium text-blue-700 dark:text-blue-300 bg-blue-100 dark:bg-blue-900 hover:bg-blue-200 rounded-lg transition-colors shrink-0"
               >
                 {shareCopied ? "Copied!" : "Copy"}
               </button>
@@ -712,12 +712,12 @@ export default function StudyPage() {
             <div className="mb-4 bg-white dark:bg-surface rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
               <button
                 onClick={() => setCptOpen(!cptOpen)}
-                className="w-full flex items-center justify-between px-4 py-3 border-b border-gray-100 dark:border-gray-800 text-left hover:bg-gray-50 dark:hover:bg-surface-raised transition-colors"
+                className="w-full flex items-center justify-between px-4 py-3 border-b border-gray-100 dark:border-gray-800 text-left hover:bg-gray-50 dark:hover:bg-gray-800 dark:hover:bg-surface-raised transition-colors"
               >
                 <div className="flex items-center gap-2">
-                  <DollarSign className="w-4 h-4 text-emerald-600" />
+                  <DollarSign className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
                   <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">CPT Billing Code Suggestions</span>
-                  <span className="text-xs bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full font-medium">
+                  <span className="text-xs bg-emerald-100 dark:bg-emerald-900 text-emerald-700 dark:text-emerald-300 px-2 py-0.5 rounded-full font-medium">
                     {cptSuggestions.length} codes
                   </span>
                 </div>
@@ -730,11 +730,11 @@ export default function StudyPage() {
                       <div
                         key={cpt.code}
                         className={`flex items-start gap-3 p-3 rounded-lg border ${
-                          cpt.category === "addon" ? "border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-surface-raised" : "border-emerald-100 bg-emerald-50"
+                          cpt.category === "addon" ? "border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-800 dark:bg-surface-raised" : "border-emerald-100 dark:border-emerald-900 bg-emerald-50 dark:bg-emerald-950"
                         }`}
                       >
                         <div className="shrink-0">
-                          <span className={`text-sm font-bold font-mono ${cpt.category === "addon" ? "text-gray-600 dark:text-gray-400 dark:text-gray-500" : "text-emerald-700"}`}>
+                          <span className={`text-sm font-bold font-mono ${cpt.category === "addon" ? "text-gray-600 dark:text-gray-400 dark:text-gray-500" : "text-emerald-700 dark:text-emerald-300"}`}>
                             {cpt.code}
                           </span>
                           {cpt.category === "primary" && i === 0 && (
@@ -751,7 +751,7 @@ export default function StudyPage() {
                           <span className="text-xs font-medium text-gray-600 dark:text-gray-400 dark:text-gray-500">
                             {(cpt.confidence * 100).toFixed(0)}% confidence
                           </span>
-                          <div className="w-16 bg-gray-200 rounded-full h-1 mt-1">
+                          <div className="w-16 bg-gray-200 dark:bg-gray-700 rounded-full h-1 mt-1">
                             <div
                               className="bg-emerald-500 h-1 rounded-full"
                               style={{ width: `${cpt.confidence * 100}%` }}
@@ -774,20 +774,20 @@ export default function StudyPage() {
             <div className="mb-4 bg-white dark:bg-surface rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
               <button
                 onClick={() => setProtocolOpen(!protocolOpen)}
-                className="w-full flex items-center justify-between px-4 py-3 border-b border-gray-100 dark:border-gray-800 text-left hover:bg-gray-50 dark:hover:bg-surface-raised transition-colors"
+                className="w-full flex items-center justify-between px-4 py-3 border-b border-gray-100 dark:border-gray-800 text-left hover:bg-gray-50 dark:hover:bg-gray-800 dark:hover:bg-surface-raised transition-colors"
               >
                 <div className="flex items-center gap-2">
                   {protocolCheck.status === "ok" || protocolCheck.issues.length === 0 ? (
-                    <CheckCircle className="w-4 h-4 text-green-500" />
+                    <CheckCircle className="w-4 h-4 text-green-500 dark:text-green-400" />
                   ) : (
-                    <AlertTriangle className="w-4 h-4 text-amber-500" />
+                    <AlertTriangle className="w-4 h-4 text-amber-500 dark:text-amber-400" />
                   )}
                   <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">Protocol Check</span>
                   <span
                     className={`text-xs px-2 py-0.5 rounded-full font-medium ${
                       protocolCheck.status === "ok" || protocolCheck.issues.length === 0
-                        ? "bg-green-100 text-green-700 dark:text-green-300"
-                        : "bg-amber-100 text-amber-700 dark:text-amber-300"
+                        ? "bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300"
+                        : "bg-amber-100 dark:bg-amber-900 text-amber-700 dark:text-amber-300"
                     }`}
                   >
                     {protocolCheck.status === "ok" || protocolCheck.issues.length === 0
@@ -810,17 +810,17 @@ export default function StudyPage() {
                           key={i}
                           className={`p-3 rounded-lg border ${
                             issue.severity === "error"
-                              ? "border-red-200 bg-red-50 dark:bg-red-950"
+                              ? "border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950"
                               : issue.severity === "warning"
-                              ? "border-amber-200 bg-amber-50 dark:bg-amber-950"
-                              : "border-blue-100 bg-blue-50 dark:bg-blue-950"
+                              ? "border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950"
+                              : "border-blue-100 dark:border-blue-900 bg-blue-50 dark:bg-blue-950"
                           }`}
                         >
                           <div className="flex items-center gap-2 mb-1">
                             <AlertTriangle
                               className={`w-3.5 h-3.5 ${
-                                issue.severity === "error" ? "text-red-500" :
-                                issue.severity === "warning" ? "text-amber-500" : "text-blue-400"
+                                issue.severity === "error" ? "text-red-500 dark:text-red-400" :
+                                issue.severity === "warning" ? "text-amber-500 dark:text-amber-400" : "text-blue-400"
                               }`}
                             />
                             <span className="text-xs font-semibold text-gray-700 dark:text-gray-300">{issue.series_description}</span>
@@ -828,7 +828,7 @@ export default function StudyPage() {
                               className={`text-xs px-1.5 py-0.5 rounded font-medium uppercase ${
                                 issue.severity === "error" ? "bg-red-200 text-red-700 dark:text-red-300" :
                                 issue.severity === "warning" ? "bg-amber-200 text-amber-700 dark:text-amber-300" :
-                                "bg-blue-100 text-blue-700 dark:text-blue-300"
+                                "bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300"
                               }`}
                             >
                               {issue.severity}
@@ -854,13 +854,13 @@ export default function StudyPage() {
             <div className="mb-4 bg-white dark:bg-surface rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
               <button
                 onClick={() => setPriorOpen(!priorOpen)}
-                className="w-full flex items-center justify-between px-4 py-3 border-b border-gray-100 dark:border-gray-800 text-left hover:bg-gray-50 dark:hover:bg-surface-raised transition-colors"
+                className="w-full flex items-center justify-between px-4 py-3 border-b border-gray-100 dark:border-gray-800 text-left hover:bg-gray-50 dark:hover:bg-gray-800 dark:hover:bg-surface-raised transition-colors"
               >
                 <div className="flex items-center gap-2">
-                  <ArrowLeftRight className="w-4 h-4 text-amber-600" />
+                  <ArrowLeftRight className="w-4 h-4 text-amber-600 dark:text-amber-400" />
                   <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">Prior Study Comparison</span>
                   {priorComparison.delta.days_between !== null && (
-                    <span className="text-xs bg-amber-100 text-amber-700 dark:text-amber-300 px-2 py-0.5 rounded-full font-medium">
+                    <span className="text-xs bg-amber-100 dark:bg-amber-900 text-amber-700 dark:text-amber-300 px-2 py-0.5 rounded-full font-medium">
                       {priorComparison.delta.days_between} days ago
                     </span>
                   )}
@@ -880,7 +880,7 @@ export default function StudyPage() {
             <div className="mb-4 bg-white dark:bg-surface rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
               <button
                 onClick={() => setMgOpen(!mgOpen)}
-                className="w-full flex items-center justify-between px-4 py-3 border-b border-gray-100 dark:border-gray-800 text-left hover:bg-gray-50 dark:hover:bg-surface-raised transition-colors"
+                className="w-full flex items-center justify-between px-4 py-3 border-b border-gray-100 dark:border-gray-800 text-left hover:bg-gray-50 dark:hover:bg-gray-800 dark:hover:bg-surface-raised transition-colors"
               >
                 <div className="flex items-center gap-2 flex-wrap">
                   <Bug className="w-4 h-4 text-fuchsia-600" />
@@ -892,7 +892,7 @@ export default function StudyPage() {
                     {mgDebug.inputs.n_images_sent}/{mgDebug.inputs.n_images_total} images sent
                   </span>
                   {mgDebug.medgemma.ready === false && (
-                    <span className="text-xs bg-red-100 text-red-700 dark:text-red-300 px-2 py-0.5 rounded-full font-medium">
+                    <span className="text-xs bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300 px-2 py-0.5 rounded-full font-medium">
                       Ollama unreachable
                     </span>
                   )}
@@ -928,7 +928,7 @@ export default function StudyPage() {
                   </div>
 
                   {mgDebug.note && (
-                    <p className="text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950 border border-amber-200 rounded p-2">{mgDebug.note}</p>
+                    <p className="text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded p-2">{mgDebug.note}</p>
                   )}
 
                   {/* Images (inputs) */}
@@ -955,7 +955,7 @@ export default function StudyPage() {
                             <div className="flex items-center justify-between gap-1">
                               <span className="text-[11px] font-medium text-gray-700 dark:text-gray-300 truncate" title={im.name}>{im.name}</span>
                               {im.sent_to_model ? (
-                                <span className="text-[9px] font-bold uppercase bg-green-100 text-green-700 dark:text-green-300 px-1 py-0.5 rounded shrink-0">sent</span>
+                                <span className="text-[9px] font-bold uppercase bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300 px-1 py-0.5 rounded shrink-0">sent</span>
                               ) : (
                                 <span className="text-[9px] font-bold uppercase bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500 px-1 py-0.5 rounded shrink-0">not sent</span>
                               )}
@@ -974,7 +974,7 @@ export default function StudyPage() {
                     <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-2">
                       Prompt ({mgDebug.inputs.prompt_chars} chars)
                     </p>
-                    <pre className="text-[11px] whitespace-pre-wrap bg-gray-50 dark:bg-surface-raised border border-gray-100 dark:border-gray-800 rounded p-3 max-h-80 overflow-auto text-gray-700 dark:text-gray-300">
+                    <pre className="text-[11px] whitespace-pre-wrap bg-gray-50 dark:bg-gray-800 dark:bg-surface-raised border border-gray-100 dark:border-gray-800 rounded p-3 max-h-80 overflow-auto text-gray-700 dark:text-gray-300">
                       {mgDebug.inputs.prompt}
                     </pre>
                   </div>

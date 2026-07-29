@@ -44,7 +44,7 @@ export default function RetentionPage() {
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Data Retention</h1>
         <div className="flex gap-2">
-          <button onClick={() => setPendingApply(true)} className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded-lg hover:bg-amber-100">
+          <button onClick={() => setPendingApply(true)} className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-lg hover:bg-amber-100">
             <Play className="w-4 h-4" /> Apply Now
           </button>
           <button onClick={() => setShowForm(!showForm)} className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-primary-600 rounded-lg hover:bg-primary-700">
@@ -54,14 +54,14 @@ export default function RetentionPage() {
       </div>
 
       {showForm && (
-        <form onSubmit={handleCreate} className="bg-white rounded-lg shadow-sm border border-gray-200 p-4 mb-4 flex flex-wrap gap-3 items-end">
+        <form onSubmit={handleCreate} className="bg-white dark:bg-surface rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-4 mb-4 flex flex-wrap gap-3 items-end">
           <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1">Name</label>
-            <input value={name} onChange={(e) => setName(e.target.value)} className="text-sm border border-gray-200 rounded-lg px-3 py-2" required />
+            <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Name</label>
+            <input value={name} onChange={(e) => setName(e.target.value)} className="text-sm border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2" required />
           </div>
           <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1">Entity Type</label>
-            <select value={entityType} onChange={(e) => setEntityType(e.target.value)} className="text-sm border border-gray-200 rounded-lg px-3 py-2">
+            <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Entity Type</label>
+            <select value={entityType} onChange={(e) => setEntityType(e.target.value)} className="text-sm border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2">
               <option value="study">Study</option>
               <option value="job">Job</option>
               <option value="result">Result</option>
@@ -69,12 +69,12 @@ export default function RetentionPage() {
             </select>
           </div>
           <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1">Max Age (days)</label>
-            <input type="number" value={maxAge} onChange={(e) => setMaxAge(Number(e.target.value))} className="text-sm border border-gray-200 rounded-lg px-3 py-2 w-24" min={1} />
+            <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Max Age (days)</label>
+            <input type="number" value={maxAge} onChange={(e) => setMaxAge(Number(e.target.value))} className="text-sm border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 w-24" min={1} />
           </div>
           <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1">Action</label>
-            <select value={action} onChange={(e) => setAction(e.target.value)} className="text-sm border border-gray-200 rounded-lg px-3 py-2">
+            <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Action</label>
+            <select value={action} onChange={(e) => setAction(e.target.value)} className="text-sm border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2">
               <option value="archive">Archive</option>
               <option value="delete">Delete</option>
             </select>
@@ -119,7 +119,7 @@ export default function RetentionPage() {
                     <button
                       onClick={() => setPendingDeleteId(p.id)}
                       aria-label={`Delete retention policy ${p.name}`}
-                      className="text-red-500 hover:text-red-700"
+                      className="text-red-500 dark:text-red-400 hover:text-red-700"
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>
@@ -132,7 +132,7 @@ export default function RetentionPage() {
       </div>
 
       {applyResult && (
-        <div className="mt-4 flex items-start gap-2 bg-green-50 dark:bg-green-950 border border-green-200 dark:border-green-900 rounded-lg px-4 py-3 text-sm text-green-800 dark:text-green-300">
+        <div className="mt-4 flex items-start gap-2 bg-green-50 dark:bg-green-950 border border-green-200 dark:border-green-800 dark:border-green-900 rounded-lg px-4 py-3 text-sm text-green-800 dark:text-green-300">
           <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" />
           <div>
             <p className="font-semibold">Retention applied.</p>

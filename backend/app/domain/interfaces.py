@@ -3,6 +3,7 @@ from __future__ import annotations
 import abc
 from typing import Any, Protocol
 
+from app.domain.hl7_models import ParsedMessage, ProcessResult
 from app.domain.models import (
     AuditEntry,
     JobRun,
@@ -149,6 +150,27 @@ class PACSClient(abc.ABC):
     async def download_series_dicoms(
         self, study_instance_uid: str, series_instance_uid: str, output_dir: str
     ) -> list[str]: ...
+
+
+class HL7InboundHandler(abc.ABC):
+    """Handles one raw inbound HL7 v2 message end to end: parse → map → persist →
+    decide the ACK. Implemented in the application layer; driven by the MLLP
+    listener (infrastructure). Returns a ProcessResult the listener turns into an
+    MLLP ACK; implementations must not raise for message-level errors — they encode
+    the failure as an AE/AR ProcessResult so the sender always gets an acknowledgment.
+    """
+
+    @abc.abstractmethod
+    def handle(self, raw_message: str) -> ProcessResult: ...
+
+
+class HL7OutboundClient(abc.ABC):
+    """Sends an outbound HL7 v2 message (ORU results) to the RIS/EHR over MLLP and
+    waits for the application ACK. Implemented in infrastructure; called from the
+    post-result Celery hook."""
+
+    @abc.abstractmethod
+    def send(self, message: ParsedMessage | str) -> ProcessResult: ...
 
 
 class UseCasePipeline(Protocol):

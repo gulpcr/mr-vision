@@ -5,8 +5,8 @@ import { ThemeProvider, THEME_ANTI_FLASH_SCRIPT } from "@/lib/theme";
 import { LocaleProvider, LOCALE_ANTI_FLASH_SCRIPT } from "@/lib/i18n";
 
 export const metadata: Metadata = {
-  title: "MRI AI Platform",
-  description: "AI-powered MRI analysis platform",
+  title: "Cortex Radiology — AI-Assisted Imaging Platform",
+  description: "Cortex Radiology — AI-assisted diagnostic imaging across MRI, CT, PET/CT, mammography and cardiac studies",
 };
 
 export default function RootLayout({

@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
-import { Activity } from "lucide-react";
+import { CortexMark } from "@/components/ui/CortexMark";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -35,44 +35,55 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-100 dark:bg-gray-800">
-      <div className="w-full max-w-md">
-        <div className="bg-white dark:bg-surface rounded-xl shadow-lg p-8">
-          <div className="flex items-center justify-center gap-3 mb-8">
-            <Activity className="w-8 h-8 text-blue-600 dark:text-blue-400" />
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">MRI AI Platform</h1>
+    <div className="relative min-h-screen flex items-center justify-center overflow-hidden px-4">
+      {/* Ambient glow orbs — slowly drifting for a living backdrop */}
+      <div className="pointer-events-none absolute -top-32 -left-24 w-[32rem] h-[32rem] rounded-full bg-cyan-500/20 blur-3xl float" />
+      <div className="pointer-events-none absolute -bottom-40 -right-24 w-[34rem] h-[34rem] rounded-full bg-violet-500/20 blur-3xl animate-pulse" style={{ animationDuration: "6s" }} />
+      <div className="pointer-events-none absolute top-1/3 left-1/2 -translate-x-1/2 w-[28rem] h-[28rem] rounded-full bg-sky-500/10 blur-3xl float" style={{ animationDuration: "7s" }} />
+
+      <div className="relative w-full max-w-md">
+        <div className="glass-raised rounded-3xl shadow-glow-lg p-8 sm:p-10 accent-top animate-scale-in">
+          <div className="flex flex-col items-center gap-3 mb-8">
+            <div className="group grid place-items-center w-16 h-16 rounded-2xl bg-accent/10 ring-1 ring-accent/30 shadow-glow transition-transform duration-300 hover:scale-105">
+              <CortexMark className="w-9 h-9 transition-transform duration-700 ease-out group-hover:rotate-90" />
+            </div>
+            <h1 className="text-2xl tracking-tight">
+              <span className="font-extrabold text-gradient-anim">CORTEX</span>
+              <span className="font-medium text-gray-700 dark:text-gray-200"> Radiology</span>
+            </h1>
+            <p className="text-xs font-mono uppercase tracking-[0.2em] text-accent">AI-Assisted Imaging Platform</p>
           </div>
 
           <form onSubmit={handleLogin} className="space-y-4">
             {error && (
-              <div className="bg-red-50 dark:bg-red-950 text-red-700 dark:text-red-300 px-4 py-3 rounded-lg text-sm">
+              <div className="bg-red-50/80 dark:bg-red-950/60 border border-red-200 dark:border-red-900 text-red-700 dark:text-red-300 px-4 py-3 rounded-xl text-sm">
                 {error}
               </div>
             )}
 
             <div>
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                 Username
               </label>
               <input
                 type="text"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                className="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                className="w-full px-4 py-2.5 bg-white/70 dark:bg-white/5 border border-gray-300 dark:border-white/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent transition text-sm"
                 placeholder="Enter your username"
                 required
               />
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                 Password
               </label>
               <input
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                className="w-full px-4 py-2.5 bg-white/70 dark:bg-white/5 border border-gray-300 dark:border-white/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent transition text-sm"
                 placeholder="Enter your password"
                 required
               />
@@ -81,14 +92,14 @@ export default function LoginPage() {
             <button
               type="submit"
               disabled={loading}
-              className="w-full py-2.5 px-4 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors text-sm"
+              className="btn-gradient w-full py-2.5 px-4 font-semibold rounded-xl text-sm"
             >
               {loading ? "Signing in..." : "Sign In"}
             </button>
           </form>
 
-          <p className="text-center text-xs text-gray-400 dark:text-gray-500 mt-6">
-            MRI AI Platform v1.0 - Production-grade AI-based MRI analysis
+          <p className="text-center text-xs text-gray-400 dark:text-gray-500 mt-8">
+            Cortex Radiology v1.0 — AI-assisted diagnostic imaging
           </p>
         </div>
       </div>
