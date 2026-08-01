@@ -4,7 +4,6 @@ import os
 import tempfile
 import traceback
 from collections.abc import Awaitable, Callable
-from datetime import datetime, timezone
 from typing import Any
 
 import structlog
@@ -15,7 +14,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import get_settings
 from app.domain.enums import AuditAction, JobStatus
-from app.domain.models import AuditEntry, Result, ResultArtifact
+from app.domain.models import AuditEntry, Result, ResultArtifact, utcnow
 from app.infrastructure.database.models import (
     AuditLogRecord,
     JobRunRecord,
@@ -85,10 +84,10 @@ def _update_job_status(
         if worker_id:
             record.worker_id = worker_id
         if status == JobStatus.PREPROCESSING:
-            record.started_at = datetime.now(timezone.utc)
+            record.started_at = utcnow()
         if status in (JobStatus.COMPLETED, JobStatus.FAILED):
-            record.completed_at = datetime.now(timezone.utc)
-        record.updated_at = datetime.now(timezone.utc)
+            record.completed_at = utcnow()
+        record.updated_at = utcnow()
         session.commit()
 
 
@@ -289,6 +288,31 @@ def _run_post_result_hooks(
                             async_session.add(audit)
                     except Exception as e:
                         logger.warning("prior_comparison_hook_failed", error=str(e))
+
+                # ── 4. Derived Observations (per-plugin whitelist) ────────────
+                # Turns whitelisted result values into row-per-concept Observations so
+                # they are searchable and trendable. Plugins with no fhir_map.yaml
+                # produce nothing, which is the intended default for the
+                # narrative-only families. Never allowed to affect the result.
+                try:
+                    from app.config import get_settings as _get_settings
+
+                    if _get_settings().observations_enabled and study.patient_id:
+                        from app.application.observation_service import ObservationService
+
+                        await ObservationService(async_session).record_result_observations(
+                            usecase_name=usecase_name,
+                            result=result_data,
+                            patient_ref=study.patient_id,
+                            study_instance_uid=result_data["study_instance_uid"],
+                            result_id=result_id,
+                            model_version=result_data.get("model_version"),
+                            model_checksum=result_data.get("model_checksum"),
+                            effective_dt=getattr(study, "study_date", None),
+                            tenant_id=getattr(study, "tenant_id", None) or "default",
+                        )
+                except Exception as e:
+                    logger.warning("result_observations_hook_failed", error=str(e))
 
                 await async_session.commit()
             except Exception as e:
@@ -1502,7 +1526,7 @@ def run_stale_job_cleanup():
 
     session = _get_sync_session()
     try:
-        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=_STALE_MINUTES)
+        cutoff = utcnow() - timedelta(minutes=_STALE_MINUTES)
         stale_records = (
             session.query(JobRunRecord)
             .filter(
@@ -1515,7 +1539,7 @@ def run_stale_job_cleanup():
         if not stale_records:
             return 0
 
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        now = utcnow()
         for record in stale_records:
             record.status = JobStatus.FAILED.value
             record.error_detail = (

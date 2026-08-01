@@ -3,13 +3,38 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
+import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.enums import AuditActorType, audit_action_to_crude
 from app.infrastructure.database.models import (
     AuditLogRecord,
     MammographyReportRecord,
     StudyRecord,
 )
+
+logger = structlog.get_logger(__name__)
+
+
+def _audit_actor_fields(actor: str | None) -> dict[str, str | None]:
+    """Type a legacy free-text ``actor`` for the AuditEvent columns.
+
+    Callers pass a user id, a username, or a machine name depending on history. A value
+    that is neither a known machine actor nor plainly an id is still recorded in
+    ``actor_display`` but leaves ``actor_id`` NULL — an unattributed entry beats a
+    misattributed one. Fix the call site to pass a stable id and both populate.
+    """
+    raw = (actor or "system").strip() or "system"
+    machine = raw in ("system", "celery_worker")
+    return {
+        "actor": raw,
+        "actor_type": (
+            AuditActorType.SYSTEM.value if machine else AuditActorType.PRACTITIONER.value
+        ),
+        "actor_id": None if machine else raw,
+        "actor_display": raw,
+    }
+
 
 # Structured per-breast finding slots and their allowed values (None always allowed).
 # density: BI-RADS breast composition a-d; presence slots: none|present; nodes: normal|abnormal.
@@ -102,10 +127,62 @@ class MammographyService:
                 setattr(rec, key, value if value not in ("",) else None)
 
         await self._session.flush()
+        # PRE-EXISTING BUG FIX (independent of the Observation work below).
+        # updated_at is `onupdate=func.now()`, so a flush that actually changes a field
+        # issues `SET updated_at = now()` and SQLAlchemy expires the attribute — it cannot
+        # know the server-computed value. _to_dict then reads rec.updated_at, which
+        # triggers implicit IO; on an AsyncSession that raises MissingGreenlet and the save
+        # returns 500. It only *looked* fine before because a save that changes nothing
+        # emits no UPDATE and so expires nothing — i.e. editing a report failed while
+        # re-saving an unchanged one succeeded. refresh() fetches the server values once,
+        # explicitly, instead of relying on a lazy load that async cannot service.
+        await self._session.refresh(rec)
+        # Materialise the response BEFORE the derived-data hook. The hook shares this
+        # session and writes through it, which can expire `rec`'s attributes again;
+        # building the payload first makes the caller immune to whatever the hook does.
+        payload = self._to_dict(rec)
+        await self._record_observations(rec, study)
         await self._audit(
             actor_id, "mammography_report_saved", study_uid, {"created": created}
         )
-        return self._to_dict(rec)
+        return payload
+
+    async def _record_observations(
+        self, rec: MammographyReportRecord, study: StudyRecord
+    ) -> None:
+        """Pivot the saved per-breast slots into Observation rows (step 4, source 3).
+
+        Best-effort: deriving a searchable copy of a finding must never fail the
+        radiologist's save. Idempotent — ObservationService replaces this study's own
+        mammography rows, which matters because these slots are edited repeatedly.
+        """
+        from app.config import get_settings
+
+        if not get_settings().observations_enabled:
+            return
+        patient_ref = getattr(study, "patient_id", None)
+        if not patient_ref:
+            return
+        try:
+            from app.application.observation_service import ObservationService
+
+            # SAVEPOINT, not just try/except. These hooks share the caller's session, so a
+            # failure inside one can leave the session unusable and take the radiologist's
+            # report save down with it — catching the exception is not sufficient on its
+            # own. begin_nested() rolls back only the hook's work and leaves the outer
+            # transaction intact, which is what "must never fail the caller" requires.
+            async with self._session.begin_nested():
+                await ObservationService(self._session).record_mammography_observations(
+                    rec,
+                    patient_ref=patient_ref,
+                    tenant_id=getattr(rec, "tenant_id", None) or "default",
+                )
+        except Exception as exc:
+            logger.warning(
+                "mammography_observations_failed",
+                study_uid=getattr(rec, "study_instance_uid", None),
+                error=str(exc),
+            )
 
     async def _audit(
         self, actor: str | None, action: str, entity_id: str, details: dict[str, Any]
@@ -116,7 +193,8 @@ class MammographyService:
                 action=action,
                 entity_type="mammography_report",
                 entity_id=entity_id,
-                actor=actor or "system",
+                **_audit_actor_fields(actor),
+                action_crude=audit_action_to_crude(action),
                 details=details,
             )
         )

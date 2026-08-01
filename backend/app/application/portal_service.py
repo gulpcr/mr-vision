@@ -7,7 +7,9 @@ from __future__ import annotations
 import hashlib
 import secrets
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta, timezone
+
+from app.domain.models import utcnow
 from typing import Any
 
 import structlog
@@ -34,7 +36,7 @@ class PortalService:
         from app.infrastructure.database.models import ShareLinkRecord
 
         token = secrets.token_urlsafe(32)
-        expires_at = datetime.now(timezone.utc) + timedelta(days=ttl_days)
+        expires_at = utcnow() + timedelta(days=ttl_days)
 
         record = ShareLinkRecord(
             id=str(uuid.uuid4()),
@@ -73,7 +75,7 @@ class PortalService:
         if record is None:
             return None
 
-        now = datetime.now(timezone.utc)
+        now = utcnow()
         exp = record.expires_at
         if exp.tzinfo is None:
             exp = exp.replace(tzinfo=timezone.utc)

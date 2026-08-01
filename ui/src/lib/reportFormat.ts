@@ -14,9 +14,17 @@ export function fmtAge(raw: string | null): string {
   return String(raw);
 }
 
+// Accepts BOTH the legacy raw DICOM codes ("M"/"F"/"O") and the normalised FHIR
+// administrativeGender values the backend now stores ("male"/"female"/"other"/
+// "unknown"), so studies ingested before and after that change render identically.
 export function fmtSex(raw: string | null): string {
   if (!raw) return "—";
-  return ({ M: "Male", F: "Female", O: "Other" } as Record<string, string>)[raw.trim().toUpperCase()] || raw;
+  return (
+    {
+      M: "Male", F: "Female", O: "Other",
+      MALE: "Male", FEMALE: "Female", OTHER: "Other", UNKNOWN: "Unknown",
+    } as Record<string, string>
+  )[raw.trim().toUpperCase()] || raw;
 }
 
 export function fmtDate(raw: string | null): string {

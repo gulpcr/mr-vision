@@ -24,7 +24,9 @@ from app.interface.api.critical_alerts import router as critical_alerts_router
 from app.interface.api.dicomweb import router as dicomweb_router
 from app.interface.api.roles import router as roles_router
 from app.interface.api.reading import router as reading_router
+from app.interface.api.clinical import router as clinical_router
 from app.interface.api.onboarding import router as onboarding_router
+from app.interface.api.practitioners import router as practitioners_router
 from app.interface.api.mammography import router as mammography_router
 from app.interface.api.medgemma_debug import router as medgemma_debug_router
 from app.interface.api.ws import router as ws_router
@@ -103,6 +105,8 @@ def create_app() -> FastAPI:
     app.include_router(roles_router, prefix="/api")
     app.include_router(reading_router, prefix="/api")
     app.include_router(onboarding_router, prefix="/api")
+    app.include_router(clinical_router, prefix="/api")
+    app.include_router(practitioners_router, prefix="/api")
     app.include_router(mammography_router, prefix="/api")
     app.include_router(medgemma_debug_router, prefix="/api")
     app.include_router(dicomweb_router, prefix="/api")

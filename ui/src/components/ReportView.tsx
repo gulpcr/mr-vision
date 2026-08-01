@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
+import Link from "next/link";
 import { Study, Result, getPreviewUrl, getArtifactUrl, getFusedUrl } from "@/lib/api";
 import { isCtReportUsecase } from "@/lib/ctReport";
 import { QAPanel } from "./QAPanel";
@@ -30,12 +31,18 @@ interface ReportViewProps {
   study: Study;
   result: Result;
   uiSchema: any;
+  /** Study-page inline mode: keep patient info + imaging (flagged/sampled slices,
+      fused/overlay images) but hide the findings/measurements/QA sections that are
+      shown in full on the dedicated report page — avoids duplicating the report. */
+  compact?: boolean;
+  /** Link to the full dedicated report (shown as a CTA in compact mode). */
+  reportHref?: string;
 }
 
 const VIEWS = ["axial", "coronal", "sagittal"] as const;
 const PET_USECASES = ["pet_ct", "pet_ct_brain"];
 
-export function ReportView({ study, result, uiSchema }: ReportViewProps) {
+export function ReportView({ study, result, uiSchema, compact = false, reportHref }: ReportViewProps) {
   const summarySection = uiSchema?.sections?.find((s: any) => s.id === "summary");
   const tumorDetected = result.summary?.tumor_detected;
   const [zoomedView, setZoomedView] = useState<string | null>(null);
@@ -51,17 +58,21 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
   const isAbdomenCt = isCtReportUsecase(result.usecase_name); // CT-report family (abdomen_ct + ct_*)
   const isAbdomenScan = isAbdomenCt; // full-volume MedGemma scan (flagged slices)
   const isAbdomenCtLike = isAbdomenCt;
+  // Mammography is 2D — the axial/coronal/sagittal segmentation-overlay previews
+  // don't apply and would always render "Preview not available", so skip them.
+  const isMammography = result.usecase_name === "mammography";
 
   return (
     <div className="report-container">
-      {/* Header */}
+      {/* Header — redundant with the study-page patient card, so hidden in compact */}
+      {!compact && (
       <div className="report-header">
         <div className="flex items-start justify-between">
           <div>
-            <h1 className="text-xl font-bold text-primary-900">
+            <h1 className="text-xl font-bold text-primary-900 dark:text-primary-200">
               {uiSchema?.title || "AI Analysis Report"}
             </h1>
-            <p className="text-sm text-gray-500 mt-0.5">
+            <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
               {uiSchema?.description || ""}
             </p>
             <div className="mt-2">
@@ -84,57 +95,73 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
         {/* Patient & Study Info Grid */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-x-8 gap-y-2 mt-5 text-sm">
           <div>
-            <span className="text-gray-400 text-xs uppercase tracking-wider">Patient</span>
-            <p className="font-semibold text-gray-900">
+            <span className="text-gray-400 dark:text-gray-500 text-xs uppercase tracking-wider">Patient</span>
+            <p className="font-semibold text-gray-900 dark:text-gray-100">
               {formatPatientName(study.patient_name)}
             </p>
           </div>
           <div>
-            <span className="text-gray-400 text-xs uppercase tracking-wider">MRN</span>
-            <p className="font-semibold text-gray-900">{study.patient_id || "-"}</p>
+            <span className="text-gray-400 dark:text-gray-500 text-xs uppercase tracking-wider">MRN</span>
+            <p className="font-semibold text-gray-900 dark:text-gray-100">{study.patient_id || "-"}</p>
           </div>
           <div>
-            <span className="text-gray-400 text-xs uppercase tracking-wider">Study Date</span>
-            <p className="font-semibold text-gray-900">{formatDate(study.study_date)}</p>
+            <span className="text-gray-400 dark:text-gray-500 text-xs uppercase tracking-wider">Study Date</span>
+            <p className="font-semibold text-gray-900 dark:text-gray-100">{formatDate(study.study_date)}</p>
           </div>
           <div>
-            <span className="text-gray-400 text-xs uppercase tracking-wider">Accession</span>
-            <p className="font-semibold text-gray-900">
+            <span className="text-gray-400 dark:text-gray-500 text-xs uppercase tracking-wider">Accession</span>
+            <p className="font-semibold text-gray-900 dark:text-gray-100">
               {study.accession_number || "-"}
             </p>
           </div>
           <div>
-            <span className="text-gray-400 text-xs uppercase tracking-wider">Modality</span>
-            <p className="font-semibold text-gray-900">{study.modality || "-"}</p>
+            <span className="text-gray-400 dark:text-gray-500 text-xs uppercase tracking-wider">Modality</span>
+            <p className="font-semibold text-gray-900 dark:text-gray-100">{study.modality || "-"}</p>
           </div>
           <div>
-            <span className="text-gray-400 text-xs uppercase tracking-wider">Body Part</span>
-            <p className="font-semibold text-gray-900">
+            <span className="text-gray-400 dark:text-gray-500 text-xs uppercase tracking-wider">Body Part</span>
+            <p className="font-semibold text-gray-900 dark:text-gray-100">
               {study.body_part_examined || "-"}
             </p>
           </div>
           <div>
-            <span className="text-gray-400 text-xs uppercase tracking-wider">Referring</span>
-            <p className="font-semibold text-gray-900">
+            <span className="text-gray-400 dark:text-gray-500 text-xs uppercase tracking-wider">Referring</span>
+            <p className="font-semibold text-gray-900 dark:text-gray-100">
               {study.referring_physician || "-"}
             </p>
           </div>
           <div>
-            <span className="text-gray-400 text-xs uppercase tracking-wider">Institution</span>
-            <p className="font-semibold text-gray-900">
+            <span className="text-gray-400 dark:text-gray-500 text-xs uppercase tracking-wider">Institution</span>
+            <p className="font-semibold text-gray-900 dark:text-gray-100">
               {study.institution_name || "-"}
             </p>
           </div>
         </div>
       </div>
+      )}
+
+      {/* Compact mode: point to the full report (findings live there). */}
+      {compact && reportHref && (
+        <div className="report-section flex flex-wrap items-center justify-between gap-3">
+          <p className="text-sm text-gray-500 dark:text-gray-400">
+            Full findings, measurements and QA are in the detailed report.
+          </p>
+          <Link
+            href={reportHref}
+            className="no-print inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-semibold rounded-lg bg-primary-900 text-white hover:bg-primary-800 transition-colors"
+          >
+            <FileText className="w-4 h-4" /> Open full report
+          </Link>
+        </div>
+      )}
 
       {/* Pipeline mismatch warning */}
       {isPipelineMismatch && (
-        <div className="report-section flex items-start gap-3 bg-amber-50 border border-amber-200 rounded-lg px-4 py-3">
-          <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+        <div className="report-section flex items-start gap-3 bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-lg px-4 py-3">
+          <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
           <div>
-            <p className="text-sm font-semibold text-amber-800">Pipeline mismatch — results are unreliable</p>
-            <p className="text-xs text-amber-700 mt-1 leading-relaxed">
+            <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">Pipeline mismatch — results are unreliable</p>
+            <p className="text-xs text-amber-700 dark:text-amber-300 mt-1 leading-relaxed">
               The <strong>{result.usecase_name.replace(/_/g, " ")}</strong> pipeline was run on
               this study, but no PET series (modality PT) were found in the DICOM data.
               SUV measurements were derived from MRI signal intensity and have no clinical meaning.
@@ -145,7 +172,7 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
       )}
 
       {/* Final Diagnosis Banner */}
-      {(() => {
+      {!compact && (() => {
         const diagnosis: string | undefined =
           result.summary?.diagnosis as string | undefined;
         if (!diagnosis) return null;
@@ -160,17 +187,17 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
           >
             <h2 className="report-section-title flex items-center gap-2">
               {isPositive ? (
-                <AlertTriangle className="w-5 h-5 text-red-600" />
+                <AlertTriangle className="w-5 h-5 text-red-600 dark:text-red-400" />
               ) : (
-                <CheckCircle2 className="w-5 h-5 text-green-600" />
+                <CheckCircle2 className="w-5 h-5 text-green-600 dark:text-green-400" />
               )}
               Final Diagnosis
             </h2>
             <div
               className={`mt-2 p-4 rounded-lg text-sm font-semibold leading-relaxed ${
                 isPositive
-                  ? "bg-red-50 text-red-900 border border-red-200"
-                  : "bg-green-50 text-green-900 border border-green-200"
+                  ? "bg-red-50 dark:bg-red-950 text-red-900 dark:text-red-200 border border-red-200 dark:border-red-800"
+                  : "bg-green-50 dark:bg-green-950 text-green-900 dark:text-green-200 border border-green-200 dark:border-green-800"
               }`}
             >
               {diagnosis}
@@ -182,15 +209,15 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
       {/* ── Abdomen CT: MedGemma free-text report + sampled slices ── */}
       {isAbdomenCtLike && (
         <>
-          {(() => {
+          {!compact && (() => {
             const report: any = result.summary?.ai_report;
             if (!report || (!report.findings && !report.impression)) {
               return (
-                <div className="report-section flex items-start gap-3 bg-amber-50 border border-amber-200 rounded-lg px-4 py-3">
-                  <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                <div className="report-section flex items-start gap-3 bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-lg px-4 py-3">
+                  <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
                   <div>
-                    <p className="text-sm font-semibold text-amber-800">No AI report generated</p>
-                    <p className="text-xs text-amber-700 mt-1 leading-relaxed">
+                    <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">No AI report generated</p>
+                    <p className="text-xs text-amber-700 dark:text-amber-300 mt-1 leading-relaxed">
                       The raw slices below were rendered, but the local MedGemma model did not
                       produce a report (it may be disabled or unreachable). Review the slices
                       directly.
@@ -202,31 +229,31 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
             return (
               <div className="report-section" style={{ borderLeft: "4px solid #2563eb", paddingLeft: "1.25rem" }}>
                 <h2 className="report-section-title flex items-center gap-2">
-                  <FileText className="w-5 h-5 text-blue-600" />
+                  <FileText className="w-5 h-5 text-blue-600 dark:text-blue-400" />
                   AI Radiological Report
                 </h2>
                 {report.findings && (
                   <div className="mt-2">
-                    <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">
+                    <h3 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">
                       Findings
                     </h3>
-                    <p className="text-sm text-gray-800 leading-relaxed whitespace-pre-line">
+                    <p className="text-sm text-gray-800 dark:text-gray-200 leading-relaxed whitespace-pre-line">
                       {report.findings}
                     </p>
                   </div>
                 )}
                 {report.impression && (
                   <div className="mt-4">
-                    <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">
+                    <h3 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">
                       Impression
                     </h3>
-                    <p className="text-sm text-gray-900 font-medium leading-relaxed whitespace-pre-line">
+                    <p className="text-sm text-gray-900 dark:text-gray-100 font-medium leading-relaxed whitespace-pre-line">
                       {report.impression}
                     </p>
                   </div>
                 )}
                 {(report.disclaimer || result.summary?.ai_report_provider) && (
-                  <p className="text-xs text-gray-400 mt-3 italic">
+                  <p className="text-xs text-gray-400 dark:text-gray-500 mt-3 italic">
                     {report.disclaimer}
                     {result.summary?.ai_report_provider
                       ? ` (${result.summary.ai_report_provider})`
@@ -244,27 +271,37 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
             if (slices.length === 0) return null;
             return (
               <div className="report-section">
-                <h2 className="report-section-title">
-                  {isAbdomenScan ? "Flagged Slices" : "Sampled Slices"}
-                </h2>
-                <p className="text-xs text-gray-400 mb-3">
+                <div className="flex items-center gap-2 mb-1.5">
+                  <h2 className="report-section-title !mb-0">
+                    {isAbdomenScan ? "Flagged Slices" : "Sampled Slices"}
+                  </h2>
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-primary-50 dark:bg-primary-950 text-primary-700 dark:text-primary-300">
+                    {slices.length}
+                  </span>
+                </div>
+                <p className="text-xs text-gray-400 dark:text-gray-500 mb-3.5">
                   {isAbdomenScan
                     ? "MedGemma scanned every slice of the volume and flagged these axial levels as potentially abnormal (superior→inferior) — the report was written from these findings."
                     : "Axial levels sampled evenly across the volume (superior→inferior), each in multiple HU windows (soft-tissue / liver / bone) — the exact images the AI report was written from."}
                 </p>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-3">
                   {slices.map((artifact) => (
-                    <div key={artifact.name}>
-                      <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5 text-center">
-                        {artifact.name.replace(/\.[^.]+$/, "").replace(/_/g, " ")}
-                      </div>
-                      <div className="bg-black rounded-lg overflow-hidden border-2 border-gray-200">
-                        <AuthImg
-                          src={getArtifactUrl(study.study_instance_uid, result.usecase_name, artifact.name)}
-                          alt={artifact.name}
-                          className="w-full h-auto"
-                          fallback="Slice not available"
-                        />
+                    <div
+                      key={artifact.name}
+                      className="group relative aspect-square bg-black rounded-xl overflow-hidden ring-1 ring-gray-200 dark:ring-white/10 hover:ring-primary-400 dark:hover:ring-primary-500 transition-all"
+                    >
+                      <AuthImg
+                        src={getArtifactUrl(study.study_instance_uid, result.usecase_name, artifact.name)}
+                        alt={artifact.name}
+                        className="w-full h-full object-contain transition-transform duration-300 group-hover:scale-105"
+                        loadingClassName="w-full h-full bg-gray-900 animate-pulse motion-reduce:animate-none"
+                        errorClassName="w-full h-full flex items-center justify-center text-gray-500 dark:text-gray-400 text-xs bg-black"
+                        fallback="Slice not available"
+                      />
+                      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/40 to-transparent px-2.5 pt-6 pb-1.5">
+                        <span className="block text-[11px] font-medium text-white/90 capitalize truncate">
+                          {artifact.name.replace(/\.[^.]+$/, "").replace(/_/g, " ")}
+                        </span>
                       </div>
                     </div>
                   ))}
@@ -276,7 +313,7 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
       )}
 
       {/* Clinical Findings */}
-      {summarySection && (
+      {!compact && summarySection && (
         <div className="report-section">
           <h2 className="report-section-title flex items-center gap-2">
             <FileText className="w-4 h-4" />
@@ -286,8 +323,8 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
             <div
               className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold mb-4 ${
                 tumorDetected
-                  ? "bg-red-100 text-red-800 border border-red-300"
-                  : "bg-green-50 text-green-700 border border-green-200"
+                  ? "bg-red-100 dark:bg-red-900 text-red-800 dark:text-red-300 border border-red-300"
+                  : "bg-green-50 dark:bg-green-950 text-green-700 dark:text-green-300 border border-green-200 dark:border-green-800"
               }`}
             >
               {tumorDetected ? (
@@ -314,14 +351,14 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
                   value > 0;
                 return (
                   <div key={field.key}>
-                    <dt className="text-gray-500 text-xs uppercase tracking-wider">
+                    <dt className="text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wider">
                       {field.label}
                     </dt>
                     <dd
                       className={`font-medium mt-0.5 ${
                         isVolumeField
-                          ? "text-red-700 text-lg font-bold"
-                          : "text-gray-900"
+                          ? "text-red-700 dark:text-red-300 text-lg font-bold"
+                          : "text-gray-900 dark:text-gray-100"
                       }`}
                     >
                       {formatValue(value, field.format, field.precision, field.unit)}
@@ -336,7 +373,7 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
       {/* AI-Detected Abnormal Findings (pathology: abdomen organs, chest lungs,
           coronary stenosis, dedicated lesion model). Data-driven from the result
           so it appears for any use case that emits these keys. */}
-      {(() => {
+      {!compact && (() => {
         const findings: any[] = Array.isArray(result.summary?.abnormal_findings)
           ? result.summary.abnormal_findings
           : [];
@@ -349,14 +386,14 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
 
         const sevCls = (sev?: string): string =>
           (({
-            marked: "bg-red-100 text-red-800 border-red-300",
-            severe: "bg-red-100 text-red-800 border-red-300",
-            occluded: "bg-red-100 text-red-800 border-red-300",
-            moderate: "bg-amber-100 text-amber-800 border-amber-300",
-            mild: "bg-yellow-100 text-yellow-800 border-yellow-300",
-            minimal: "bg-yellow-50 text-yellow-700 border-yellow-200",
+            marked: "bg-red-100 dark:bg-red-900 text-red-800 dark:text-red-300 border-red-300",
+            severe: "bg-red-100 dark:bg-red-900 text-red-800 dark:text-red-300 border-red-300",
+            occluded: "bg-red-100 dark:bg-red-900 text-red-800 dark:text-red-300 border-red-300",
+            moderate: "bg-amber-100 dark:bg-amber-900 text-amber-800 dark:text-amber-300 border-amber-300",
+            mild: "bg-yellow-100 dark:bg-yellow-900 text-yellow-800 dark:text-yellow-300 border-yellow-300",
+            minimal: "bg-yellow-50 dark:bg-yellow-950 text-yellow-700 dark:text-yellow-300 border-yellow-200 dark:border-yellow-800",
           } as Record<string, string>)[sev || ""] ||
-            "bg-gray-100 text-gray-700 border-gray-300");
+            "bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600");
 
         return (
           <div
@@ -364,12 +401,12 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
             style={{ borderLeft: "4px solid #d97706", paddingLeft: "1.25rem" }}
           >
             <h2 className="report-section-title flex items-center gap-2">
-              <AlertTriangle className="w-5 h-5 text-amber-600" />
+              <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400" />
               AI-Detected Abnormal Findings
             </h2>
 
             {lesionDetected && (
-              <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-semibold mt-2 bg-red-100 text-red-800 border border-red-300">
+              <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-semibold mt-2 bg-red-100 dark:bg-red-900 text-red-800 dark:text-red-300 border border-red-300">
                 <AlertTriangle className="w-4 h-4" />
                 {lesionCount > 0 ? `${lesionCount} lesion(s) detected` : "Lesion detected"}
               </div>
@@ -391,11 +428,11 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
                         {sev || "finding"}
                       </span>
                       <div>
-                        <span className="font-semibold text-gray-900 capitalize">
+                        <span className="font-semibold text-gray-900 dark:text-gray-100 capitalize">
                           {String(title).replace(/_/g, " ")}
                         </span>
                         {f.note && (
-                          <p className="text-gray-600 mt-0.5 leading-relaxed">{f.note}</p>
+                          <p className="text-gray-600 dark:text-gray-400 mt-0.5 leading-relaxed">{f.note}</p>
                         )}
                       </div>
                     </li>
@@ -406,10 +443,10 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
 
             {segments.length > 0 && (
               <div className="mt-4">
-                <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
+                <h3 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">
                   Per-Vessel Stenosis
                   {result.summary?.cad_rads != null && (
-                    <span className="ml-2 normal-case text-gray-700">
+                    <span className="ml-2 normal-case text-gray-700 dark:text-gray-300">
                       · CAD-RADS {result.summary.cad_rads}
                     </span>
                   )}
@@ -426,11 +463,11 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
                   </thead>
                   <tbody>
                     {segments.map((s: any, i: number) => (
-                      <tr key={i} className={s.stenosis_pct >= 50 ? "bg-red-50" : ""}>
-                        <td className="font-semibold text-gray-900">
+                      <tr key={i} className={s.stenosis_pct >= 50 ? "bg-red-50 dark:bg-red-950" : ""}>
+                        <td className="font-semibold text-gray-900 dark:text-gray-100">
                           {s.name || s.vessel || `Vessel ${i + 1}`}
                         </td>
-                        <td className={s.stenosis_pct >= 50 ? "text-red-700 font-bold" : ""}>
+                        <td className={s.stenosis_pct >= 50 ? "text-red-700 dark:text-red-300 font-bold" : ""}>
                           {typeof s.stenosis_pct === "number"
                             ? `${s.stenosis_pct.toFixed(0)}%`
                             : "-"}
@@ -453,7 +490,7 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
               </div>
             )}
 
-            <p className="text-xs text-gray-400 mt-3 italic">
+            <p className="text-xs text-gray-400 dark:text-gray-500 mt-3 italic">
               AI screening output — not a diagnosis. Review against the images and clinical
               context.
             </p>
@@ -462,7 +499,7 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
       })()}
 
       {/* Anatomical Region Summary (PET-CT: group lesions by region) */}
-      {(() => {
+      {!compact && (() => {
         const lesions: any[] = result.measurements?.lesions;
         if (!Array.isArray(lesions) || lesions.length === 0) return null;
         if (!lesions[0]?.anatomical_region) return null;
@@ -490,9 +527,9 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
               <tbody>
                 {regions.map(([region, stats]) => (
                   <tr key={region}>
-                    <td className="font-semibold text-gray-900">{region}</td>
+                    <td className="font-semibold text-gray-900 dark:text-gray-100">{region}</td>
                     <td>{stats.count}</td>
-                    <td className={stats.suvMax > 2.5 ? "text-red-700 font-bold" : ""}>{stats.suvMax.toFixed(2)}</td>
+                    <td className={stats.suvMax > 2.5 ? "text-red-700 dark:text-red-300 font-bold" : ""}>{stats.suvMax.toFixed(2)}</td>
                     <td>{stats.mtv.toFixed(1)}</td>
                   </tr>
                 ))}
@@ -503,7 +540,7 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
       })()}
 
       {/* Measurements Table */}
-      {uiSchema?.sections
+      {!compact && uiSchema?.sections
         ?.filter((s: any) => s.type === "table")
         .map((section: any) => {
           const data = getNestedValue(result, section.data_path);
@@ -581,7 +618,7 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
                     return (
                       <tr
                         key={key}
-                        className={hasVolume ? "bg-red-50" : ""}
+                        className={hasVolume ? "bg-red-50 dark:bg-red-950" : ""}
                         style={
                           hasVolume
                             ? { borderLeft: `3px solid ${barColor}` }
@@ -594,10 +631,10 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
                             className={
                               col.key === "_key"
                                 ? `font-semibold ${
-                                    hasVolume ? "text-red-900" : "text-gray-900"
+                                    hasVolume ? "text-red-900 dark:text-red-200" : "text-gray-900 dark:text-gray-100"
                                   }`
                                 : col.key === "_value" && hasVolume
-                                ? "text-red-700 font-bold"
+                                ? "text-red-700 dark:text-red-300 font-bold"
                                 : ""
                             }
                           >
@@ -617,7 +654,7 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
                         {supplementaryData && (
                           <td
                             className={
-                              hasVolume ? "text-red-600 font-semibold" : ""
+                              hasVolume ? "text-red-600 dark:text-red-400 font-semibold" : ""
                             }
                           >
                             {formatValue(
@@ -631,7 +668,7 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
                           <td className="w-32">
                             {hasVolume && (
                               <div className="flex items-center gap-2">
-                                <div className="flex-1 h-3 bg-gray-100 rounded-full overflow-hidden">
+                                <div className="flex-1 h-3 bg-gray-100 dark:bg-gray-800 rounded-full overflow-hidden">
                                   <div
                                     className="h-full rounded-full transition-all"
                                     style={{
@@ -652,7 +689,7 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
 
               {/* Supplementary measurements info */}
               {result.measurements?.voxel_spacing && (
-                <div className="mt-3 flex gap-6 text-xs text-gray-500">
+                <div className="mt-3 flex gap-6 text-xs text-gray-500 dark:text-gray-400">
                   <span>
                     Voxel Spacing:{" "}
                     {Array.isArray(result.measurements.voxel_spacing)
@@ -679,21 +716,26 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
       {/* ── PET/CT: Fused images via on-demand endpoint ── */}
       {isPetCt ? (
         <>
-          <div className="report-section">
-            <h2 className="report-section-title">Fused PET/CT Images</h2>
-            <p className="text-xs text-gray-400 mb-3">
-              CT anatomy with PET SUV hot-colormap overlay. Only voxels above 20% of the display
-              SUVmax are coloured to preserve CT anatomy in low-uptake regions. Scroll through every
-              slice in each plane.
-            </p>
-            <div className="rounded-lg overflow-hidden border-2 border-gray-200">
-              <FusedViewer
-                studyUid={study.study_instance_uid}
-                usecase={result.usecase_name}
-                modes={["fused"]}
-              />
+          {/* In compact (study-page) mode the main viewer already shows the
+              interactive fused viewer, so this duplicate is hidden to avoid a
+              long, redundant second copy. */}
+          {!compact && (
+            <div className="report-section">
+              <h2 className="report-section-title">Fused PET/CT Images</h2>
+              <p className="text-xs text-gray-400 dark:text-gray-500 mb-3">
+                CT anatomy with PET SUV hot-colormap overlay. Only voxels above 20% of the display
+                SUVmax are coloured to preserve CT anatomy in low-uptake regions. Scroll through every
+                slice in each plane.
+              </p>
+              <div className="rounded-lg overflow-hidden border border-gray-200 dark:border-gray-700">
+                <FusedViewer
+                  studyUid={study.study_instance_uid}
+                  usecase={result.usecase_name}
+                  modes={["fused"]}
+                />
+              </div>
             </div>
-          </div>
+          )}
 
           {/* MIP images — shown when present in artifacts */}
           {(() => {
@@ -710,14 +752,16 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
                     const label = artifact.name.replace(/\.[^.]+$/, "").split("_").slice(1).join(" ") || artifact.name;
                     return (
                       <div key={artifact.name}>
-                        <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5 text-center">
+                        <div className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1.5 text-center">
                           {label}
                         </div>
-                        <div className="bg-black rounded-lg overflow-hidden border-2 border-gray-200">
+                        <div className="h-[360px] bg-black rounded-lg overflow-hidden border border-gray-200 dark:border-gray-700">
                           <AuthImg
                             src={getArtifactUrl(study.study_instance_uid, result.usecase_name, artifact.name)}
                             alt={artifact.name}
-                            className="w-full h-auto"
+                            className="w-full h-full object-contain"
+                            loadingClassName="w-full h-full bg-gray-900 animate-pulse motion-reduce:animate-none"
+                            errorClassName="w-full h-full flex items-center justify-center text-gray-500 dark:text-gray-400 text-xs bg-black"
                             fallback="MIP not available"
                           />
                         </div>
@@ -729,8 +773,9 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
             );
           })()}
         </>
-      ) : isAbdomenCtLike ? (
-        /* abdomen_ct / abdomen_ct2: slices are rendered in the dedicated block above, no overlay */
+      ) : isAbdomenCtLike || isMammography ? (
+        /* abdomen_ct: slices render in the block above; mammography is 2D — no
+           3-plane overlay in either case. */
         null
       ) : (
         /* ── MRI / non-PET: Segmentation overlay via preview endpoint ── */
@@ -741,17 +786,19 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
               const url = getPreviewUrl(study.study_instance_uid, result.usecase_name, view);
               return (
                 <div key={view} className="relative group">
-                  <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5 text-center">
+                  <div className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1.5 text-center">
                     {view}
                   </div>
                   <div
-                    className="relative bg-black rounded-lg overflow-hidden cursor-pointer border-2 border-gray-200 hover:border-primary-400 transition-colors"
+                    className="relative aspect-[4/3] bg-black rounded-lg overflow-hidden cursor-pointer border border-gray-200 dark:border-gray-700 hover:border-primary-400 transition-colors"
                     onClick={() => setZoomedView(view)}
                   >
                     <AuthImg
                       src={url}
                       alt={`${view} segmentation overlay`}
-                      className="w-full h-auto"
+                      className="w-full h-full object-contain"
+                      loadingClassName="w-full h-full bg-gray-900 animate-pulse motion-reduce:animate-none"
+                      errorClassName="w-full h-full flex items-center justify-center text-gray-500 dark:text-gray-400 text-xs bg-black"
                       fallback="Preview not available"
                     />
                     <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -762,7 +809,7 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
               );
             })}
           </div>
-          <p className="text-xs text-gray-400 mt-3 text-center">
+          <p className="text-xs text-gray-400 dark:text-gray-500 mt-3 text-center">
             Colored regions indicate AI-detected segmentation overlaid on the scan. Click to enlarge.
           </p>
         </div>
@@ -786,9 +833,9 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
             <button
               onClick={() => setZoomedView(null)}
               aria-label="Close enlarged view"
-              className="absolute -top-3 -right-3 bg-white rounded-full p-1.5 shadow-lg z-10 hover:bg-gray-100"
+              className="absolute -top-3 -right-3 bg-white dark:bg-surface rounded-full p-1.5 shadow-lg z-10 hover:bg-gray-100 dark:hover:bg-gray-700"
             >
-              <X className="w-5 h-5 text-gray-700" />
+              <X className="w-5 h-5 text-gray-700 dark:text-gray-300" />
             </button>
             <div className="text-center text-white text-sm font-medium mb-2 uppercase tracking-wider">
               {zoomedView} View
@@ -815,13 +862,15 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
       )}
 
       {/* Quality Assurance */}
-      <div className="report-section">
-        <h2 className="report-section-title">Quality Assurance</h2>
-        <QAPanel flags={result.qa_flags} details={result.qa_details} />
-      </div>
+      {!compact && (
+        <div className="report-section">
+          <h2 className="report-section-title">Quality Assurance</h2>
+          <QAPanel flags={result.qa_flags} details={result.qa_details} />
+        </div>
+      )}
 
       {/* Segmentation Overlay */}
-      {uiSchema?.sections
+      {!compact && uiSchema?.sections
         ?.filter((s: any) => s.type === "overlay")
         .map((section: any) => {
           const segArtifacts = result.artifacts.filter(
@@ -864,11 +913,11 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
                   {segArtifacts.map((a) => (
                     <div
                       key={a.name}
-                      className="flex items-center gap-2 text-sm text-gray-600"
+                      className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400"
                     >
                       <Download className="w-3.5 h-3.5" />
                       <span>{a.name}</span>
-                      <span className="text-xs text-gray-400">
+                      <span className="text-xs text-gray-400 dark:text-gray-500">
                         ({(a.size_bytes / 1024).toFixed(0)} KB)
                       </span>
                     </div>
@@ -880,6 +929,7 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
         })}
 
       {/* Footer */}
+      {!compact && (
       <div className="report-footer">
         <div className="flex flex-wrap gap-x-8 gap-y-1 mb-3">
           <span>
@@ -895,6 +945,7 @@ export function ReportView({ study, result, uiSchema }: ReportViewProps) {
         </div>
         <AIProvenanceBanner variant="footer" />
       </div>
+      )}
     </div>
   );
 }

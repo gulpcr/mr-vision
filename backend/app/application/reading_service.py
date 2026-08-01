@@ -13,13 +13,36 @@ Application layer — no FastAPI imports; the router maps exceptions to HTTP cod
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
 from typing import Any
 
 import structlog
 from sqlalchemy import func, select
 
+from app.domain.enums import AuditActorType, audit_action_to_crude
+from app.domain.models import utcnow
+
 logger = structlog.get_logger(__name__)
+
+
+def _audit_actor_fields(actor: str | None) -> dict[str, str | None]:
+    """Type a legacy free-text ``actor`` for the AuditEvent columns.
+
+    NOTE: this service passes a *username* for claim/report/sign (see claim() and
+    _assign_to). Usernames change, so ``actor_id`` is only meaningful once those call
+    sites pass ``user_id``; until then the username is preserved in ``actor_display`` and
+    ``actor_id`` carries whatever was given rather than being silently dropped.
+    """
+    raw = (actor or "system").strip() or "system"
+    machine = raw in ("system", "celery_worker")
+    return {
+        "actor": raw,
+        "actor_type": (
+            AuditActorType.SYSTEM.value if machine else AuditActorType.PRACTITIONER.value
+        ),
+        "actor_id": None if machine else raw,
+        "actor_display": raw,
+    }
+
 
 UNREAD = "unread"
 IN_PROGRESS = "in_progress"
@@ -28,8 +51,10 @@ SIGNED = "signed"
 VALID_STATUSES = (UNREAD, IN_PROGRESS, REPORTED, SIGNED)
 
 
-def _now() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+def _now():
+    """Lifecycle timestamps (assigned_at / reported_at / signed_at) and the TAT they
+    feed are tz-aware UTC — the columns are timestamptz as of migration 027."""
+    return utcnow()
 
 
 class StudyNotFoundError(Exception):
@@ -181,7 +206,8 @@ class ReadingService:
             action=action,
             entity_type="study_reading",
             entity_id=entity_id,
-            actor=actor or "system",
+            **_audit_actor_fields(actor),
+            action_crude=audit_action_to_crude(action),
             details=details,
         ))
 

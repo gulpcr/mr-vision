@@ -171,7 +171,10 @@ export function MolecularContent({ study, result, onSignedOff }: MolecularConten
     return () => { active = false; };
   }, [study.study_instance_uid]);
 
-  const refDr = study.referring_physician || clinical?.referrer || "—";
+  // Onboarding-entered referrer takes priority — it's curated clinical intake
+  // data, whereas study.referring_physician comes straight from the DICOM
+  // ReferringPhysicianName tag and is often an unreliable placeholder.
+  const refDr = clinical?.referrer || study.referring_physician || "—";
   const ageDisplay = study.patient_age ? fmtAge(study.patient_age) : (clinical?.age_band || "—");
   const clinicalHistory = clinical?.clinical_history || clinical?.indication || "[To be completed by referring clinician]";
   const comparative = clinical?.comparative_study || "No prior study available for comparison.";

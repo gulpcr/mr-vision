@@ -1,0 +1,69 @@
+# FHIR terminology map — coronary_cta (Agatston calcium scoring)
+#
+# STRICT WHITELIST. Local codes always; `standard:` ignored until `verified: true`.
+#
+# Scope warning worth keeping in view: only the calcium-scoring path in this plugin is
+# implemented. Stenosis / CAD-RADS are stubbed (the pipeline reports
+# `stenosis_analysis_available`), so those fields are mapped but will simply be absent
+# from most results — extract_values skips absent paths rather than exporting empties.
+#
+# UCUM: the Agatston score is a unitless computed score → "{score}" is the conventional
+# UCUM annotation for exactly this case. Calcium volume is mm3.
+
+observations:
+  - path: summary.calcium_score_agatston
+    code: coronarycta.agatston_score
+    display: Coronary artery calcium score (Agatston)
+    category: imaging
+    unit: "{score}"
+    standard:
+      system: http://loinc.org
+      code: <TBD-verify>
+      verified: false
+
+  - path: summary.calcium_volume_mm3
+    code: coronarycta.calcium_volume
+    display: Coronary calcium volume
+    category: imaging
+    unit: mm3
+
+  - path: summary.calcium_lesion_count
+    code: coronarycta.calcium_lesion_count
+    display: Calcified lesion count
+    category: imaging
+    unit: "1"
+
+  # Coded severity band derived from the score (Minimal | Mild | Moderate | Severe).
+  - path: summary.calcium_category
+    code: coronarycta.calcium_category
+    display: Coronary calcium severity category
+    category: imaging
+    value_codes: true
+
+  # Present only when the (currently stubbed) stenosis analysis actually ran.
+  - path: summary.max_stenosis_pct
+    code: coronarycta.max_stenosis_pct
+    display: Maximum coronary stenosis
+    category: imaging
+    unit: "%"
+
+  - path: summary.cad_rads
+    code: coronarycta.cad_rads
+    display: CAD-RADS category
+    category: imaging
+    value_codes: true
+    standard:
+      system: http://snomed.info/sct
+      code: <TBD-verify>
+      verified: false
+
+excluded:
+  - measurements.calcium_per_vessel    # per-vessel breakdown → report table; would need a
+                                       # SNOMED coronary-artery body site per row first
+  - measurements.segments              # segment-level detail — same reason
+  - measurements.image_dimensions      # technical
+  - measurements.voxel_spacing_mm      # technical
+  - summary.stenosis_analysis_available  # capability flag, not a clinical finding
+  - summary.inference_method           # → Device/Provenance
+  - summary.diagnosis                  # narrative → DiagnosticReport.conclusion
+  - summary.processing_notes

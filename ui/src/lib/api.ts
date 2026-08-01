@@ -109,8 +109,11 @@ export interface OrderCreate {
   height_cm?: number | null;
   weight_kg?: number | null;
   fasting_glucose?: string | null;
+  fasting_glucose_dt?: string | null;
   injection_site?: string | null;
   creatinine?: string | null;
+  creatinine_dt?: string | null;
+  external_order_ref?: string | null;
 }
 
 export interface ClinicalForStudy {
@@ -181,8 +184,17 @@ export interface OrderOut {
   weight_kg?: number | null;
   bmi?: number | null;
   fasting_glucose?: string | null;
+  // ISO timestamps for when each sample was drawn — feed the derived Observation's
+  // effectiveDateTime instead of falling back to the intake time.
+  fasting_glucose_dt?: string | null;
   injection_site?: string | null;
   creatinine?: string | null;
+  creatinine_dt?: string | null;
+  external_order_ref?: string | null;
+  // Coded diagnosis, merged in from the order's FHIR Condition row by GET /patients/{id}.
+  diagnosis_system?: string | null;
+  diagnosis_code?: string | null;
+  diagnosis_display?: string | null;
   created_at: string | null;
 }
 

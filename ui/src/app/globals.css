@@ -360,47 +360,81 @@ html {
   background-clip: content-box;
 }
 
-/* Medical Report Print Styles */
+/* Medical Report Print Styles. Force the report back to paper-white with dark
+   text even when the app is in dark mode (the on-screen report is dark-aware). */
 @media print {
   .sidebar, .no-print { display: none !important; }
   main { margin: 0 !important; padding: 0 !important; max-width: 100% !important; }
-  .report-container {
+  .report-container,
+  .dark .report-container {
+    background: #fff !important;
+    color: #111 !important;
     box-shadow: none !important;
     border: 1px solid #ccc !important;
   }
+  /* Neutralise dark-mode light text/backgrounds so the print stays legible. */
+  .dark .report-container [class*="dark:text-"] { color: #111 !important; }
+  .dark .report-container [class*="dark:bg-"] { background-color: transparent !important; }
   .report-header { border-bottom: 2px solid #1e3a5f; }
-  .report-footer { border-top: 1px solid #ccc; page-break-inside: avoid; }
+  .report-footer { border-top: 1px solid #ccc; page-break-inside: avoid; background: #f8fafc !important; }
 }
 
-/* Report Styles — intentionally paper-white in both themes (printed output). */
+/* Report Styles. Dark-aware: ReportView is the ONLY consumer of these classes
+   and only renders on the (dark) study page — the dedicated report/PDF pages use
+   their own components — so a dark surface here is correct. The @media print
+   block above forces the report back to paper-white for browser printing. */
 .report-container {
-  @apply bg-white rounded-lg shadow-sm border border-gray-200;
+  @apply bg-white rounded-2xl shadow-sm border border-gray-200;
+}
+.dark .report-container {
+  @apply bg-surface border-border shadow-none;
 }
 
 .report-header {
   @apply border-b-2 border-primary-900 px-6 py-5;
 }
+.dark .report-header {
+  @apply border-primary-800;
+}
 
 .report-section {
   @apply px-6 py-4 border-b border-gray-100;
+}
+.dark .report-section {
+  @apply border-gray-800;
 }
 
 .report-section-title {
   @apply text-xs font-semibold text-primary-900 uppercase tracking-wider mb-3;
 }
+.dark .report-section-title {
+  @apply text-primary-300;
+}
 
 .report-footer {
-  @apply px-6 py-4 bg-gray-50 rounded-b-lg text-xs text-gray-500;
+  @apply px-6 py-4 bg-gray-50 rounded-b-2xl text-xs text-gray-500;
+}
+.dark .report-footer {
+  @apply bg-surface-raised text-gray-400;
 }
 
 .measurement-table th {
-  @apply text-left py-2 px-3 text-xs font-semibold text-gray-500 uppercase tracking-wider bg-gray-50 border-b;
+  @apply text-left py-2 px-3 text-xs font-semibold text-gray-500 uppercase tracking-wider bg-gray-50 border-b border-gray-200;
+}
+.dark .measurement-table th {
+  @apply bg-white/5 text-gray-400 border-gray-700;
 }
 
 .measurement-table td {
   @apply py-2.5 px-3 text-sm border-b border-gray-50;
 }
+.dark .measurement-table td {
+  @apply border-gray-800;
+}
 
 .measurement-table tr:hover td {
   @apply bg-blue-50;
+}
+.dark .measurement-table tr:hover td {
+  @apply bg-white/5;
 }

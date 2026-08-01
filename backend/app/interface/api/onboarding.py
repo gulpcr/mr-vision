@@ -6,6 +6,7 @@ POST /orders/{id}/link-study?study_uid=  require(patient.onboard)  link an inges
 """
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -22,7 +23,7 @@ router = APIRouter(tags=["onboarding"])
 class OrderCreate(BaseModel):
     patient_ref: str = Field(..., min_length=1, max_length=128)
     sex: str = Field(..., description="female | male | other")
-    age_band: str = Field(..., description="0-17 | 18-39 | 40-64 | 65+")
+    age_band: str = Field(..., description="patient age in whole years, e.g. '11'")
     modality: str = Field(..., min_length=1, max_length=16)
     body_part: str | None = Field(None, max_length=64)
     indication: str = Field(..., min_length=1)
@@ -36,8 +37,23 @@ class OrderCreate(BaseModel):
     height_cm: float | None = None
     weight_kg: float | None = None
     fasting_glucose: str | None = None
+    # When the sample was actually drawn. Optional, but it is real clinical
+    # information: a glucose from three days ago means something different from one
+    # drawn at injection. Absent, the Observation falls back to the intake time.
+    fasting_glucose_dt: datetime | None = None
     injection_site: str | None = None
     creatinine: str | None = None
+    creatinine_dt: datetime | None = None
+    # The placer's own order number, when the order came from a RIS/EHR rather than
+    # being typed here (FHIR ServiceRequest.identifier / HL7 ORC-2).
+    external_order_ref: str | None = Field(None, max_length=128)
+    # Coded referral diagnosis. Optional, and never inferred from the free-text
+    # indication — a guessed ICD-10 code is filed by the receiving system as fact.
+    # system must be an ICD-10/ICD-10-CM/SNOMED URI (see domain/fhir_terminology).
+    diagnosis_code: str | None = Field(None, max_length=64)
+    diagnosis_system: str | None = Field(None, max_length=128)
+    diagnosis_display: str | None = Field(None, max_length=512)
+    diagnosis_onset_dt: datetime | None = None
 
 
 class PatientUpdate(BaseModel):
@@ -59,8 +75,21 @@ class OrderUpdate(BaseModel):
     height_cm: float | None = None
     weight_kg: float | None = None
     fasting_glucose: str | None = None
+    # When the sample was actually drawn. Optional, but it is real clinical
+    # information: a glucose from three days ago means something different from one
+    # drawn at injection. Absent, the Observation falls back to the intake time.
+    fasting_glucose_dt: datetime | None = None
     injection_site: str | None = None
     creatinine: str | None = None
+    creatinine_dt: datetime | None = None
+    external_order_ref: str | None = Field(None, max_length=128)
+    # Coded referral diagnosis. Optional, and never inferred from the free-text
+    # indication — a guessed ICD-10 code is filed by the receiving system as fact.
+    # system must be an ICD-10/ICD-10-CM/SNOMED URI (see domain/fhir_terminology).
+    diagnosis_code: str | None = Field(None, max_length=64)
+    diagnosis_system: str | None = Field(None, max_length=128)
+    diagnosis_display: str | None = Field(None, max_length=512)
+    diagnosis_onset_dt: datetime | None = None
 
 
 def _actor_id(request: Request) -> str:

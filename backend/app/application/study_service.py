@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import structlog
 
+from app.application.dicom_demographics import normalize_administrative_gender
 from app.domain.enums import AuditAction, BodyPart
 from app.domain.interfaces import (
     AuditRepository,
@@ -16,6 +17,53 @@ from app.domain.models import AuditEntry, Series, Study
 from app.infrastructure.dicomweb.client import DICOMwebClient
 
 logger = structlog.get_logger(__name__)
+
+
+def _parse_study_datetime(
+    study_date_raw: Any, study_time_raw: Any
+) -> tuple[datetime | None, str]:
+    """Combine DICOM StudyDate (0008,0020) and StudyTime (0008,0030) into one instant.
+
+    Returns ``(datetime | None, precision)`` where precision is ``"second"`` if
+    StudyTime was present and parsed, else ``"date"``. Reading StudyDate alone — as
+    this did previously — silently produces midnight for every study, which is
+    indistinguishable from a study genuinely acquired at 00:00 and makes two studies
+    on the same day unorderable by time.
+
+    StudyTime is DICOM VR TM: ``HHMMSS.FFFFFF`` with any trailing component optional,
+    so HH, HHMM and HHMMSS all occur in the wild along with an optional fraction.
+
+    Timezone: DICOM StudyDate/StudyTime are *site-local* wall-clock unless
+    TimezoneOffsetFromUTC (0008,0201) is present, which it usually is not. Every other
+    timestamp in this platform is UTC, and the pre-existing behaviour was to store this
+    value unlabelled alongside them, so it is labelled UTC here to keep one consistent
+    convention. That is an assumption, not a fact: for a site not operating in UTC the
+    time-of-day is offset. Reading 0008,0201 when present is the correct refinement.
+    """
+    if not study_date_raw:
+        return None, "date"
+
+    try:
+        study_date = datetime.strptime(str(study_date_raw), "%Y%m%d")
+    except (ValueError, TypeError):
+        return None, "date"
+
+    raw_time = str(study_time_raw or "").strip()
+    if raw_time:
+        # Drop the optional fractional seconds, then pad HH / HHMM out to HHMMSS.
+        digits = raw_time.split(".")[0]
+        if digits.isdigit() and len(digits) in (2, 4, 6):
+            try:
+                parsed = datetime.strptime(digits.ljust(6, "0"), "%H%M%S")
+                study_date = study_date.replace(
+                    hour=parsed.hour, minute=parsed.minute, second=parsed.second
+                )
+                return study_date.replace(tzinfo=timezone.utc), "second"
+            except (ValueError, TypeError):
+                pass
+        logger.warning("study_time_unparseable", study_time=raw_time)
+
+    return study_date.replace(tzinfo=timezone.utc), "date"
 
 
 class StudyService:
@@ -52,13 +100,9 @@ class StudyService:
         except ValueError:
             pass
 
-        study_date_raw = ext(study_meta, "StudyDate")
-        study_date = None
-        if study_date_raw:
-            try:
-                study_date = datetime.strptime(str(study_date_raw), "%Y%m%d")
-            except (ValueError, TypeError):
-                pass
+        study_date, study_date_precision = _parse_study_datetime(
+            ext(study_meta, "StudyDate"), ext(study_meta, "StudyTime")
+        )
 
         # Patient demographics for reporting (PatientWeight in kg, PatientSize in m)
         def _to_float(raw: Any) -> float | None:
@@ -74,6 +118,12 @@ class StudyService:
         # Patient age: prefer the DICOM PatientAge tag (0010,1010); if absent (common — many
         # scanners omit it), compute it from PatientBirthDate (0010,0030) + StudyDate so age
         # still flows to the reports. Stored in DICOM AS format ("022Y") for downstream parsing.
+        #
+        # PatientBirthDate is read here and then DISCARDED — never persisted. That is a
+        # deliberate PHI decision (PatientRecord is de-identified: sex + age band only),
+        # with a knowingly accepted cost: Patient.birthDate can never be exported to FHIR
+        # and Patient?birthdate= search is unavailable. age_band is NOT a substitute —
+        # FHIR has no age element. See app/application/dicom_demographics.py.
         patient_age = ext(study_meta, "PatientAge")
         if not patient_age:
             birth_raw = ext(study_meta, "PatientBirthDate")
@@ -92,11 +142,15 @@ class StudyService:
             study_instance_uid=study_instance_uid,
             patient_id=ext(study_meta, "PatientID"),
             patient_name=ext(study_meta, "PatientName"),
-            patient_sex=ext(study_meta, "PatientSex"),
+            # Normalised at the boundary to the FHIR administrativeGender value set, so
+            # studies.patient_sex and patients.sex finally agree (both "male"/"female"/
+            # "other"). Raw DICOM "M"/"F"/"O" is not a valid administrativeGender code.
+            patient_sex=normalize_administrative_gender(ext(study_meta, "PatientSex")),
             patient_age=patient_age,
             patient_weight_kg=weight_kg,
             patient_height_cm=height_cm,
             study_date=study_date,
+            study_date_precision=study_date_precision,
             study_description=ext(study_meta, "StudyDescription"),
             accession_number=ext(study_meta, "AccessionNumber"),
             referring_physician=ext(study_meta, "ReferringPhysicianName"),

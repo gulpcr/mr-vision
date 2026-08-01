@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Annotated
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -436,7 +436,12 @@ async def generate_pdf_report(
                 patient_info["clinical_history"] = clinical["clinical_history"]
             if clinical.get("comparative_study"):
                 patient_info["comparative_study"] = clinical["comparative_study"]
-            if clinical.get("referrer") and not patient_info.get("referring_physician"):
+            if clinical.get("referrer"):
+                # Prefer the clinician-entered referrer from patient intake over the
+                # DICOM ReferringPhysicianName tag — the latter is frequently a
+                # placeholder/unreliable value from the scanner or PACS, not curated
+                # clinical data. Previously this only applied when the DICOM tag was
+                # empty, so a garbage-but-truthy tag value always won.
                 patient_info["referring_physician"] = clinical["referrer"]
             if clinical.get("fasting_glucose"):
                 patient_info["fasting_glucose"] = clinical["fasting_glucose"]
@@ -531,6 +536,7 @@ async def generate_dicom_sr(
 async def export_fhir_report(
     study_uid: str,
     usecase: str,
+    request: Request,
     service: Annotated[ResultService, Depends(get_result_service)],
 ):
     """Export result as FHIR DiagnosticReport."""
@@ -543,6 +549,21 @@ async def export_fhir_report(
     if not result:
         raise HTTPException(404, "No result found")
 
+    # DiagnosticReport.status is derived from the radiologist reading workflow, never
+    # hardcoded — an unreviewed AI result must not be published as a "final" report.
+    from sqlalchemy import select
+
+    from app.infrastructure.database.models import StudyRecord
+
+    async_session = service._result_repo._session
+    study_rec = (
+        await async_session.execute(
+            select(StudyRecord).where(StudyRecord.study_instance_uid == study_uid)
+        )
+    ).scalar_one_or_none()
+    if study_rec is None:
+        raise HTTPException(404, "Study not found")
+
     from app.fhir.fhir_export_service import FHIRExportService
 
     fhir_service = FHIRExportService()
@@ -553,7 +574,28 @@ async def export_fhir_report(
             "summary": result.summary,
             "measurements": result.measurements,
             "qa_flags": [f.value if hasattr(f, "value") else f for f in result.qa_flags],
+            # Required for the Device/Provenance attribution: without these the exporter
+            # cannot say which algorithm produced the finding, and emits a bare report.
+            "model_version": result.model_version,
+            "model_checksum": result.model_checksum,
         },
+        reading_status=study_rec.reading_status,
+        is_latest=result.is_latest,
+        accession_number=study_rec.accession_number,
+        patient_mrn=study_rec.patient_id,
+    )
+    if report.get("status") == "refused":
+        raise HTTPException(409, report.get("message", "FHIR export refused"))
+
+    # An export sends PHI outside the platform; record who did it and what state the
+    # report was in when they did.
+    from app.application.audit_service import AuditService
+
+    await AuditService(service._result_repo._session).record_read(
+        request, "result_exported", "result", result.id,
+        details={"study_instance_uid": study_uid, "usecase": usecase, "format": "fhir",
+                 "reading_status": study_rec.reading_status,
+                 "report_status": (report.get("report") or {}).get("status")},
     )
     return report
 

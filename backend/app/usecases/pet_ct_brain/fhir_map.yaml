@@ -1,0 +1,50 @@
+# FHIR terminology map — pet_ct_brain (amyloid / FDG brain PET, atlas SUVR)
+#
+# STRICT WHITELIST. Local codes are always used; `standard:` blocks are ignored until
+# `verified: true`. Centiloid and regional SUVR have no LOINC binding that can be
+# asserted without sign-off, so they stay local.
+#
+# UCUM: SUVR and Centiloid are both dimensionless ratios/scales → "1".
+
+observations:
+  - path: summary.global_suvr
+    code: petctbrain.global_suvr
+    display: Global cortical SUVR
+    category: imaging
+    unit: "1"
+    standard:
+      system: http://loinc.org
+      code: <TBD-verify>
+      verified: false
+
+  - path: summary.centiloid
+    code: petctbrain.centiloid
+    display: Centiloid value
+    category: imaging
+    unit: "1"
+
+  # Boolean → coded answer (true/false), not a quantity. The 24.4 Centiloid threshold
+  # that produces it lives in the pipeline; only the outcome is recorded here.
+  - path: summary.amyloid_positive
+    code: petctbrain.amyloid_positive
+    display: Amyloid status (positive/negative)
+    category: imaging
+    value_codes: true
+
+  - path: measurements.reference.suv_mean
+    code: petctbrain.reference_suvmean
+    display: Reference-region SUVmean
+    category: imaging
+    unit: "1"
+
+excluded:
+  - measurements.regional            # full per-region array — belongs in the report table,
+                                     # not as hundreds of chart Observations
+  - measurements.image_dimensions    # technical
+  - measurements.voxel_spacing_mm    # technical
+  - summary.reference_region         # which atlas region was used → method metadata
+  - summary.tracer                   # belongs on ImagingStudy
+  - summary.fdg_pattern              # currently always None (no DL classifier loaded)
+  - summary.most_hypometabolic_region     # narrative findings → conclusion
+  - summary.most_hypermetabolic_region
+  - summary.processing_notes

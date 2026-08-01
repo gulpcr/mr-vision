@@ -149,23 +149,27 @@ export function Donut({
         <svg viewBox="0 0 36 36" className="w-full h-full -rotate-0">
           <circle cx="18" cy="18" r={R} fill="none" stroke="rgb(var(--border))" strokeWidth="3.2" opacity="0.35" />
           {total > 0 &&
-            arcs.map((a, i) => (
-              <circle
-                key={a.label}
-                cx="18"
-                cy="18"
-                r={R}
-                fill="none"
-                stroke={a.color}
-                strokeWidth={hover === i ? 4 : 3.2}
-                strokeDasharray={`${a.len} ${100 - a.len}`}
-                strokeDashoffset={a.dashoffset}
-                strokeLinecap="round"
-                style={{ transition: "stroke-width 160ms ease" }}
-                onMouseEnter={() => setHover(i)}
-                onMouseLeave={() => setHover(null)}
-              />
-            ))}
+            arcs.map((a, i) =>
+              // Skip zero-value segments entirely — a rounded line-cap would
+              // otherwise render a stray dot for an empty slice.
+              a.value <= 0 ? null : (
+                <circle
+                  key={a.label}
+                  cx="18"
+                  cy="18"
+                  r={R}
+                  fill="none"
+                  stroke={a.color}
+                  strokeWidth={hover === i ? 4 : 3.2}
+                  strokeDasharray={`${a.len} ${100 - a.len}`}
+                  strokeDashoffset={a.dashoffset}
+                  strokeLinecap="round"
+                  style={{ transition: "stroke-width 160ms ease" }}
+                  onMouseEnter={() => setHover(i)}
+                  onMouseLeave={() => setHover(null)}
+                />
+              )
+            )}
         </svg>
         <div className="absolute inset-0 grid place-items-center text-center pointer-events-none">
           <div>

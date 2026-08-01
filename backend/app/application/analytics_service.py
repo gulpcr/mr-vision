@@ -2,23 +2,22 @@
 from __future__ import annotations
 
 import statistics
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Any
 
 import structlog
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.models import utcnow
+
 logger = structlog.get_logger(__name__)
 
 
-def _naive_utc_now() -> datetime:
-    """Return current UTC time without tzinfo (matches DB TIMESTAMP WITHOUT TIME ZONE)."""
-    return datetime.utcnow()
-
-
 def _since(days: int) -> datetime:
-    return _naive_utc_now() - timedelta(days=days)
+    """Lower bound for the rolling analytics windows, tz-aware UTC to match the
+    timestamptz columns it is compared against (migration 027)."""
+    return utcnow() - timedelta(days=days)
 
 
 class AnalyticsService:
@@ -171,7 +170,7 @@ class AnalyticsService:
         # Last 7 days actual
         last_7: list[int] = []
         for i in range(7, 0, -1):
-            day = (_naive_utc_now() - timedelta(days=i)).strftime("%Y-%m-%d")
+            day = (utcnow() - timedelta(days=i)).strftime("%Y-%m-%d")
             last_7.append(sum(daily_map.get(day, {}).values()))
 
         # 7-day exponential smoothing forecast
@@ -266,7 +265,8 @@ class AnalyticsService:
         study_res = await self._session.execute(study_stmt)
         studies = study_res.scalars().all()
 
-        now_naive = _naive_utc_now()
+        # tz-aware: subtracted below against StudyRecord.created_at (timestamptz).
+        now = utcnow()
 
         result_map: dict[str, list] = {}
         for r in results:
@@ -280,7 +280,7 @@ class AnalyticsService:
         for s in studies:
             ts = s.created_at
             if ts:
-                age_hours = (now_naive - ts).total_seconds() / 3600
+                age_hours = (now - ts).total_seconds() / 3600
                 study_age_map[s.study_instance_uid] = max(0.0, age_hours)
 
         scores = []

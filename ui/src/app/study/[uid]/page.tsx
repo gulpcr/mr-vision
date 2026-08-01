@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useParams } from "next/navigation";
-import { api, Study, Job, Result, CptSuggestion, ProtocolCheckResult, ComparisonData, MedGemmaDebug } from "@/lib/api";
+import { api, Study, Job, Result, CptSuggestion, ProtocolCheckResult, ComparisonData, ClinicalForStudy } from "@/lib/api";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { useAuth } from "@/lib/auth";
@@ -14,8 +14,33 @@ import { isCtReportUsecase } from "@/lib/ctReport";
 import Link from "next/link";
 import {
   ArrowLeft, ExternalLink, ArrowLeftRight, FileDown, Share2, AlertTriangle,
-  CheckCircle, DollarSign, Stethoscope, ChevronDown, ChevronUp, Link2, X, TrendingUp, FileText, Bug, Truck
+  CheckCircle, DollarSign, Stethoscope, ChevronDown, ChevronUp, Link2, X, TrendingUp, FileText, Truck,
+  ArrowUpRight, MoreHorizontal, Hash, Building2, Layers, User, Clock,
 } from "lucide-react";
+
+// Modality → gradient, mirrored from the dashboard/worklist convention so a
+// study's modality reads the same colour everywhere in the app.
+const HERO_MODALITY_GRAD: Record<string, string> = {
+  MR: "from-cyan-500 to-teal-600",
+  CT: "from-indigo-500 to-blue-600",
+  PT: "from-amber-500 to-orange-600",
+  NM: "from-emerald-500 to-green-600",
+  US: "from-teal-500 to-cyan-600",
+  MG: "from-pink-500 to-rose-600",
+};
+function heroModalityGrad(m: string | null | undefined): string {
+  return HERO_MODALITY_GRAD[(m || "").toUpperCase()] ?? "from-slate-500 to-slate-600";
+}
+
+// DICOM Age String (0010,1010) is zero-padded to 3 digits + a unit letter, e.g.
+// "022Y" or "070Y" — strip the padding for a compact, easy-to-read "22Y"/"70Y".
+// Falsy/unrecognized input (e.g. an onboarding age BAND like "40-64") is passed
+// through unchanged.
+function compactAge(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const m = String(raw).trim().match(/^0*(\d{1,3})([YMWD])$/i);
+  return m ? `${m[1]}${m[2].toUpperCase()}` : raw;
+}
 
 // ── Sequence type detector ────────────────────────────────────────────────────
 
@@ -63,6 +88,19 @@ export default function StudyPage() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [results, setResults] = useState<Result[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // Clinical intake (patient onboarding) — used to prefer the receptionist-entered
+  // referrer over the DICOM ReferringPhysicianName tag, which is frequently an
+  // unreliable placeholder rather than curated clinical data.
+  const [clinical, setClinical] = useState<ClinicalForStudy | null>(null);
+  useEffect(() => {
+    let active = true;
+    api.onboarding
+      .getClinical(uid)
+      .then((c) => { if (active) setClinical(c && Object.keys(c).length > 0 ? c : null); })
+      .catch(() => { /* no order linked — fall back to DICOM value */ });
+    return () => { active = false; };
+  }, [uid]);
   const [selectedUsecase, setSelectedUsecase] = useState<string | null>(null);
   const [uiSchema, setUiSchema] = useState<any>(null);
   const [selectedResult, setSelectedResult] = useState<Result | null>(null);
@@ -85,13 +123,20 @@ export default function StudyPage() {
   const [shareLink, setShareLink] = useState<string | null>(null);
   const [shareCopied, setShareCopied] = useState(false);
 
-  // MedGemma debug panel
-  const [mgDebug, setMgDebug] = useState<MedGemmaDebug | null>(null);
-  const [mgLoading, setMgLoading] = useState(false);
-  const [mgRunning, setMgRunning] = useState(false);
-  const [mgOpen, setMgOpen] = useState(false);
 
   const [pdfLoading, setPdfLoading] = useState(false);
+
+  // "More" quick-tools overflow menu
+  const [moreOpen, setMoreOpen] = useState(false);
+  const moreRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!moreOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (moreRef.current && !moreRef.current.contains(e.target as Node)) setMoreOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [moreOpen]);
 
   const [readingBusy, setReadingBusy] = useState(false);
   const [readingError, setReadingError] = useState<string | null>(null);
@@ -121,7 +166,10 @@ export default function StudyPage() {
         setStudy(s);
         setJobs(j);
         setResults(r);
-        if (r.length > 0 && !selectedUsecase) setSelectedUsecase(r[0].usecase_name);
+        // Default to the first result ONLY when nothing is selected yet. Uses a
+        // functional update so the 10 s poll reads the CURRENT selection (not the
+        // stale closure value) — otherwise switching modality would snap back.
+        if (r.length > 0) setSelectedUsecase((prev) => prev ?? r[0].usecase_name);
       } catch (e) {
         console.error(e);
       } finally {
@@ -136,7 +184,7 @@ export default function StudyPage() {
   // Track the selected use case's result across the 10 s poll. Keyed on `results`
   // so a freshly-arrived result is picked up — but deliberately does NOT reset the
   // feature panels (that lives in the effect below), or every poll would close an
-  // open CPT / Protocol / Prior / MedGemma panel mid-view.
+  // open CPT / Protocol / Prior panel mid-view.
   useEffect(() => {
     if (!selectedUsecase) {
       setSelectedResult(null);
@@ -159,8 +207,6 @@ export default function StudyPage() {
     setPriorComparison(null);
     setPriorOpen(false);
     setShareLink(null);
-    setMgDebug(null);
-    setMgOpen(false);
   }, [selectedUsecase, uid]);
 
   const loadCptSuggestions = useCallback(async () => {
@@ -205,45 +251,6 @@ export default function StudyPage() {
     }
   }, [uid, selectedUsecase, priorLoading]);
 
-  // Fetch MedGemma inputs (prompt + all images) without calling the model — fast.
-  const loadMedgemmaDebug = useCallback(async () => {
-    if (!selectedUsecase || mgLoading) return;
-    setMgLoading(true);
-    try {
-      const data = await api.medgemmaDebug.get(selectedUsecase, uid, {
-        run: false,
-        includeImages: true,
-      });
-      setMgDebug(data);
-      setMgOpen(true);
-    } catch (e: any) {
-      alert("MedGemma debug not available: " + e.message);
-    } finally {
-      setMgLoading(false);
-    }
-  }, [uid, selectedUsecase, mgLoading]);
-
-  // Re-run the local model. sendAll=true feeds every image (incl. Stage-3 crops).
-  const runMedgemma = useCallback(
-    async (sendAll: boolean) => {
-      if (!selectedUsecase || mgRunning) return;
-      setMgRunning(true);
-      try {
-        const data = await api.medgemmaDebug.get(selectedUsecase, uid, {
-          run: true,
-          sendAll,
-          includeImages: true,
-        });
-        setMgDebug(data);
-        setMgOpen(true);
-      } catch (e: any) {
-        alert("MedGemma run failed: " + e.message);
-      } finally {
-        setMgRunning(false);
-      }
-    },
-    [uid, selectedUsecase, mgRunning]
-  );
 
   const handleDownloadPdf = useCallback(async () => {
     if (!selectedResult || pdfLoading) return;
@@ -287,7 +294,7 @@ export default function StudyPage() {
     });
   };
 
-  if (loading) return <p className="text-gray-500 dark:text-gray-400 dark:text-gray-500 p-4">Loading study...</p>;
+  if (loading) return <p className="text-gray-500 dark:text-gray-400 p-4">Loading study...</p>;
   if (!study) return <p className="text-red-500 dark:text-red-400 p-4">Study not found</p>;
 
   // All studies open in the OHIF v3 / Cornerstone3D viewer; the mode is chosen
@@ -315,83 +322,148 @@ export default function StudyPage() {
   return (
     <div className="space-y-6">
       {/* Breadcrumb */}
-      <Link href="/worklist" className="inline-flex items-center gap-1.5 text-sm text-gray-500 dark:text-gray-400 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">
+      <Link href="/worklist" className="inline-flex items-center gap-1.5 text-sm text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300">
         <ArrowLeft className="w-4 h-4" /> Back to Worklist
       </Link>
 
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">
-            {formatPatientName(study.patient_name)}
-          </h1>
-          <p className="text-sm text-gray-500 dark:text-gray-400 dark:text-gray-500 mt-0.5">
-            {study.study_description || "No description"} &middot;{" "}
-            {study.body_part_examined || study.modality || ""} &middot;{" "}
-            {formatDate(study.study_date)}
-          </p>
-        </div>
-        <a
-          href={viewerUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-primary-600 rounded-lg hover:bg-primary-700 transition-colors"
-        >
-          <ExternalLink className="w-4 h-4" />
-          {hasPetSeries ? "Open in OHIF" : "Open Viewer"}
-        </a>
-      </div>
-
-      {/* Reading workflow */}
+      {/* Patient hero — identity, demographics, reading status + actions */}
       {(() => {
         const rs = study.reading_status || "unread";
-        const btn = "px-3 py-1.5 text-xs font-medium rounded-lg transition-colors disabled:opacity-50";
+        const btn = "press px-3 py-1.5 text-xs font-medium rounded-lg transition-colors disabled:opacity-50";
+        const grad = heroModalityGrad(study.modality);
+        const initials =
+          formatPatientName(study.patient_name).split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join("").toUpperCase() || "?";
+
+        // Demographic line sits right under the name — the scannable pattern used
+        // in PACS/EHR patient banners — so the chip strip below doesn't repeat it.
+        // Age prefers the DICOM tag (compacted from "022Y" to "22Y"); when the
+        // scan carries no age at all, falls back to the onboarding-entered band.
+        const ageDisplay = compactAge(study.patient_age) || clinical?.age_band || null;
+        const subtitle = [study.patient_sex, ageDisplay, study.modality, formatDate(study.study_date)]
+          .filter(Boolean);
+
+        // Icon-labelled chips for the rest of the study metadata (no duplication
+        // with the subtitle above); core fields always show for cross-modality
+        // consistency, optional ones only when populated. Referring prefers the
+        // onboarding-entered referrer over the raw DICOM tag — see the `clinical`
+        // fetch above for why.
+        const referring = clinical?.referrer || study.referring_physician;
+        const chips: { icon: typeof Hash; label: string; value: string }[] = [
+          { icon: Hash, label: "MRN", value: study.patient_id || "—" },
+          { icon: FileText, label: "Accession", value: study.accession_number || "—" },
+          ...(study.body_part_examined ? [{ icon: Stethoscope, label: "Body Part", value: study.body_part_examined }] : []),
+          ...(referring ? [{ icon: User, label: "Referring", value: referring }] : []),
+          ...(study.institution_name ? [{ icon: Building2, label: "Institution", value: study.institution_name }] : []),
+          { icon: Layers, label: "Series", value: String(study.series.length) },
+        ];
+
         return (
-          <div className="bg-white dark:bg-surface rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 px-4 py-3">
-            <div className="flex items-center justify-between flex-wrap gap-3">
-              <div className="flex items-center gap-3 flex-wrap">
-                <span className="text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase tracking-wider">Reading</span>
-                <StatusBadge variant="reading" status={rs} />
-                {study.assigned_to_username && (
-                  <span className="text-sm text-gray-600 dark:text-gray-400 dark:text-gray-500">
-                    Assigned to <span className="font-medium">{study.assigned_to_username}</span>
-                  </span>
-                )}
-                {study.tat_signoff_minutes != null ? (
-                  <span className="text-xs text-gray-400 dark:text-gray-500">Turnaround: {study.tat_signoff_minutes} min</span>
-                ) : study.tat_report_minutes != null ? (
-                  <span className="text-xs text-gray-400 dark:text-gray-500">Report TAT: {study.tat_report_minutes} min</span>
-                ) : null}
+          <div className="glass rounded-2xl overflow-hidden">
+            {/* Modality-tinted accent bar */}
+            <div className={`h-1 bg-gradient-to-r ${grad}`} />
+
+            {/* Identity + actions */}
+            <div className="px-5 sm:px-6 pt-5 pb-4 flex items-start justify-between gap-5 flex-wrap">
+              <div className="flex items-start gap-4 min-w-0">
+                <div className={`relative grid place-items-center w-16 h-16 rounded-2xl bg-gradient-to-br ${grad} text-white text-xl font-bold shrink-0 shadow-glow ring-4 ring-black/[0.03] dark:ring-white/[0.06]`}>
+                  {initials}
+                </div>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100 truncate">
+                      {formatPatientName(study.patient_name)}
+                    </h1>
+                    <StatusBadge variant="reading" status={rs} assignedTo={study.assigned_to_username} />
+                  </div>
+                  {subtitle.length > 0 && (
+                    <p className="text-sm text-gray-500 dark:text-gray-400 mt-1 flex items-center gap-1.5 flex-wrap">
+                      {subtitle.map((part, i) => (
+                        <span key={i} className="flex items-center gap-1.5">
+                          {i > 0 && <span className="text-gray-300 dark:text-gray-600">&middot;</span>}
+                          <span className={i === subtitle.length - 1 ? "" : "font-medium text-gray-700 dark:text-gray-300"}>{part}</span>
+                        </span>
+                      ))}
+                    </p>
+                  )}
+                  {study.study_description && (
+                    <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5 truncate">{study.study_description}</p>
+                  )}
+                </div>
               </div>
-              <div className="flex items-center gap-2">
-                {rs === "unread" && (
-                  <>
-                    <button disabled={readingBusy} onClick={() => runReading(() => api.reading.claim(uid))}
-                      className={`${btn} text-white bg-primary-600 hover:bg-primary-700`}>Claim</button>
-                    <button disabled={readingBusy} onClick={() => runReading(() => api.reading.autoAssign(uid))}
-                      className={`${btn} text-primary-700 border border-primary-200 hover:bg-primary-50`}>Auto-assign</button>
-                  </>
-                )}
-                {rs === "in_progress" && (
-                  <>
-                    <button disabled={readingBusy} onClick={() => runReading(() => api.reading.report(uid))}
-                      className={`${btn} text-white bg-amber-600 hover:bg-amber-700`}>Mark Reported</button>
-                    <button disabled={readingBusy} onClick={() => runReading(() => api.reading.unclaim(uid))}
-                      className={`${btn} text-gray-600 dark:text-gray-400 dark:text-gray-500 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 dark:hover:bg-surface-raised`}>Release</button>
-                  </>
-                )}
-                {rs === "reported" && (
-                  <button disabled={readingBusy} onClick={() => setPendingSign(true)}
-                    className={`${btn} text-white bg-green-600 hover:bg-green-700`}>Sign Off</button>
-                )}
-                {rs === "signed" && (
-                  <span className="text-xs text-green-600 dark:text-green-400 flex items-center gap-1">
-                    <CheckCircle className="w-4 h-4" /> Signed
+
+              {/* Actions — grouped into one visual cluster instead of floating pieces */}
+              <div className="flex flex-col items-end gap-2 shrink-0">
+                <a
+                  href={viewerUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="btn-gradient flex items-center gap-2 px-4 py-2.5 text-sm font-semibold rounded-xl"
+                >
+                  <ExternalLink className="w-4 h-4" />
+                  {hasPetSeries ? "Open in OHIF" : "Open Viewer"}
+                </a>
+                <div className="flex items-center gap-2 flex-wrap justify-end p-1 rounded-xl bg-black/[0.03] dark:bg-white/[0.04] border border-border">
+                  {rs === "unread" && (
+                    <>
+                      <button disabled={readingBusy} onClick={() => runReading(() => api.reading.claim(uid))}
+                        className={`${btn} text-white bg-primary-600 hover:bg-primary-700`}>Claim</button>
+                      <button disabled={readingBusy} onClick={() => runReading(() => api.reading.autoAssign(uid))}
+                        className={`${btn} text-primary-700 dark:text-primary-300 hover:bg-primary-50 dark:hover:bg-primary-950`}>Auto-assign</button>
+                    </>
+                  )}
+                  {rs === "in_progress" && (
+                    <>
+                      <button disabled={readingBusy} onClick={() => runReading(() => api.reading.report(uid))}
+                        className={`${btn} text-white bg-amber-600 hover:bg-amber-700`}>Mark Reported</button>
+                      <button disabled={readingBusy} onClick={() => runReading(() => api.reading.unclaim(uid))}
+                        className={`${btn} text-gray-600 dark:text-gray-400 hover:bg-black/5 dark:hover:bg-white/5`}>Release</button>
+                    </>
+                  )}
+                  {rs === "reported" && (
+                    <button disabled={readingBusy} onClick={() => setPendingSign(true)}
+                      className={`${btn} text-white bg-green-600 hover:bg-green-700`}>Sign Off</button>
+                  )}
+                  {rs === "signed" && (
+                    <span className="px-3 py-1.5 text-xs text-green-600 dark:text-green-400 flex items-center gap-1">
+                      <CheckCircle className="w-4 h-4" /> Signed
+                    </span>
+                  )}
+                </div>
+                {(study.tat_signoff_minutes != null || study.tat_report_minutes != null) && (
+                  <span className="inline-flex items-center gap-1 text-xs text-gray-400 dark:text-gray-500">
+                    <Clock className="w-3 h-3" />
+                    {study.tat_signoff_minutes != null
+                      ? `Turnaround: ${study.tat_signoff_minutes} min`
+                      : `Report TAT: ${study.tat_report_minutes} min`}
                   </span>
                 )}
               </div>
             </div>
-            {readingError && <p className="text-xs text-red-600 dark:text-red-400 mt-2">{readingError}</p>}
+
+            {/* Detail strip — icon-labelled chips, dividers for scannability */}
+            <div className="border-t border-border bg-black/[0.02] dark:bg-white/[0.02] px-5 sm:px-6 py-3.5">
+              <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
+                {chips.map((c, i) => {
+                  const Icon = c.icon;
+                  return (
+                    <div key={c.label} className="flex items-center gap-4">
+                      {i > 0 && <span className="hidden sm:block w-px h-8 bg-border" />}
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="grid place-items-center w-8 h-8 rounded-lg bg-accent/10 text-accent shrink-0">
+                          <Icon className="w-4 h-4" />
+                        </span>
+                        <div className="min-w-0">
+                          <dt className="text-[10px] font-medium uppercase tracking-wider text-gray-400 dark:text-gray-500">{c.label}</dt>
+                          <dd className="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate max-w-[220px] sm:max-w-[280px]" title={c.value}>{c.value}</dd>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {readingError && <p className="px-6 pb-3 text-xs text-red-600 dark:text-red-400">{readingError}</p>}
             <ConfirmDialog
               tier="modal"
               open={pendingSign}
@@ -408,32 +480,12 @@ export default function StudyPage() {
         );
       })()}
 
-      {/* Info Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="bg-white dark:bg-surface rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-4">
-          <h2 className="text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-3">Study Information</h2>
-          <dl className="space-y-2 text-sm">
-            <div className="flex justify-between">
-              <dt className="text-gray-500 dark:text-gray-400 dark:text-gray-500">Patient ID</dt>
-              <dd className="font-medium text-gray-900 dark:text-gray-100">{study.patient_id || "-"}</dd>
-            </div>
-            <div className="flex justify-between">
-              <dt className="text-gray-500 dark:text-gray-400 dark:text-gray-500">Accession #</dt>
-              <dd className="font-medium text-gray-900 dark:text-gray-100">{study.accession_number || "-"}</dd>
-            </div>
-            <div className="flex justify-between">
-              <dt className="text-gray-500 dark:text-gray-400 dark:text-gray-500">Institution</dt>
-              <dd className="font-medium text-gray-900 dark:text-gray-100">{study.institution_name || "-"}</dd>
-            </div>
-            <div className="flex justify-between">
-              <dt className="text-gray-500 dark:text-gray-400 dark:text-gray-500">Series Count</dt>
-              <dd className="font-medium text-gray-900 dark:text-gray-100">{study.series.length}</dd>
-            </div>
-          </dl>
-        </div>
-
-        <div className="bg-white dark:bg-surface rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-4">
-          <h2 className="text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-3">Series</h2>
+      {/* Two-column workspace: viewer/results (left) + metadata sidebar (right) */}
+      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_340px] gap-5 items-start">
+        {/* Metadata sidebar — placed on the right via order, sticky on scroll */}
+        <aside className="space-y-4 lg:order-2 lg:sticky lg:top-4">
+          <div className="glass rounded-2xl p-4">
+            <h2 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3">Series</h2>
           <div className="space-y-2 max-h-64 overflow-y-auto">
             {study.series
               .slice()
@@ -452,7 +504,7 @@ export default function StudyPage() {
                           {badge.label}
                         </span>
                       )}
-                      <span className={`font-medium truncate ${isSetup ? "text-gray-500 dark:text-gray-400 dark:text-gray-500" : "text-gray-900 dark:text-gray-100"}`}>
+                      <span className={`font-medium truncate ${isSetup ? "text-gray-500 dark:text-gray-400" : "text-gray-900 dark:text-gray-100"}`}>
                         {s.series_description || s.protocol_name || `Series ${s.series_number}`}
                       </span>
                     </div>
@@ -494,12 +546,12 @@ export default function StudyPage() {
           </div>
         </div>
 
-        <div className="bg-white dark:bg-surface rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-4">
-          <h2 className="text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-3">AI Jobs</h2>
+        <div className="glass rounded-2xl p-4">
+          <h2 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3">AI Jobs</h2>
           {jobs.length === 0 ? (
             <p className="text-sm text-gray-400 dark:text-gray-500">No jobs run yet</p>
           ) : (
-            <div className="space-y-2">
+            <div className="space-y-2 max-h-80 overflow-y-auto pr-1 -mr-1">
               {jobs.map((job) => (
                 <div key={job.id} className="border border-gray-100 dark:border-gray-800 rounded-lg p-2.5">
                   <div className="flex items-center justify-between">
@@ -508,7 +560,7 @@ export default function StudyPage() {
                     </span>
                     <StatusBadge variant="job" status={job.status} />
                   </div>
-                  {job.status_message && <p className="text-xs text-gray-500 dark:text-gray-400 dark:text-gray-500 mt-1">{job.status_message}</p>}
+                  {job.status_message && <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">{job.status_message}</p>}
                   {job.progress > 0 && job.status !== "completed" && (
                     <div className="mt-2 bg-gray-100 dark:bg-gray-800 rounded-full h-1.5">
                       <div
@@ -522,14 +574,115 @@ export default function StudyPage() {
               ))}
             </div>
           )}
-        </div>
-      </div>
+          </div>
+        </aside>
 
-      {/* DICOM Viewer */}
-      <div className="bg-white dark:bg-surface rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
-        <div className="px-4 py-3 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between">
+        {/* Main column — viewer + AI results */}
+        <div className="min-w-0 lg:order-1 space-y-5">
+        {/* Quick tools — dashboard-style action tiles */}
+        {results.length > 0 && selectedResult && (() => {
+          const uc = selectedResult.usecase_name;
+          const hasReport = uc === "mammography" || ["pet_ct", "pet_ct_brain"].includes(uc) || isCtReportUsecase(uc);
+          const reportDesc = uc === "mammography" ? "Mammography report"
+            : ["pet_ct", "pet_ct_brain"].includes(uc) ? "PET-CT report" : "AI clinical report";
+          type Tool = {
+            icon: typeof FileText; label: string; desc: string;
+            href?: string; onClick?: () => void; disabled?: boolean; accent?: boolean;
+          };
+          const tools: Tool[] = [
+            ...(hasReport ? [{ icon: FileText, label: "Report", desc: reportDesc, href: `/study/${uid}/report/${uc}`, accent: true }] : []),
+            { icon: FileDown, label: "Download PDF", desc: "Save report as PDF", onClick: handleDownloadPdf, disabled: pdfLoading },
+            { icon: Share2, label: "Share", desc: "Referrer portal link", onClick: handleCreateShareLink, disabled: shareLoading },
+          ];
+          const cardCls = "group glass rounded-2xl p-3.5 hover-lift text-left disabled:opacity-50 disabled:cursor-not-allowed";
+          const menuItem = "w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-gray-700 dark:text-gray-300 hover:bg-accent/10 transition-colors text-left";
+          return (
+            <div className="space-y-3">
+              {results.length > 1 && (
+                <div className="flex items-center gap-1 p-1 rounded-xl bg-black/5 dark:bg-white/5 border border-border w-fit">
+                  {results.map((r) => {
+                    const active = selectedUsecase === r.usecase_name;
+                    return (
+                      <button key={r.usecase_name} onClick={() => setSelectedUsecase(r.usecase_name)}
+                        className={`press px-4 py-1.5 rounded-lg text-sm font-semibold transition-all whitespace-nowrap ${
+                          active ? "bg-primary-600 text-white shadow-glow-sm" : "text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+                        }`}>
+                        {r.usecase_name.replace(/_/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase())}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                {tools.map((t) => {
+                  const Icon = t.icon;
+                  const inner = (
+                    <>
+                      <span className={`grid place-items-center w-9 h-9 rounded-lg mb-2 transition-transform duration-300 group-hover:scale-110 ${t.accent ? "bg-accent-gradient text-white shadow-glow-sm" : "bg-accent/10 ring-1 ring-accent/20 text-accent"}`}>
+                        <Icon className="w-5 h-5" />
+                      </span>
+                      <p className="text-sm font-semibold text-gray-900 dark:text-gray-100 flex items-center gap-1">
+                        {t.label}
+                        <ArrowUpRight className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500 transition-all group-hover:translate-x-0.5 group-hover:-translate-y-0.5 group-hover:text-accent" />
+                      </p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{t.desc}</p>
+                    </>
+                  );
+                  return t.href ? (
+                    <Link key={t.label} href={t.href} className={cardCls}>{inner}</Link>
+                  ) : (
+                    <button key={t.label} type="button" onClick={t.onClick} disabled={t.disabled} className={cardCls}>{inner}</button>
+                  );
+                })}
+
+                {/* More — tile that opens an overflow menu */}
+                <div className="relative" ref={moreRef}>
+                  <button type="button" onClick={() => setMoreOpen((o) => !o)} aria-expanded={moreOpen} className={`${cardCls} w-full`}>
+                    <span className="grid place-items-center w-9 h-9 rounded-lg mb-2 bg-accent/10 ring-1 ring-accent/20 text-accent transition-transform duration-300 group-hover:scale-110">
+                      <MoreHorizontal className="w-5 h-5" />
+                    </span>
+                    <p className="text-sm font-semibold text-gray-900 dark:text-gray-100 flex items-center gap-1">
+                      More
+                      <ChevronDown className={`w-3.5 h-3.5 text-gray-400 dark:text-gray-500 transition-transform ${moreOpen ? "rotate-180" : ""}`} />
+                    </p>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">More actions</p>
+                  </button>
+                  {moreOpen && (
+                    <div className="absolute right-0 top-full mt-2 w-60 glass-raised rounded-xl shadow-glow-lg p-1.5 z-30 animate-scale-in">
+                      <button onClick={() => { setMoreOpen(false); loadCptSuggestions(); }} className={menuItem}>
+                        <DollarSign className="w-4 h-4 text-emerald-500 shrink-0" /> CPT Codes
+                      </button>
+                      <button onClick={() => { setMoreOpen(false); loadProtocolCheck(); }} className={menuItem}>
+                        <Stethoscope className="w-4 h-4 text-violet-500 shrink-0" /> Protocol Check
+                      </button>
+                      <button onClick={() => { setMoreOpen(false); loadPriorComparison(); }} className={menuItem}>
+                        <ArrowLeftRight className="w-4 h-4 text-amber-500 shrink-0" /> Prior Comparison
+                      </button>
+                      {versions.length >= 2 && (
+                        <Link href={`/compare?a=${versions[1].id}&b=${versions[0].id}`} onClick={() => setMoreOpen(false)} className={menuItem}>
+                          <ArrowLeftRight className="w-4 h-4 text-primary-500 shrink-0" /> Compare Versions
+                        </Link>
+                      )}
+                      <Link href={`/study/${uid}/delivery`} onClick={() => setMoreOpen(false)} className={menuItem}>
+                        <Truck className="w-4 h-4 text-gray-500 dark:text-gray-400 shrink-0" /> Delivery Status
+                      </Link>
+                      {study.patient_id && (
+                        <Link href={`/admin/patients/${encodeURIComponent(study.patient_id)}/trend/${selectedUsecase}`} onClick={() => setMoreOpen(false)} className={menuItem}>
+                          <TrendingUp className="w-4 h-4 text-purple-500 shrink-0" /> Trend
+                        </Link>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+        {/* DICOM Viewer */}
+        <div className="glass rounded-2xl accent-top overflow-hidden">
+          <div className="px-4 py-3 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <h2 className="text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase tracking-wider">DICOM Viewer</h2>
+            <h2 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">DICOM Viewer</h2>
             {showNativeFused ? (
               <span className="text-xs bg-amber-100 dark:bg-amber-900 text-amber-700 dark:text-amber-300 px-2 py-0.5 rounded-full font-medium">
                 CT + PET
@@ -555,138 +708,17 @@ export default function StudyPage() {
         ) : (
           <iframe
             src={viewerUrl}
-            className="w-full border-0"
-            style={{ height: hasPetSeries ? "700px" : "500px" }}
+            className="w-full border-0 min-h-[560px] max-h-[1100px]"
+            style={{ height: hasPetSeries ? "calc(100vh - 180px)" : "calc(100vh - 210px)" }}
             title={hasPetSeries ? "OHIF PET/CT Viewer" : "DICOM Viewer"}
             allow="fullscreen"
           />
         )}
       </div>
 
-      {/* AI Results - Tabs + Actions */}
+      {/* AI results — panels + report */}
       {results.length > 0 && (
-        <div>
-          <div className="flex items-center gap-2 mb-4 flex-wrap">
-            {results.length > 1 &&
-              results.map((r) => (
-                <button
-                  key={r.usecase_name}
-                  onClick={() => setSelectedUsecase(r.usecase_name)}
-                  className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                    selectedUsecase === r.usecase_name
-                      ? "bg-primary-600 text-white"
-                      : "bg-white dark:bg-surface text-gray-700 dark:text-gray-300 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 dark:hover:bg-surface-raised"
-                  }`}
-                >
-                  {r.usecase_name.replace(/_/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase())}
-                </button>
-              ))}
-
-            <div className="ml-auto flex items-center gap-2 flex-wrap">
-              {versions.length >= 2 && selectedResult && (
-                <Link
-                  href={`/compare?a=${versions[1].id}&b=${versions[0].id}`}
-                  className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-primary-600 border border-primary-200 rounded-lg hover:bg-primary-50 transition-colors"
-                >
-                  <ArrowLeftRight className="w-4 h-4" /> Compare versions
-                </Link>
-              )}
-              {selectedResult && (
-                <>
-                  <button
-                    onClick={loadCptSuggestions}
-                    disabled={cptLoading}
-                    className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 rounded-lg hover:bg-emerald-50 transition-colors disabled:opacity-50"
-                  >
-                    <DollarSign className="w-4 h-4" />
-                    {cptLoading ? "Loading..." : "CPT Codes"}
-                  </button>
-                  <button
-                    onClick={loadProtocolCheck}
-                    disabled={protocolLoading}
-                    className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-violet-700 border border-violet-200 rounded-lg hover:bg-violet-50 transition-colors disabled:opacity-50"
-                  >
-                    <Stethoscope className="w-4 h-4" />
-                    {protocolLoading ? "Checking..." : "Protocol Check"}
-                  </button>
-                  <button
-                    onClick={loadPriorComparison}
-                    disabled={priorLoading}
-                    className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800 rounded-lg hover:bg-amber-50 dark:hover:bg-amber-950 transition-colors disabled:opacity-50"
-                  >
-                    <ArrowLeftRight className="w-4 h-4" />
-                    {priorLoading ? "Loading..." : "Prior Comparison"}
-                  </button>
-                  {["pet_ct", "pet_ct_brain"].includes(selectedResult.usecase_name) && (
-                    <Link
-                      href={`/study/${uid}/report/${selectedResult.usecase_name}`}
-                      className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 rounded-lg hover:bg-indigo-50 transition-colors"
-                    >
-                      <FileText className="w-4 h-4" /> PET-CT Report
-                    </Link>
-                  )}
-                  {selectedResult.usecase_name === "pet_ct" && (
-                    <button
-                      onClick={loadMedgemmaDebug}
-                      disabled={mgLoading}
-                      title="Inspect the exact prompt, images, and raw output sent to the local MedGemma model"
-                      className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-fuchsia-700 border border-fuchsia-200 rounded-lg hover:bg-fuchsia-50 transition-colors disabled:opacity-50"
-                    >
-                      <Bug className="w-4 h-4" />
-                      {mgLoading ? "Loading..." : "MedGemma Debug"}
-                    </button>
-                  )}
-                  {selectedResult.usecase_name === "mammography" && (
-                    <Link
-                      href={`/study/${uid}/report/mammography`}
-                      className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800 rounded-lg hover:bg-rose-50 transition-colors"
-                    >
-                      <FileText className="w-4 h-4" /> Mammography Report
-                    </Link>
-                  )}
-                  {isCtReportUsecase(selectedResult.usecase_name) && (
-                    <Link
-                      href={`/study/${uid}/report/${selectedResult.usecase_name}`}
-                      className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-cyan-700 border border-cyan-200 rounded-lg hover:bg-cyan-50 transition-colors"
-                    >
-                      <FileText className="w-4 h-4" /> AI Report
-                    </Link>
-                  )}
-                  <button
-                    onClick={handleDownloadPdf}
-                    disabled={pdfLoading}
-                    className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 border border-gray-200 dark:border-gray-700 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800 dark:hover:bg-surface-raised transition-colors disabled:opacity-50"
-                  >
-                    <FileDown className="w-4 h-4" />
-                    {pdfLoading ? "Generating..." : "Download PDF"}
-                  </button>
-                  <button
-                    onClick={handleCreateShareLink}
-                    disabled={shareLoading}
-                    className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 rounded-lg hover:bg-blue-50 dark:hover:bg-blue-950 transition-colors disabled:opacity-50"
-                  >
-                    <Share2 className="w-4 h-4" />
-                    {shareLoading ? "Creating..." : "Share"}
-                  </button>
-                  <Link
-                    href={`/study/${uid}/delivery`}
-                    className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 border border-gray-200 dark:border-gray-700 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800 dark:hover:bg-surface-raised transition-colors"
-                  >
-                    <Truck className="w-4 h-4" /> Delivery Status
-                  </Link>
-                  {study.patient_id && (
-                    <Link
-                      href={`/admin/patients/${encodeURIComponent(study.patient_id)}/trend/${selectedUsecase}`}
-                      className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-800 rounded-lg hover:bg-purple-50 transition-colors"
-                    >
-                      <TrendingUp className="w-4 h-4" /> Trend
-                    </Link>
-                  )}
-                </>
-              )}
-            </div>
-          </div>
-
+        <div className="space-y-4">
           {/* Share link display */}
           {shareLink && (
             <div className="mb-4 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg p-4 flex items-center gap-3">
@@ -709,10 +741,10 @@ export default function StudyPage() {
 
           {/* CPT Suggestions Panel */}
           {cptSuggestions && (
-            <div className="mb-4 bg-white dark:bg-surface rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
+            <div className="mb-4 glass rounded-2xl overflow-hidden">
               <button
                 onClick={() => setCptOpen(!cptOpen)}
-                className="w-full flex items-center justify-between px-4 py-3 border-b border-gray-100 dark:border-gray-800 text-left hover:bg-gray-50 dark:hover:bg-gray-800 dark:hover:bg-surface-raised transition-colors"
+                className="w-full flex items-center justify-between px-4 py-3 border-b border-gray-100 dark:border-gray-800 text-left hover:bg-gray-50 dark:hover:bg-white/5 transition-colors"
               >
                 <div className="flex items-center gap-2">
                   <DollarSign className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
@@ -730,11 +762,11 @@ export default function StudyPage() {
                       <div
                         key={cpt.code}
                         className={`flex items-start gap-3 p-3 rounded-lg border ${
-                          cpt.category === "addon" ? "border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-800 dark:bg-surface-raised" : "border-emerald-100 dark:border-emerald-900 bg-emerald-50 dark:bg-emerald-950"
+                          cpt.category === "addon" ? "border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-surface-raised" : "border-emerald-100 dark:border-emerald-900 bg-emerald-50 dark:bg-emerald-950"
                         }`}
                       >
                         <div className="shrink-0">
-                          <span className={`text-sm font-bold font-mono ${cpt.category === "addon" ? "text-gray-600 dark:text-gray-400 dark:text-gray-500" : "text-emerald-700 dark:text-emerald-300"}`}>
+                          <span className={`text-sm font-bold font-mono ${cpt.category === "addon" ? "text-gray-600 dark:text-gray-400" : "text-emerald-700 dark:text-emerald-300"}`}>
                             {cpt.code}
                           </span>
                           {cpt.category === "primary" && i === 0 && (
@@ -748,7 +780,7 @@ export default function StudyPage() {
                           <p className="text-sm font-medium text-gray-900 dark:text-gray-100">{cpt.description}</p>
                         </div>
                         <div className="shrink-0 text-right">
-                          <span className="text-xs font-medium text-gray-600 dark:text-gray-400 dark:text-gray-500">
+                          <span className="text-xs font-medium text-gray-600 dark:text-gray-400">
                             {(cpt.confidence * 100).toFixed(0)}% confidence
                           </span>
                           <div className="w-16 bg-gray-200 dark:bg-gray-700 rounded-full h-1 mt-1">
@@ -771,10 +803,10 @@ export default function StudyPage() {
 
           {/* Protocol Check Panel */}
           {protocolCheck && (
-            <div className="mb-4 bg-white dark:bg-surface rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
+            <div className="mb-4 glass rounded-2xl overflow-hidden">
               <button
                 onClick={() => setProtocolOpen(!protocolOpen)}
-                className="w-full flex items-center justify-between px-4 py-3 border-b border-gray-100 dark:border-gray-800 text-left hover:bg-gray-50 dark:hover:bg-gray-800 dark:hover:bg-surface-raised transition-colors"
+                className="w-full flex items-center justify-between px-4 py-3 border-b border-gray-100 dark:border-gray-800 text-left hover:bg-gray-50 dark:hover:bg-white/5 transition-colors"
               >
                 <div className="flex items-center gap-2">
                   {protocolCheck.status === "ok" || protocolCheck.issues.length === 0 ? (
@@ -836,7 +868,7 @@ export default function StudyPage() {
                           </div>
                           <p className="text-sm text-gray-800 dark:text-gray-200">{issue.message}</p>
                           {issue.suggestion && (
-                            <p className="text-xs text-gray-500 dark:text-gray-400 dark:text-gray-500 mt-1">
+                            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
                               Suggestion: <span className="font-medium">{issue.suggestion}</span>
                             </p>
                           )}
@@ -851,10 +883,10 @@ export default function StudyPage() {
 
           {/* Prior Comparison Panel */}
           {priorComparison && (
-            <div className="mb-4 bg-white dark:bg-surface rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
+            <div className="mb-4 glass rounded-2xl overflow-hidden">
               <button
                 onClick={() => setPriorOpen(!priorOpen)}
-                className="w-full flex items-center justify-between px-4 py-3 border-b border-gray-100 dark:border-gray-800 text-left hover:bg-gray-50 dark:hover:bg-gray-800 dark:hover:bg-surface-raised transition-colors"
+                className="w-full flex items-center justify-between px-4 py-3 border-b border-gray-100 dark:border-gray-800 text-left hover:bg-gray-50 dark:hover:bg-white/5 transition-colors"
               >
                 <div className="flex items-center gap-2">
                   <ArrowLeftRight className="w-4 h-4 text-amber-600 dark:text-amber-400" />
@@ -875,141 +907,36 @@ export default function StudyPage() {
             </div>
           )}
 
-          {/* MedGemma Debug Panel */}
-          {mgDebug && (
-            <div className="mb-4 bg-white dark:bg-surface rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
-              <button
-                onClick={() => setMgOpen(!mgOpen)}
-                className="w-full flex items-center justify-between px-4 py-3 border-b border-gray-100 dark:border-gray-800 text-left hover:bg-gray-50 dark:hover:bg-gray-800 dark:hover:bg-surface-raised transition-colors"
-              >
-                <div className="flex items-center gap-2 flex-wrap">
-                  <Bug className="w-4 h-4 text-fuchsia-600" />
-                  <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">MedGemma Debug</span>
-                  <span className="text-xs bg-fuchsia-100 text-fuchsia-700 px-2 py-0.5 rounded-full font-medium">
-                    {mgDebug.medgemma.model}
-                  </span>
-                  <span className="text-xs text-gray-400 dark:text-gray-500">
-                    {mgDebug.inputs.n_images_sent}/{mgDebug.inputs.n_images_total} images sent
-                  </span>
-                  {mgDebug.medgemma.ready === false && (
-                    <span className="text-xs bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300 px-2 py-0.5 rounded-full font-medium">
-                      Ollama unreachable
-                    </span>
-                  )}
-                </div>
-                {mgOpen ? <ChevronUp className="w-4 h-4 text-gray-400 dark:text-gray-500" /> : <ChevronDown className="w-4 h-4 text-gray-400 dark:text-gray-500" />}
-              </button>
-              {mgOpen && (
-                <div className="p-4 space-y-4">
-                  {/* Config + run controls */}
-                  <div className="flex items-center gap-x-3 gap-y-1 flex-wrap text-xs text-gray-500 dark:text-gray-400 dark:text-gray-500">
-                    <span>base_url: <span className="font-mono text-gray-700 dark:text-gray-300">{mgDebug.medgemma.base_url}</span></span>
-                    <span>&middot; enabled: {String(mgDebug.medgemma.enabled)}</span>
-                    {mgDebug.stored_ai_report_provider && (
-                      <span>&middot; stored report by: <span className="font-mono text-gray-700 dark:text-gray-300">{mgDebug.stored_ai_report_provider}</span></span>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <button
-                      onClick={() => runMedgemma(false)}
-                      disabled={mgRunning}
-                      className="px-3 py-1.5 text-xs font-medium text-white bg-fuchsia-600 hover:bg-fuchsia-700 rounded-lg disabled:opacity-50"
-                    >
-                      {mgRunning ? "Running…" : "Run model (6 images)"}
-                    </button>
-                    <button
-                      onClick={() => runMedgemma(true)}
-                      disabled={mgRunning}
-                      className="px-3 py-1.5 text-xs font-medium text-fuchsia-700 border border-fuchsia-200 hover:bg-fuchsia-50 rounded-lg disabled:opacity-50"
-                    >
-                      {mgRunning ? "Running…" : "Run send_all (every image)"}
-                    </button>
-                    <span className="text-xs text-gray-400 dark:text-gray-500">≈ 20–30 s per run</span>
-                  </div>
 
-                  {mgDebug.note && (
-                    <p className="text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded p-2">{mgDebug.note}</p>
-                  )}
-
-                  {/* Images (inputs) */}
-                  <div>
-                    <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-2">
-                      Images ({mgDebug.inputs.images.length}) — <span className="text-green-600 dark:text-green-400">sent</span> vs generated-but-not-sent
-                    </p>
-                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
-                      {mgDebug.inputs.images.map((im) => (
-                        <div key={im.name} className="border border-gray-100 dark:border-gray-800 rounded-lg overflow-hidden">
-                          {im.base64 ? (
-                            // eslint-disable-next-line @next/next/no-img-element
-                            <img
-                              src={`data:image/png;base64,${im.base64}`}
-                              alt={im.name}
-                              className="w-full h-32 object-contain bg-black"
-                            />
-                          ) : (
-                            <div className="w-full h-32 bg-gray-100 dark:bg-gray-800 flex items-center justify-center text-xs text-gray-400 dark:text-gray-500">
-                              no preview
-                            </div>
-                          )}
-                          <div className="p-1.5">
-                            <div className="flex items-center justify-between gap-1">
-                              <span className="text-[11px] font-medium text-gray-700 dark:text-gray-300 truncate" title={im.name}>{im.name}</span>
-                              {im.sent_to_model ? (
-                                <span className="text-[9px] font-bold uppercase bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300 px-1 py-0.5 rounded shrink-0">sent</span>
-                              ) : (
-                                <span className="text-[9px] font-bold uppercase bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500 px-1 py-0.5 rounded shrink-0">not sent</span>
-                              )}
-                            </div>
-                            <span className="text-[10px] text-gray-400 dark:text-gray-500">
-                              {(im.bytes / 1024).toFixed(0)} KB · {im.artifact_type}
-                            </span>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Prompt (input) */}
-                  <div>
-                    <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-2">
-                      Prompt ({mgDebug.inputs.prompt_chars} chars)
-                    </p>
-                    <pre className="text-[11px] whitespace-pre-wrap bg-gray-50 dark:bg-gray-800 dark:bg-surface-raised border border-gray-100 dark:border-gray-800 rounded p-3 max-h-80 overflow-auto text-gray-700 dark:text-gray-300">
-                      {mgDebug.inputs.prompt}
-                    </pre>
-                  </div>
-
-                  {/* Output */}
-                  {mgDebug.output && (
-                    <div>
-                      <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-2">
-                        Raw output · {mgDebug.output.elapsed_s}s ·{" "}
-                        {mgDebug.output.parsed_ok ? (
-                          <span className="text-green-600 dark:text-green-400">parsed ✓</span>
-                        ) : (
-                          <span className="text-red-600 dark:text-red-400">parse failed{mgDebug.output.parse_error ? ` (${mgDebug.output.parse_error})` : ""}</span>
-                        )}
-                      </p>
-                      <pre className="text-[11px] whitespace-pre-wrap bg-gray-900 text-green-200 rounded p-3 max-h-80 overflow-auto">
-                        {mgDebug.output.raw}
-                      </pre>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Professional Report */}
-          {selectedResult && uiSchema ? (
-            <ReportView study={study} result={selectedResult} uiSchema={uiSchema} />
-          ) : selectedUsecase ? (
-            <div className="bg-white dark:bg-surface rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-8 text-center text-gray-400 dark:text-gray-500">
+          {/* Professional Report — rendered COMPACT (patient info + imaging only)
+              when a dedicated report page exists for this use case, so the study
+              page doesn't duplicate the full findings/measurements. */}
+          {selectedResult && uiSchema ? (() => {
+            // Mammography's compact inline report would show only patient info
+            // (already shown at the top) + a link (already in the toolbar), with
+            // no imaging — so skip it entirely; the full report is one click away.
+            if (selectedResult.usecase_name === "mammography") return null;
+            const hasDedicatedReport =
+              ["pet_ct", "pet_ct_brain"].includes(selectedResult.usecase_name) ||
+              isCtReportUsecase(selectedResult.usecase_name);
+            return (
+              <ReportView
+                study={study}
+                result={selectedResult}
+                uiSchema={uiSchema}
+                compact={hasDedicatedReport}
+                reportHref={hasDedicatedReport ? `/study/${uid}/report/${selectedResult.usecase_name}` : undefined}
+              />
+            );
+          })() : selectedUsecase ? (
+            <div className="glass rounded-2xl p-8 text-center text-gray-400 dark:text-gray-500">
               Loading report...
             </div>
           ) : null}
         </div>
       )}
+        </div>
+      </div>
     </div>
   );
 }

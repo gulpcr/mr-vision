@@ -452,7 +452,7 @@ class AlertingService:
         self, alert_id: str, acknowledged_by: str
     ) -> dict[str, Any] | None:
         from app.infrastructure.database.models import CriticalAlertRecord
-        from datetime import datetime, timezone
+        from app.domain.models import utcnow
 
         stmt = select(CriticalAlertRecord).where(CriticalAlertRecord.id == alert_id)
         result = await self._session.execute(stmt)
@@ -460,9 +460,7 @@ class AlertingService:
         if not record:
             return None
         record.status = "acknowledged"
-        # acknowledged_at is a naive TIMESTAMP column; store naive UTC so asyncpg
-        # can bind it (see escalate_overdue_alerts for the full rationale).
-        record.acknowledged_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        record.acknowledged_at = utcnow()
         record.acknowledged_by = acknowledged_by
         await self._session.flush()
         return self._alert_to_dict(record)
@@ -504,15 +502,15 @@ class AlertingService:
     async def escalate_overdue_alerts(self, threshold_minutes: int = 30) -> int:
         """Mark pending CRITICAL alerts as escalated if unacknowledged past threshold."""
         from app.infrastructure.database.models import CriticalAlertRecord
-        from datetime import datetime, timezone, timedelta
+        from datetime import timedelta
 
-        # created_at / escalated_at are naive TIMESTAMP columns (stored as UTC
-        # via func.now()). asyncpg refuses to bind a tz-aware datetime to them
-        # ("can't subtract offset-naive and offset-aware datetimes"), so compare
-        # and write with naive UTC to match the column type.
-        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(
-            minutes=threshold_minutes
-        )
+        from app.domain.models import utcnow
+
+        # created_at / escalated_at are TIMESTAMP WITH TIME ZONE (migration 027), so
+        # compare and write with tz-aware UTC. The previous .replace(tzinfo=None)
+        # workaround existed only because the columns were naive and asyncpg refuses
+        # to bind an aware datetime to a naive column; it is now the wrong thing to do.
+        cutoff = utcnow() - timedelta(minutes=threshold_minutes)
         stmt = select(CriticalAlertRecord).where(
             CriticalAlertRecord.status == "pending",
             CriticalAlertRecord.severity == "CRITICAL",
@@ -520,7 +518,7 @@ class AlertingService:
         )
         result = await self._session.execute(stmt)
         records = result.scalars().all()
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        now = utcnow()
         for record in records:
             record.status = "escalated"
             record.escalated_at = now

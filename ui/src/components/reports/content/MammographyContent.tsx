@@ -4,6 +4,7 @@ import { useState } from "react";
 import { api, Study, Result } from "@/lib/api";
 import { Printer, FileDown, AlertTriangle, X } from "lucide-react";
 import { fmtAge, fmtSex, fmtDate } from "@/lib/reportFormat";
+import { formatPatientName } from "@/lib/format";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { AIProvenanceBanner } from "@/components/ui/AIProvenanceBanner";
 import { ReportShell } from "@/components/reports/ReportShell";
@@ -117,7 +118,7 @@ export function MammographyContent({ study, result, onSignedOff }: MammographyCo
         <div><span className="font-bold">PRN:</span> {study.patient_id || "—"}</div>
         <div><span className="font-bold">File No.:</span> NIL</div>
         <div><span className="font-bold">Status:</span> —</div>
-        <div><span className="font-bold">Name:</span> {study.patient_name || "—"}</div>
+        <div><span className="font-bold">Name:</span> {study.patient_name ? formatPatientName(study.patient_name) : "—"}</div>
         <div><span className="font-bold">Age/Gender:</span> {fmtAge(study.patient_age)} / {fmtSex(study.patient_sex)}</div>
         <div><span className="font-bold">Contact:</span> —</div>
         <div><span className="font-bold">Entry Date:</span> {fmtDate(study.study_date)}</div>

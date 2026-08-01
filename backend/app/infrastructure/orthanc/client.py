@@ -78,6 +78,7 @@ class OrthancPACSClient(PACSClient):
         mapping = {
             "StudyInstanceUID": "0020000D",
             "StudyDate": "00080020",
+            "StudyTime": "00080030",
             "StudyDescription": "00081030",
             "AccessionNumber": "00080050",
             "ReferringPhysicianName": "00080090",

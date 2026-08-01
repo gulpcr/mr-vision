@@ -20,6 +20,7 @@ DICOM_TAG_MAP = {
     "PatientSize": "00101020",
     "PatientBirthDate": "00100030",
     "StudyDate": "00080020",
+    "StudyTime": "00080030",
     "StudyDescription": "00081030",
     "AccessionNumber": "00080050",
     "ReferringPhysicianName": "00080090",

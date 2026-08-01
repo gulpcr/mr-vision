@@ -6,7 +6,7 @@ from typing import Any
 from sqlalchemy import select, func, update, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.enums import AuditAction, JobStatus, QAFlag
+from app.domain.enums import AuditAction, AuditActorType, JobStatus, QAFlag, audit_action_to_crude
 from app.domain.interfaces import (
     AuditRepository,
     JobRepository,
@@ -24,6 +24,7 @@ from app.domain.models import (
     Series,
     Study,
     UseCase,
+    utcnow,
 )
 from app.infrastructure.database.models import (
     AuditLogRecord,
@@ -49,6 +50,7 @@ class PgStudyRepository(StudyRepository):
             patient_weight_kg=study.patient_weight_kg,
             patient_height_cm=study.patient_height_cm,
             study_date=study.study_date,
+            study_date_precision=study.study_date_precision,
             study_description=study.study_description,
             accession_number=study.accession_number,
             referring_physician=study.referring_physician,
@@ -98,6 +100,7 @@ class PgStudyRepository(StudyRepository):
                 patient_weight_kg=study.patient_weight_kg,
                 patient_height_cm=study.patient_height_cm,
                 study_date=study.study_date,
+                study_date_precision=study.study_date_precision,
                 study_description=study.study_description,
                 accession_number=study.accession_number,
                 referring_physician=study.referring_physician,
@@ -105,7 +108,7 @@ class PgStudyRepository(StudyRepository):
                 modality=study.modality,
                 institution_name=study.institution_name,
                 orthanc_id=study.orthanc_id,
-                updated_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                updated_at=utcnow(),
             )
         )
         await self._session.execute(stmt)
@@ -141,12 +144,17 @@ class PgStudyRepository(StudyRepository):
         return Study(
             study_instance_uid=record.study_instance_uid,
             patient_id=record.patient_id,
+            # Read-only: deliberately absent from save()/update() below so an ingest-time
+            # metadata refresh can never null out an established patient link. The link is
+            # written only by OnboardingService.
+            patient_record_id=getattr(record, "patient_record_id", None),
             patient_name=record.patient_name,
             patient_sex=record.patient_sex,
             patient_age=record.patient_age,
             patient_weight_kg=record.patient_weight_kg,
             patient_height_cm=record.patient_height_cm,
             study_date=record.study_date,
+            study_date_precision=getattr(record, "study_date_precision", "date") or "date",
             study_description=record.study_description,
             accession_number=record.accession_number,
             referring_physician=record.referring_physician,
@@ -289,7 +297,7 @@ class PgJobRepository(JobRepository):
                 completed_at=job.completed_at,
                 error_detail=job.error_detail,
                 retry_count=job.retry_count,
-                updated_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                updated_at=utcnow(),
             )
         )
         await self._session.execute(stmt)
@@ -536,12 +544,28 @@ class PgAuditRepository(AuditRepository):
         self._session = session
 
     async def save(self, entry: AuditEntry) -> AuditEntry:
+        action = entry.action.value if isinstance(entry.action, AuditAction) else entry.action
+        # actor here is legacy free-text ("system", "celery_worker", a user id, or a
+        # username depending on the caller). Type it as far as it can be typed without
+        # guessing: a value that is neither a known machine actor nor resolvable is left
+        # unattributed rather than misattributed.
+        raw_actor = (entry.actor or "system").strip()
+        is_machine = raw_actor in ("system", "celery_worker", "")
         record = AuditLogRecord(
             id=entry.id,
-            action=entry.action.value if isinstance(entry.action, AuditAction) else entry.action,
+            action=action,
             entity_type=entry.entity_type,
             entity_id=entry.entity_id,
-            actor=entry.actor,
+            actor=raw_actor or "system",
+            actor_type=(
+                AuditActorType.SYSTEM.value if is_machine
+                else AuditActorType.PRACTITIONER.value
+            ),
+            actor_id=None if is_machine else raw_actor,
+            actor_display=raw_actor,
+            action_crude=audit_action_to_crude(action),
+            outcome="0",
+            source_observer="celery_worker" if raw_actor == "celery_worker" else "backend",
             details=entry.details,
         )
         self._session.add(record)

@@ -6,7 +6,7 @@ import Link from "next/link";
 import { useStudy, useStudyResults, useShareLinks } from "@/lib/hooks";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
-import { formatDateTime } from "@/lib/format";
+import { formatDateTime, formatPatientName } from "@/lib/format";
 import { Modal } from "@/components/ui/Modal";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -239,7 +239,7 @@ export default function DeliveryStatusPage() {
       <div>
         <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Delivery Status</h1>
         <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
-          {study?.patient_name || "—"} · Report delivery state per channel
+          {study?.patient_name ? formatPatientName(study.patient_name) : "—"} · Report delivery state per channel
         </p>
       </div>
 

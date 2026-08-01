@@ -6,23 +6,57 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-from app.domain.enums import AuditAction, BodyPart, JobStatus, QAFlag
+from app.domain.enums import (
+    AuditAction,
+    BodyPart,
+    JobStatus,
+    Laterality,
+    ObservationCategory,
+    ObservationStatus,
+    QAFlag,
+)
 
 
-def _utcnow() -> datetime:
+def utcnow() -> datetime:
+    """The platform's single clock for persisted timestamps: timezone-aware UTC.
+
+    Every DateTime column is ``TIMESTAMP WITH TIME ZONE`` (migration 027), so naive
+    datetimes must never be written or compared against one — asyncpg rejects the
+    mismatch and any Python-side comparison raises TypeError. Use this everywhere a
+    stored timestamp is produced, rather than ``datetime.utcnow()`` (naive, and
+    deprecated in 3.12+) or ``datetime.now()`` (naive *local* time).
+
+    DICOM content timestamps are the one deliberate exception: the standard expects
+    site-local time in ContentDate/ContentTime, so the SR/Seg generators keep their
+    own local clock.
+    """
     return datetime.now(timezone.utc)
+
+
+# Retained so the ~25 `field(default_factory=_utcnow)` declarations below keep reading
+# the way they always have; `utcnow` is the name to import from other modules.
+_utcnow = utcnow
 
 
 @dataclass
 class Study:
     study_instance_uid: str
+    # patient_id is the raw DICOM PatientID (an identifier in the hospital's namespace);
+    # patient_record_id is the resolved reference to the local patients row. Read-only
+    # here — the link is owned by OnboardingService, not by study ingest.
     patient_id: str | None = None
+    patient_record_id: str | None = None
     patient_name: str | None = None
     patient_sex: str | None = None
     patient_age: str | None = None
     patient_weight_kg: float | None = None
     patient_height_cm: float | None = None
     study_date: datetime | None = None
+    # "second" when DICOM StudyTime (0008,0030) was present and combined into
+    # study_date; "date" when only StudyDate was available, so the time-of-day is
+    # unknown rather than midnight. Consumers must not render or compare the time
+    # component when this is "date" (FHIR dateTime permits a bare YYYY-MM-DD).
+    study_date_precision: str = "date"
     study_description: str | None = None
     accession_number: str | None = None
     referring_physician: str | None = None
@@ -106,6 +140,46 @@ class Result:
     version: int = 1
     is_latest: bool = True
     created_at: datetime = field(default_factory=_utcnow)
+
+
+@dataclass
+class Observation:
+    """One measured or asserted clinical concept — the row-per-value shape FHIR
+    ``Observation`` requires.
+
+    Exists because clinical values previously had no addressable home: labs were
+    free-text strings on ``orders``, AI measurements were buried in an opaque
+    ``results_index.measurements`` JSON blob, and mammography findings were encoded in
+    column *names* (``mass_right``). None of those can answer
+    ``Observation?patient=X&code=Y&date=ge…``, which is the whole point of the resource.
+
+    Exactly one of ``value_quantity`` / ``value_string`` / ``value_codeable_code`` is
+    normally set. A quantity without a UCUM ``value_unit`` is not a measurement, so the
+    writer refuses that combination rather than emitting ``unit: "unknown"``.
+    """
+
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    tenant_id: str = "default"
+    patient_ref: str = ""
+    patient_id: str | None = None
+    study_instance_uid: str | None = None
+    result_id: str | None = None
+    category: ObservationCategory = ObservationCategory.IMAGING
+    code_system: str = ""
+    code: str = ""
+    code_display: str = ""
+    value_quantity: float | None = None
+    value_unit: str | None = None          # UCUM code
+    value_string: str | None = None
+    value_codeable_code: str | None = None
+    value_codeable_system: str | None = None
+    body_site_code: str | None = None      # SNOMED body structure
+    laterality: Laterality | None = None
+    status: ObservationStatus = ObservationStatus.FINAL
+    effective_dt: datetime | None = None
+    issued: datetime = field(default_factory=_utcnow)
+    derived_from_device: str | None = None  # "{model_version}:{model_checksum}"
+    source: str = ""                        # provenance for idempotent replacement
 
 
 @dataclass

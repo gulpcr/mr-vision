@@ -82,6 +82,154 @@ class AuditAction(str, enum.Enum):
     PHI_DEIDENTIFIED = "phi_deidentified"
 
 
+class ObservationStatus(str, enum.Enum):
+    """FHIR R4 Observation.status — mandatory (1..1) on every Observation."""
+
+    REGISTERED = "registered"
+    PRELIMINARY = "preliminary"
+    FINAL = "final"
+    AMENDED = "amended"
+    CORRECTED = "corrected"
+    CANCELLED = "cancelled"
+    ENTERED_IN_ERROR = "entered-in-error"
+    UNKNOWN = "unknown"
+
+
+class ObservationCategory(str, enum.Enum):
+    """FHIR observation-category codes used by this platform.
+
+    http://terminology.hl7.org/CodeSystem/observation-category — the full value set is
+    larger; only the members this platform actually produces are listed.
+    """
+
+    VITAL_SIGNS = "vital-signs"
+    LABORATORY = "laboratory"
+    IMAGING = "imaging"
+    SURVEY = "survey"
+
+
+class ConditionClinicalStatus(str, enum.Enum):
+    """FHIR R4 Condition.clinicalStatus (condition-clinical value set)."""
+
+    ACTIVE = "active"
+    RECURRENCE = "recurrence"
+    RELAPSE = "relapse"
+    INACTIVE = "inactive"
+    REMISSION = "remission"
+    RESOLVED = "resolved"
+
+
+class ConditionVerificationStatus(str, enum.Enum):
+    """FHIR R4 Condition.verificationStatus (condition-ver-status value set).
+
+    A referral indication is asserted by the referrer, not established by this platform,
+    so intake-captured conditions default to ``unconfirmed`` rather than ``confirmed``.
+    """
+
+    UNCONFIRMED = "unconfirmed"
+    PROVISIONAL = "provisional"
+    DIFFERENTIAL = "differential"
+    CONFIRMED = "confirmed"
+    REFUTED = "refuted"
+    ENTERED_IN_ERROR = "entered-in-error"
+
+
+class ConditionCategory(str, enum.Enum):
+    """FHIR condition-category. An imaging referral reason is an encounter diagnosis."""
+
+    PROBLEM_LIST_ITEM = "problem-list-item"
+    ENCOUNTER_DIAGNOSIS = "encounter-diagnosis"
+
+
+class Laterality(str, enum.Enum):
+    """Side an Observation applies to. Not a FHIR value set — FHIR expresses this with a
+    coded Observation.bodySite — but the platform's own findings are recorded per side
+    (mammography), so the side is stored explicitly and mapped on export."""
+
+    LEFT = "left"
+    RIGHT = "right"
+    BILATERAL = "bilateral"
+
+
+class AuditActorType(str, enum.Enum):
+    """What kind of actor an audit entry attributes an action to.
+
+    Maps to FHIR ``AuditEvent.agent.type``: a person, an algorithm, or the platform
+    itself. Previously indistinguishable — one free-text ``actor`` column held all three.
+    """
+
+    PRACTITIONER = "practitioner"
+    DEVICE = "device"
+    SYSTEM = "system"
+
+
+class AuditAction2(str, enum.Enum):
+    """FHIR ``AuditEvent.action`` — a FIXED five-code set, not extensible.
+
+    The platform's own 20-value vocabulary (:class:`AuditAction`) is
+    ``AuditEvent.subtype``; this is the coarse verb that makes "every *read* of this
+    record" a single indexed query.
+    """
+
+    CREATE = "C"
+    READ = "R"
+    UPDATE = "U"
+    DELETE = "D"
+    EXECUTE = "E"
+
+
+# Domain action → AuditEvent.action. An action absent here records NULL rather than being
+# forced into a bucket it does not belong in. Kept in sync with migration 032's copy —
+# the migration keeps its own frozen copy on purpose, since migrations must not change
+# behaviour when this file evolves.
+AUDIT_ACTION_TO_CRUDE: dict[str, str] = {
+    "study_received": "C",
+    "job_created": "C",
+    "job_started": "E",
+    "job_completed": "E",
+    "job_failed": "E",
+    "job_cancelled": "U",
+    "job_retried": "E",
+    "result_stored": "C",
+    "result_viewed": "R",
+    "report_generated": "R",
+    "report_downloaded": "R",
+    "result_exported": "R",
+    "share_link_redeemed": "R",
+    "config_changed": "U",
+    "user_login": "E",
+    "user_logout": "E",
+    "user_created": "C",
+    "batch_started": "E",
+    "batch_completed": "E",
+    "review_submitted": "U",
+    "alert_triggered": "C",
+    "data_purged": "D",
+    "phi_deidentified": "U",
+    "patient_created": "C",
+    "patient_updated": "U",
+    "order_created": "C",
+    "order_updated": "U",
+    "order_linked_study": "U",
+    "study_claimed": "U",
+    "study_assigned": "U",
+    "study_auto_assigned": "U",
+    "study_unclaimed": "U",
+    "study_reported": "U",
+    "study_signed": "U",
+    "study_deleted": "D",
+    "mammography_report_saved": "U",
+    "role_created": "C",
+    "role_updated": "U",
+    "role_deleted": "D",
+}
+
+
+def audit_action_to_crude(action: str) -> str | None:
+    """Coarse FHIR AuditEvent.action for a domain action, or None if unmapped."""
+    return AUDIT_ACTION_TO_CRUDE.get(str(action or "").strip().lower())
+
+
 class QASeverity(str, enum.Enum):
     BLOCKING = "blocking"
     WARNING = "warning"

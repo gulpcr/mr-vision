@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
+
+from app.domain.models import utcnow
 from typing import Any
 
 import structlog
@@ -105,7 +107,7 @@ class RetentionService:
             if not model:
                 continue
 
-            cutoff = datetime.now(timezone.utc) - timedelta(days=policy.max_age_days)
+            cutoff = utcnow() - timedelta(days=policy.max_age_days)
 
             if hasattr(model, "created_at"):
                 count_stmt = select(func.count()).select_from(model).where(

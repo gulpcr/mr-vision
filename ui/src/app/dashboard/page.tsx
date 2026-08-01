@@ -12,6 +12,7 @@ import {
   Database, Activity, CheckCircle2, ArrowRight, Brain, Upload, UserPlus,
   ClipboardList, FileText, GitCompare, AlertTriangle, Zap, ShieldAlert,
   Server, Layers, ArrowUpRight, Stethoscope, Cpu, TrendingUp, PieChart,
+  ClipboardCheck,
 } from "lucide-react";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -64,6 +65,7 @@ export default function DashboardPage() {
   const [jobStats, setJobStats] = useState({ active: 0, completed: 0, failed: 0 });
   const [urgency, setUrgency] = useState<Record<string, UrgencyScore>>({});
   const [now, setNow] = useState<Date | null>(null);
+  const [trendDays, setTrendDays] = useState(14);
 
   useEffect(() => setNow(new Date()), []);
 
@@ -128,7 +130,7 @@ export default function DashboardPage() {
   // SSR/client hydration mismatch from Date()).
   const trend: TrendPoint[] = useMemo(() => {
     if (!now) return [];
-    const days = 14;
+    const days = trendDays;
     const key = (d: Date) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
     const buckets: { k: string; label: string; value: number }[] = [];
     const index: Record<string, number> = {};
@@ -147,7 +149,21 @@ export default function DashboardPage() {
       if (i !== undefined) buckets[i].value++;
     }
     return buckets.map(({ label, value }) => ({ label, value }));
-  }, [studyData, now]);
+  }, [studyData, now, trendDays]);
+
+  // Reading workflow breakdown (radiologist lifecycle). reading_status defaults
+  // to "unread" when the backend hasn't set one yet.
+  const reading = useMemo(() => {
+    const c = { unread: 0, in_progress: 0, reported: 0, signed: 0 };
+    for (const s of studyData?.studies ?? []) {
+      const st = (s.reading_status || "unread") as keyof typeof c;
+      if (st in c) c[st]++;
+      else c.unread++;
+    }
+    return c;
+  }, [studyData]);
+  const readingTotal = reading.unread + reading.in_progress + reading.reported + reading.signed;
+  const awaitingReading = reading.unread + reading.in_progress;
 
   const pipelineSegments = useMemo(
     () => [
@@ -186,6 +202,13 @@ export default function DashboardPage() {
       sub: "AI analyses", href: "/reports" },
   ];
 
+  const readingItems = [
+    { label: "Unread", count: reading.unread, color: "bg-slate-400" },
+    { label: "Reading", count: reading.in_progress, color: "bg-blue-500" },
+    { label: "Reported", count: reading.reported, color: "bg-violet-500" },
+    { label: "Signed", count: reading.signed, color: "bg-emerald-500" },
+  ];
+
   const quickActions = [
     { label: "Upload DICOM", desc: "Ingest from PACS", icon: Upload, href: "/upload" },
     { label: "Patient Intake", desc: "Record clinical data", icon: UserPlus, href: "/onboarding" },
@@ -200,6 +223,16 @@ export default function DashboardPage() {
       <div className="relative overflow-hidden glass-raised rounded-3xl accent-top px-6 py-6 sm:px-8 sm:py-7">
         <div className="pointer-events-none absolute -top-24 -right-16 w-80 h-80 rounded-full bg-accent/15 blur-3xl float" />
         <div className="pointer-events-none absolute -bottom-28 right-1/3 w-72 h-72 rounded-full bg-accent-2/10 blur-3xl" />
+        {/* subtle accent dot-grid for depth, fading out to the right */}
+        <div
+          className="pointer-events-none absolute inset-0 opacity-[0.12] dark:opacity-[0.18]"
+          style={{
+            backgroundImage: "radial-gradient(circle at 1px 1px, rgb(var(--accent)) 1px, transparent 0)",
+            backgroundSize: "24px 24px",
+            WebkitMaskImage: "linear-gradient(105deg, black, transparent 62%)",
+            maskImage: "linear-gradient(105deg, black, transparent 62%)",
+          }}
+        />
         <div className="relative flex flex-col lg:flex-row lg:items-center lg:justify-between gap-5">
           <div>
             <p className="text-xs font-mono uppercase tracking-[0.2em] text-accent mb-1">{dateStr || " "}</p>
@@ -218,6 +251,11 @@ export default function DashboardPage() {
                 <span className="inline-flex items-center gap-1.5 text-gray-400 dark:text-gray-500">
                   <Server className="w-3.5 h-3.5" /> v{health.version}
                 </span>
+              )}
+              {awaitingReading > 0 && (
+                <Link href="/worklist" className="inline-flex items-center gap-1.5 font-medium text-primary-600 dark:text-primary-400 hover:text-primary-500 transition-colors">
+                  <ClipboardCheck className="w-3.5 h-3.5" /> {awaitingReading} awaiting reading
+                </Link>
               )}
             </p>
           </div>
@@ -280,14 +318,30 @@ export default function DashboardPage() {
       {/* ── Visuals row: activity trend + pipeline status ────────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 glass rounded-2xl p-5">
-          <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
             <div className="flex items-center gap-2">
               <TrendingUp className="w-4 h-4 text-accent" />
               <h2 className="font-semibold text-gray-900 dark:text-gray-100">Study Activity</h2>
+              <span className="text-xs text-gray-400 dark:text-gray-500 ms-1">
+                <span className="font-semibold text-gray-700 dark:text-gray-300 tabular-nums">{trendTotal}</span> ingested
+              </span>
             </div>
-            <span className="text-xs text-gray-400 dark:text-gray-500">
-              <span className="font-semibold text-gray-700 dark:text-gray-300 tabular-nums">{trendTotal}</span> in last 14 days
-            </span>
+            {/* Time-range segmented control */}
+            <div className="flex items-center gap-0.5 p-0.5 rounded-lg border border-border bg-gray-50 dark:bg-white/5 text-xs shrink-0">
+              {[7, 14, 30].map((d) => (
+                <button
+                  key={d}
+                  onClick={() => setTrendDays(d)}
+                  className={`press px-2.5 py-1 rounded-md font-medium transition-all ${
+                    trendDays === d
+                      ? "bg-primary-600 text-white shadow-glow-sm"
+                      : "text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200"
+                  }`}
+                >
+                  {d}d
+                </button>
+              ))}
+            </div>
           </div>
           {trend.length ? (
             <AreaTrend data={trend} />
@@ -406,6 +460,50 @@ export default function DashboardPage() {
                   <span className={`text-xs font-medium ${r.warn ? "text-red-600 dark:text-red-400" : "text-gray-500 dark:text-gray-400"}`}>{r.detail}</span>
                 </div>
               ))}
+            </div>
+          </div>
+
+          {/* Reading workflow */}
+          <div className="glass rounded-2xl overflow-hidden">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-border">
+              <div className="flex items-center gap-2">
+                <ClipboardCheck className="w-4 h-4 text-accent" />
+                <h2 className="font-semibold text-gray-900 dark:text-gray-100">Reading Workflow</h2>
+              </div>
+              <Link href="/worklist" className="group text-sm text-primary-600 dark:text-primary-400 hover:text-primary-500 flex items-center gap-1">
+                Open <ArrowRight className="w-3.5 h-3.5 transition-transform duration-200 group-hover:translate-x-1" />
+              </Link>
+            </div>
+            <div className="p-5 space-y-4">
+              {readingTotal > 0 ? (
+                <>
+                  {/* Stacked lifecycle bar */}
+                  <div className="flex h-2.5 rounded-full overflow-hidden gap-0.5 bg-gray-100 dark:bg-white/5">
+                    {readingItems.map((r) =>
+                      r.count > 0 ? (
+                        <div
+                          key={r.label}
+                          className={`${r.color} transition-all duration-700`}
+                          style={{ width: `${(r.count / readingTotal) * 100}%` }}
+                          title={`${r.label}: ${r.count}`}
+                        />
+                      ) : null
+                    )}
+                  </div>
+                  {/* Legend */}
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-2.5">
+                    {readingItems.map((r) => (
+                      <div key={r.label} className="flex items-center gap-2 text-sm">
+                        <span className={`w-2.5 h-2.5 rounded-sm shrink-0 ${r.color}`} />
+                        <span className="text-gray-600 dark:text-gray-300 flex-1 truncate">{r.label}</span>
+                        <span className="font-semibold text-gray-900 dark:text-gray-100 tabular-nums">{r.count}</span>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <p className="text-sm text-gray-400 dark:text-gray-500">No studies in the reading queue</p>
+              )}
             </div>
           </div>
 

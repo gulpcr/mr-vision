@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
 from typing import Any
 
 import structlog
@@ -15,7 +14,7 @@ from app.domain.interfaces import (
     SeriesRepository,
     StudyRepository,
 )
-from app.domain.models import AuditEntry, JobRun, Series, Study
+from app.domain.models import AuditEntry, JobRun, Series, Study, utcnow
 from app.infrastructure.queue.tasks import run_usecase_pipeline
 
 logger = structlog.get_logger(__name__)
@@ -108,7 +107,7 @@ class JobOrchestrator:
                 )
                 job.status = JobStatus.FAILED
                 job.error_detail = f"Failed to queue task: {exc}"
-                job.completed_at = datetime.now(timezone.utc)
+                job.completed_at = utcnow()
                 await self._job_repo.update(job)
                 raise ValueError(
                     f"Job created but could not be dispatched to the worker queue "
@@ -142,7 +141,7 @@ class JobOrchestrator:
             raise ValueError(f"Job {job_id} is already in terminal state: {job.status.value}")
 
         job.status = JobStatus.CANCELLED
-        job.completed_at = datetime.now(timezone.utc)
+        job.completed_at = utcnow()
         job.status_message = "Cancelled by user"
         await self._job_repo.update(job)
 

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { api, Study, UrgencyScore } from "@/lib/api";
+import { formatPatientName } from "@/lib/format";
 import { useAuth } from "@/lib/auth";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -137,7 +138,7 @@ export default function RemoteConsolePage() {
                     </td>
                     <td className="py-2.5 px-4">
                       <Link href={`/study/${s.study_instance_uid}`} className="font-medium text-gray-900 dark:text-gray-100 hover:underline">
-                        {s.patient_name || "—"}
+                        {s.patient_name ? formatPatientName(s.patient_name) : "—"}
                       </Link>
                     </td>
                     <td className="py-2.5 px-4 text-gray-600 dark:text-gray-400">{s.study_date || "—"}</td>

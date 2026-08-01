@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { api, Result } from "@/lib/api";
-import { formatDate } from "@/lib/format";
+import { formatDate, formatPatientName } from "@/lib/format";
 import { FileDown, AlertTriangle, CheckCircle, Activity, Clock, Building2, User, Hash } from "lucide-react";
 import { CortexMark } from "@/components/ui/CortexMark";
 
@@ -149,7 +149,7 @@ export default function PortalPage() {
         <div className="bg-white dark:bg-surface rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
           <div className="bg-gradient-to-r from-blue-600 to-blue-700 px-6 py-4">
             <h2 className="text-lg font-bold text-white">
-              {study.patient_name || "Unknown Patient"}
+              {study.patient_name ? formatPatientName(study.patient_name) : "Unknown Patient"}
             </h2>
             <p className="text-blue-100 text-sm mt-0.5">
               {study.study_description || result.usecase_name.replace(/_/g, " ")}

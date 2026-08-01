@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+
+from app.domain.models import utcnow
 from typing import Any
 
 import structlog
@@ -139,7 +140,7 @@ class ActiveLearningService:
                 status=status,
                 reviewer=reviewer,
                 review_notes=notes,
-                reviewed_at=datetime.now(timezone.utc),
+                reviewed_at=utcnow(),
             )
         )
         await self._session.execute(stmt)

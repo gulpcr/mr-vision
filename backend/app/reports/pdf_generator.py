@@ -5,6 +5,8 @@ from typing import Any
 
 import structlog
 
+from app.application.dicom_demographics import format_person_name
+
 logger = structlog.get_logger(__name__)
 
 # Maps the pet_ct pipeline's per-lesion anatomical_region values onto the
@@ -380,12 +382,18 @@ def build_petct_patient_info(study_rec: Any) -> dict[str, Any]:
         return raw
 
     def _fmt_sex(raw: Any) -> str:
-        return {"M": "Male", "F": "Female", "O": "Other"}.get(
-            (raw or "").strip().upper(), raw or ""
-        )
+        # Accepts BOTH the legacy raw DICOM codes ("M"/"F"/"O") and the normalised FHIR
+        # administrativeGender values now written at ingest ("male"/"female"/"other"/
+        # "unknown"), so pre- and post-migration rows render identically as "Male" etc.
+        return {
+            "M": "Male", "F": "Female", "O": "Other",
+            "MALE": "Male", "FEMALE": "Female", "OTHER": "Other", "UNKNOWN": "Unknown",
+        }.get((raw or "").strip().upper(), raw or "")
 
     return {
-        "patient_name": study_rec.patient_name or "",
+        # DICOM PN → display ("DOE^JOHN^A" → "DOE JOHN A"); previously printed raw,
+        # carets and all, into every PDF header.
+        "patient_name": format_person_name(study_rec.patient_name),
         "patient_id": study_rec.patient_id or "",
         "study_date": study_rec.study_date.strftime("%d/%m/%Y") if study_rec.study_date else "",
         "referring_physician": study_rec.referring_physician or "",

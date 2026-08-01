@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { api, Study, Result, ClinicalForStudy } from "@/lib/api";
 import { ctRegionMeta } from "@/lib/ctReport";
 import { fmtAge, fmtSex, fmtDate } from "@/lib/reportFormat";
+import { formatPatientName } from "@/lib/format";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { AIProvenanceBanner } from "@/components/ui/AIProvenanceBanner";
 import { ReportShell } from "@/components/reports/ReportShell";
@@ -97,7 +98,10 @@ export function AbdomenCtContent({ study, result, onSignedOff }: AbdomenCtConten
     return () => { active = false; };
   }, [study.study_instance_uid]);
 
-  const refDr = study.referring_physician || clinical?.referrer || "—";
+  // Onboarding-entered referrer takes priority — it's curated clinical intake
+  // data, whereas study.referring_physician comes straight from the DICOM
+  // ReferringPhysicianName tag and is often an unreliable placeholder.
+  const refDr = clinical?.referrer || study.referring_physician || "—";
   const ageDisplay = study.patient_age ? fmtAge(study.patient_age) : (clinical?.age_band || "—");
   const clinicalFeatures =
     (clinical?.clinical_history || clinical?.indication || "").trim() ||
@@ -170,7 +174,7 @@ export function AbdomenCtContent({ study, result, onSignedOff }: AbdomenCtConten
 
       {/* Demographics */}
       <div className="grid grid-cols-2 gap-x-10 gap-y-1.5 mb-5">
-        <div><span className="font-bold">PATIENT :</span> {study.patient_name || "—"}</div>
+        <div><span className="font-bold">PATIENT :</span> {study.patient_name ? formatPatientName(study.patient_name) : "—"}</div>
         <div><span className="font-bold">MR :</span> {study.patient_id || "—"}</div>
         <div><span className="font-bold">DATE :</span> {fmtDate(study.study_date)}</div>
         <div><span className="font-bold">AGE :</span> {ageDisplay}</div>

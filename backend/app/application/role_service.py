@@ -12,9 +12,24 @@ from typing import Any
 import structlog
 from sqlalchemy import func, select
 
+from app.domain.enums import AuditActorType, audit_action_to_crude
 from app.domain.permissions import SYSTEM_ROLE_NAMES, validate_permissions
 
 logger = structlog.get_logger(__name__)
+
+
+def _audit_actor_fields(actor: str | None) -> dict[str, str | None]:
+    """Type a legacy free-text ``actor`` for the AuditEvent columns (see AuditService)."""
+    raw = (actor or "system").strip() or "system"
+    machine = raw in ("system", "celery_worker")
+    return {
+        "actor": raw,
+        "actor_type": (
+            AuditActorType.SYSTEM.value if machine else AuditActorType.PRACTITIONER.value
+        ),
+        "actor_id": None if machine else raw,
+        "actor_display": raw,
+    }
 
 
 class UnknownPermissionError(ValueError):
@@ -135,7 +150,8 @@ class RoleService:
             action=action,
             entity_type="role",
             entity_id=entity_id,
-            actor=actor or "system",
+            **_audit_actor_fields(actor),
+            action_crude=audit_action_to_crude(action),
             details=details,
         ))
         await self._session.flush()

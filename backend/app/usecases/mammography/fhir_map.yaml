@@ -1,0 +1,87 @@
+# FHIR terminology map — mammography (AI screening result)
+#
+# STRICT WHITELIST. Local codes always; `standard:` ignored until `verified: true`.
+#
+# NOTE ON OVERLAP: the radiologist-authored report (mammography_reports) is already
+# pivoted into Observations by ObservationService.record_mammography_observations, under
+# `mammo.*` codes. THIS map covers the *AI model's* output, which is a different assertion
+# by a different author — hence the distinct `mammoai.*` code prefix. Both can exist for
+# one study: one is what the model said, the other what the radiologist signed. Collapsing
+# them would destroy that distinction, which is the whole point of AI-assisted reporting.
+#
+# Laterality: the AI result carries left/right in the FIELD NAME (birads_right), so each
+# side gets its own entry. body_site_code is SNOMED 76752008 "Breast structure" — the one
+# SNOMED code here that is stable enough to assert; per-side body-site codes await sign-off.
+
+observations:
+  - path: summary.birads_right
+    code: mammoai.birads
+    display: BI-RADS assessment (AI, right breast)
+    category: imaging
+    value_codes: true
+    body_site_code: "76752008"
+    standard:
+      system: http://loinc.org
+      code: <TBD-verify>
+      verified: false
+
+  - path: summary.birads_left
+    code: mammoai.birads
+    display: BI-RADS assessment (AI, left breast)
+    category: imaging
+    value_codes: true
+    body_site_code: "76752008"
+    standard:
+      system: http://loinc.org
+      code: <TBD-verify>
+      verified: false
+
+  - path: summary.density_right
+    code: mammoai.density
+    display: Breast composition / density (AI, right breast)
+    category: imaging
+    value_codes: true
+    body_site_code: "76752008"
+    standard:
+      system: http://loinc.org
+      code: <TBD-verify>
+      verified: false
+
+  - path: summary.density_left
+    code: mammoai.density
+    display: Breast composition / density (AI, left breast)
+    category: imaging
+    value_codes: true
+    body_site_code: "76752008"
+    standard:
+      system: http://loinc.org
+      code: <TBD-verify>
+      verified: false
+
+  # Model probability, not a diagnosis. Exported as a survey-category value so it is never
+  # mistaken for a clinical laboratory or imaging measurement. UCUM "1" = a 0-1 ratio.
+  - path: summary.malignancy_probability_right
+    code: mammoai.malignancy_probability
+    display: Malignancy probability (AI, right breast)
+    category: survey
+    unit: "1"
+    body_site_code: "76752008"
+
+  - path: summary.malignancy_probability_left
+    code: mammoai.malignancy_probability
+    display: Malignancy probability (AI, left breast)
+    category: survey
+    unit: "1"
+    body_site_code: "76752008"
+
+excluded:
+  - summary.findings                   # structured per-slot findings → already covered by
+                                       # the radiologist report's mammo.* Observations
+  - summary.right_breast_findings      # narrative → DiagnosticReport.conclusion
+  - summary.left_breast_findings
+  - summary.opinion
+  - summary.laterality                 # which breasts were imaged → ImagingStudy
+  - summary.quantitative               # placeholder-model flag → qa_flags
+  - summary.inference_method           # → Device/Provenance
+  - summary.processing_notes
+  - measurements.views_analyzed        # acquisition metadata — technical

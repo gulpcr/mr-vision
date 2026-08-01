@@ -148,7 +148,7 @@ function UsecaseModal({
       <button
         onClick={() => onSelect(studyUid)}
         disabled={running}
-        className="w-full flex items-center gap-2 px-3 py-2.5 text-sm font-medium text-left rounded text-primary-700 bg-primary-50 hover:bg-primary-100 disabled:opacity-50 transition-colors mb-1"
+        className="press w-full flex items-center gap-2 px-3 py-2.5 text-sm font-medium text-left rounded-lg text-primary-700 dark:text-primary-300 bg-primary-50 dark:bg-primary-950 hover:bg-primary-100 dark:hover:bg-primary-900 disabled:opacity-50 transition-colors mb-1"
       >
         <Zap className="w-4 h-4 shrink-0" />
         <div>
@@ -166,7 +166,7 @@ function UsecaseModal({
               key={uc.name}
               onClick={() => onSelect(studyUid, [uc.name])}
               disabled={running}
-              className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left rounded text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 dark:hover:bg-surface-raised disabled:opacity-50 transition-colors"
+              className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left rounded-lg text-gray-700 dark:text-gray-300 hover:bg-accent/5 disabled:opacity-50 transition-colors"
             >
               <ChevronRight className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500 shrink-0" />
               {uc.name.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
@@ -808,7 +808,7 @@ export default function WorklistPage() {
                               return (
                                 <div key={job.id} className="flex items-center gap-1.5 flex-wrap">
                                   <StatusBadge variant="job" status={stale ? "failed" : job.status} />
-                                  <span className="text-xs text-gray-500 dark:text-gray-400 dark:text-gray-500 truncate max-w-[80px]">
+                                  <span className="text-xs text-gray-500 dark:text-gray-400 truncate max-w-[80px]">
                                     {job.usecase_name.replace(/_/g, " ")}
                                   </span>
                                   {active && !stale && (
@@ -842,7 +842,7 @@ export default function WorklistPage() {
                                       }}
                                       disabled={cancellingJob === job.id}
                                       title="Stop this job"
-                                      className="flex items-center gap-0.5 text-[10px] text-gray-500 dark:text-gray-400 dark:text-gray-500 hover:text-red-600 dark:hover:text-red-400 bg-gray-100 dark:bg-gray-800 hover:bg-red-50 dark:hover:bg-red-950 px-1.5 py-0.5 rounded-full transition-colors shrink-0 disabled:opacity-60"
+                                      className="flex items-center gap-0.5 text-[10px] text-gray-500 dark:text-gray-400 hover:text-red-600 dark:hover:text-red-400 bg-gray-100 dark:bg-gray-800 hover:bg-red-50 dark:hover:bg-red-950 px-1.5 py-0.5 rounded-full transition-colors shrink-0 disabled:opacity-60"
                                     >
                                       {cancellingJob === job.id ? (
                                         <>
@@ -863,7 +863,7 @@ export default function WorklistPage() {
                                         try { await api.jobs.retry(job.id); await loadStudies(); } catch {}
                                       }}
                                       title="Retry this job"
-                                      className="flex items-center gap-0.5 text-[10px] text-gray-500 dark:text-gray-400 dark:text-gray-500 hover:text-primary-600 bg-gray-100 dark:bg-gray-800 hover:bg-primary-50 px-1.5 py-0.5 rounded-full transition-colors shrink-0"
+                                      className="flex items-center gap-0.5 text-[10px] text-gray-500 dark:text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 bg-gray-100 dark:bg-gray-800 hover:bg-primary-50 dark:hover:bg-primary-950 px-1.5 py-0.5 rounded-full transition-colors shrink-0"
                                     >
                                       <RotateCcw className="w-2.5 h-2.5" /> Retry
                                     </button>
@@ -885,14 +885,14 @@ export default function WorklistPage() {
                         <div className="flex items-center gap-1.5 flex-wrap">
                           <Link
                             href={`/study/${study.study_instance_uid}`}
-                            className="press px-2.5 py-1.5 text-xs font-medium text-primary-600 dark:text-primary-400 border border-primary-200 dark:border-primary-800 rounded hover:bg-primary-50 dark:hover:bg-primary-950 transition-colors whitespace-nowrap"
+                            className="press px-2.5 py-1.5 text-xs font-medium text-primary-600 dark:text-primary-400 border border-primary-200 dark:border-primary-800 rounded-lg hover:bg-primary-50 dark:hover:bg-primary-950 transition-colors whitespace-nowrap"
                           >
                             View
                           </Link>
                           <button
                             onClick={() => setModalStudyUid(study.study_instance_uid)}
                             disabled={isRunning}
-                            className="press flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-white bg-green-600 rounded hover:bg-green-700 disabled:opacity-50 transition-colors whitespace-nowrap"
+                            className="press flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-white bg-green-600 rounded-lg hover:bg-green-700 disabled:opacity-50 transition-colors whitespace-nowrap"
                           >
                             {isRunning
                               ? <RefreshCw className="w-3 h-3 animate-spin motion-reduce:animate-none" />
@@ -905,7 +905,7 @@ export default function WorklistPage() {
                               href={`/admin/patients/${encodeURIComponent(study.patient_id)}/trend/${completedJob.usecase_name}`}
                               aria-label="View longitudinal trend"
                               title="Longitudinal trend"
-                              className="p-1.5 text-purple-600 dark:text-purple-400 border border-purple-200 dark:border-purple-800 rounded hover:bg-purple-50 transition-colors"
+                              className="press p-1.5 text-purple-600 dark:text-purple-400 border border-purple-200 dark:border-purple-800 rounded-lg hover:bg-purple-50 dark:hover:bg-purple-950 transition-colors"
                             >
                               <TrendingUp className="w-3.5 h-3.5" />
                             </Link>
@@ -925,7 +925,7 @@ export default function WorklistPage() {
                               onClick={() => setConfirmDelete(study.study_instance_uid)}
                               aria-label="Remove study from platform"
                               title="Remove study from platform"
-                              className="p-1.5 text-gray-400 dark:text-gray-500 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-950 rounded transition-colors"
+                              className="press p-1.5 text-gray-400 dark:text-gray-500 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-950 rounded-lg transition-colors"
                             >
                               <Trash2 className="w-3.5 h-3.5" />
                             </button>

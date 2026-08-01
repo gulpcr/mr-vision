@@ -2,7 +2,7 @@ import tempfile
 from typing import TYPE_CHECKING, Annotated
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -160,6 +160,7 @@ async def compare_results(
 @router.get("/results/{result_id}/report.pdf")
 async def download_report_pdf(
     result_id: str,
+    request: Request,
     service: Annotated[ResultService, Depends(get_result_service)],
     session: Annotated["AsyncSession", Depends(get_session)],
 ):
@@ -170,6 +171,15 @@ async def download_report_pdf(
     result = await service.get_result_by_id(result_id)
     if not result:
         raise HTTPException(404, "Result not found")
+
+    # Downloading the PDF is a read of the entire report.
+    from app.application.audit_service import AuditService
+
+    await AuditService(session).record_read(
+        request, "report_downloaded", "result", result_id,
+        details={"study_instance_uid": result.study_instance_uid,
+                 "usecase": result.usecase_name, "format": "pdf"},
+    )
 
     from app.infrastructure.database.models import StudyRecord
     from sqlalchemy import select
@@ -207,6 +217,7 @@ async def download_report_pdf(
 async def get_result(
     study_uid: str,
     usecase: str,
+    request: Request,
     service: Annotated[ResultService, Depends(get_result_service)],
     version: int | None = Query(default=None, description="Specific result version (omit for latest)"),
 ):
@@ -216,6 +227,15 @@ async def get_result(
         if version is not None:
             detail += f" / version {version}"
         raise HTTPException(status_code=404, detail=detail)
+    # PHI read. AuditAction.RESULT_VIEWED existed from the start but nothing ever wrote
+    # it, so record access was invisible to an audit review.
+    from app.application.audit_service import AuditService
+
+    await AuditService(service._result_repo._session).record_read(
+        request, "result_viewed", "result", result.id,
+        details={"study_instance_uid": study_uid, "usecase": usecase,
+                 "version": result.version},
+    )
     return _to_response(result)
 
 
@@ -310,6 +330,7 @@ async def revoke_share_link(
 @router.get("/portal/{token}")
 async def get_portal_result(
     token: str,
+    request: Request,
     service: Annotated[ResultService, Depends(get_result_service)],
     session: Annotated["AsyncSession", Depends(get_session)],
 ):
@@ -324,6 +345,20 @@ async def get_portal_result(
     result = await service.get_result_by_id(link["result_id"])
     if not result:
         raise HTTPException(404, "Result not found")
+
+    # Share-token redemption: PHI reached via a link rather than the normal worklist, so
+    # the entry records which link was used alongside the caller. Note this route is NOT
+    # in the middleware's PUBLIC_PATHS, so today it still requires a platform login and
+    # the actor is attributable — if the route is ever made genuinely public for external
+    # referrers, this audit write becomes the only trace of that access, which is why it
+    # records the link id and client IP rather than relying on the user alone.
+    from app.application.audit_service import AuditService
+
+    await AuditService(session).record_read(
+        request, "share_link_redeemed", "result", result.id,
+        details={"share_link_id": link.get("id"), "usecase": link.get("usecase_name"),
+                 "study_instance_uid": link.get("study_instance_uid")},
+    )
 
     from app.infrastructure.database.models import StudyRecord
     from sqlalchemy import select

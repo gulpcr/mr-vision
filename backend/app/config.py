@@ -111,6 +111,24 @@ class Settings(BaseSettings):
     # FHIR (F11)
     fhir_enabled: bool = False
     fhir_server_url: str = ""
+    # Identifier.system URIs for the identifiers this deployment issues/receives. An
+    # Identifier without a system is not matchable — "12345" says nothing about which
+    # numbering scheme issued it, and across tenants two hospitals' MRN "12345" are
+    # indistinguishable. Only the operator knows their own namespace, so these are
+    # config rather than constants (the code-system URIs live in
+    # app/domain/fhir_terminology.py). Empty means "unknown": the identifier is then
+    # omitted from FHIR output rather than emitted unqualified.
+    # Per-tenant override belongs on the fhir_connections table (integration plan P0);
+    # until that exists these apply deployment-wide.
+    # Derive row-per-value Observations from intake orders and mammography reports into
+    # the observations table (FHIR Observation shape). On by default: it is the platform's
+    # structured clinical store, not an optional integration. The switch exists so an
+    # operator can stop the derived writes without reverting a migration; the legacy
+    # columns are dual-written either way, so nothing depends on it being on.
+    observations_enabled: bool = True
+    fhir_patient_identifier_system: str = ""      # namespace of studies.patient_id (MRN)
+    fhir_accession_identifier_system: str = ""    # namespace of studies.accession_number
+    fhir_order_identifier_system: str = ""        # namespace of orders.external_order_ref
 
     # Worklist (F12)
     worklist_enabled: bool = False

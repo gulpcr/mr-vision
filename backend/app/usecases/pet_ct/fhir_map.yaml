@@ -1,0 +1,125 @@
+# FHIR terminology map — pet_ct (whole-body FDG PET/CT)
+#
+# STRICT WHITELIST: only the paths below ever become Observations. Anything absent here
+# is never exported, which is deliberate — see the `excluded` list at the bottom.
+#
+# Every entry has a LOCAL code (always used; names the platform's own concept and can
+# never wrongly assert a standard one). `standard:` blocks are IGNORED until
+# `verified: true`. PET quantitation has no settled LOINC binding for MTV/TLG/SUVpeak, so
+# most of these will stay local permanently, and that is the honest outcome — a local
+# code the EHR files as-is beats a plausible-looking LOINC it trends under the wrong
+# concept.
+#
+# UCUM notes: SUV is a dimensionless ratio → "1". MTV is a volume → "mL". TLG is
+# SUVmean×volume, conventionally reported in grams → "g".
+
+observations:
+  - path: summary.suvmax_body
+    code: petct.suvmax_body
+    display: SUVmax, whole body
+    category: imaging
+    unit: "1"
+    standard:
+      system: http://loinc.org
+      code: <TBD-verify>
+      verified: false
+
+  - path: summary.mtv_total_ml
+    code: petct.mtv_total
+    display: Metabolic tumour volume, total
+    category: imaging
+    unit: mL
+    # No LOINC concept for MTV is known to exist; local is the correct home.
+
+  - path: summary.tlg_total
+    code: petct.tlg_total
+    display: Total lesion glycolysis
+    category: imaging
+    unit: g
+
+  - path: summary.lesion_count
+    code: petct.lesion_count
+    display: FDG-avid lesion count
+    category: imaging
+    unit: "1"
+
+  - path: summary.tumor_to_liver_ratio
+    code: petct.tumor_to_liver_ratio
+    display: Tumour-to-liver SUV ratio
+    category: imaging
+    unit: "1"
+
+  # Coded assessments — string values, exported as coded answers rather than quantities.
+  - path: summary.percist_score
+    code: petct.percist
+    display: PERCIST 1.0 response category
+    category: imaging
+    value_codes: true
+
+  - path: summary.deauville_score
+    code: petct.deauville
+    display: Deauville score
+    category: imaging
+    unit: "1"
+
+  # Reference-organ SUV: the denominator behind PERCIST/Deauville, so it belongs in the
+  # record alongside the scores it determines.
+  - path: measurements.reference_organs.liver_suv_mean
+    code: petct.liver_suvmean
+    display: Liver SUVmean (reference)
+    category: imaging
+    unit: "1"
+    body_site_code: <TBD-verify-snomed-liver>
+
+  - path: measurements.reference_organs.mediastinum_suv_mean
+    code: petct.mediastinum_suvmean
+    display: Mediastinal blood pool SUVmean (reference)
+    category: imaging
+    unit: "1"
+
+# Per-lesion metrics. One Observation per lesion per field, labelled with the lesion's
+# anatomical region so a reader can tell them apart in a chart.
+repeats:
+  - each: measurements.lesions
+    label_field: anatomical_region
+    fields:
+      - path: suv_max
+        code: petct.lesion_suvmax
+        display: Lesion SUVmax
+        category: imaging
+        unit: "1"
+      - path: suv_mean
+        code: petct.lesion_suvmean
+        display: Lesion SUVmean
+        category: imaging
+        unit: "1"
+      - path: suv_peak
+        code: petct.lesion_suvpeak
+        display: Lesion SUVpeak
+        category: imaging
+        unit: "1"
+      - path: volume_ml
+        code: petct.lesion_volume
+        display: Lesion metabolic volume
+        category: imaging
+        unit: mL
+      - path: tlg
+        code: petct.lesion_tlg
+        display: Lesion glycolysis (TLG)
+        category: imaging
+        unit: g
+
+# Present in the result and deliberately NOT exported. Listed so the omission is a
+# recorded decision rather than an oversight — the old blanket export published the first
+# two of these into patient charts as clinical findings.
+excluded:
+  - measurements.image_dimensions      # voxel grid — technical
+  - measurements.voxel_spacing_mm      # acquisition geometry — technical
+  - summary.inference_method           # which algorithm ran → Device/Provenance, not an Observation
+  - summary.processing_notes           # free prose → DiagnosticReport.conclusion
+  - summary.diagnosis                  # narrative impression → DiagnosticReport.conclusion
+  - summary.confidence                 # internal QA signal, not a clinical finding
+  - summary.confidence_reasons
+  - summary.quantitative               # calibration flag → drives qa_flags instead
+  - summary.radiopharmaceutical        # belongs on ImagingStudy, not an Observation
+  - summary.lesions_detected           # redundant with lesion_count

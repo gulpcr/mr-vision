@@ -22,6 +22,8 @@ from reportlab.platypus import (
     TableStyle,
 )
 
+from app.application.dicom_demographics import format_person_name
+
 # Brand colours
 _DARK_BLUE = colors.HexColor("#0a6bff")
 _TEAL = colors.HexColor("#00d4aa")
@@ -108,7 +110,8 @@ def generate_report_pdf(
     info_data = [
         [
             Paragraph("PATIENT", info_label),
-            Paragraph(patient_name or "—", info_val),
+            # DICOM PN → display; the raw value is caret-delimited ("DOE^JOHN^A").
+            Paragraph(format_person_name(patient_name, "—"), info_val),
             Paragraph("PATIENT ID", info_label),
             Paragraph(patient_id or "—", info_val),
         ],

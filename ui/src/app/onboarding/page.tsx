@@ -5,7 +5,6 @@ import { api, PatientRecordOut } from "@/lib/api";
 import { CheckCircle2, AlertTriangle, UserPlus, Search, X, Pencil } from "lucide-react";
 
 const SEX = ["female", "male", "other"];
-const AGE_BANDS = ["0-17", "18-39", "40-64", "65+"];
 // Study / modality types selectable at intake, grouped by category so the (long)
 // list stays scannable and the dropdown reads clearly. Option *values* are
 // unchanged from the previous flat list — the backend/order payload is unaffected.
@@ -26,6 +25,8 @@ const EMPTY = {
   region_profile: "PK-diagnostic-assist", study_instance_uid: "", consent_ack: false,
   clinical_history: "", comparative_study: "", height_cm: "", weight_kg: "",
   fasting_glucose: "", injection_site: "", creatinine: "",
+  fasting_glucose_dt: "", creatinine_dt: "",
+  diagnosis_system: "", diagnosis_code: "", diagnosis_display: "",
 };
 
 /** BMI (kg/m²) from height (cm) + weight (kg); "" if either is missing/invalid. */
@@ -83,6 +84,14 @@ export default function OnboardingPage() {
         fasting_glucose: o?.fasting_glucose || "",
         injection_site: o?.injection_site || "",
         creatinine: o?.creatinine || "",
+        // datetime-local wants "YYYY-MM-DDTHH:mm" — trim the seconds/offset.
+        fasting_glucose_dt: o?.fasting_glucose_dt ? o.fasting_glucose_dt.slice(0, 16) : "",
+        creatinine_dt: o?.creatinine_dt ? o.creatinine_dt.slice(0, 16) : "",
+        // Merged in by the API from the order's Condition row — repopulating matters, or
+        // saving an edit would clear a previously coded diagnosis.
+        diagnosis_system: o?.diagnosis_system || "",
+        diagnosis_code: o?.diagnosis_code || "",
+        diagnosis_display: o?.diagnosis_display || "",
       });
       setEditPatientId(patient.id);
       setEditOrderId(o?.id || null);
@@ -102,8 +111,15 @@ export default function OnboardingPage() {
       height_cm: num(form.height_cm),
       weight_kg: num(form.weight_kg),
       fasting_glucose: form.fasting_glucose.trim() || null,
+      fasting_glucose_dt: form.fasting_glucose_dt || null,
       injection_site: form.injection_site.trim() || null,
       creatinine: form.creatinine.trim() || null,
+      creatinine_dt: form.creatinine_dt || null,
+      // Sent only as a complete pair — a code with no system is rejected by the API
+      // (422) rather than stored unqualified, so don't send half of one.
+      diagnosis_system: (form.diagnosis_code.trim() && form.diagnosis_system) || null,
+      diagnosis_code: (form.diagnosis_code.trim() && form.diagnosis_system) ? form.diagnosis_code.trim() : null,
+      diagnosis_display: (form.diagnosis_code.trim() && form.diagnosis_system) ? (form.diagnosis_display.trim() || null) : null,
     };
     try {
       if (editPatientId) {
@@ -211,11 +227,13 @@ export default function OnboardingPage() {
               </select>
             </div>
             <div>
-              <label className={labelCls}>Age band *</label>
-              <select className={inputCls} value={form.age_band} onChange={(e) => set("age_band", e.target.value)} required>
-                <option value="">Select…</option>
-                {AGE_BANDS.map((a) => <option key={a} value={a}>{a}</option>)}
-              </select>
+              <label className={labelCls}>Age (years) *</label>
+              <input
+                type="number" min={0} max={150} step={1}
+                className={inputCls} value={form.age_band}
+                onChange={(e) => set("age_band", e.target.value)}
+                placeholder="e.g. 11" required
+              />
             </div>
           </div>
 
@@ -242,6 +260,40 @@ export default function OnboardingPage() {
           <div>
             <label className={labelCls}>Indication / Clinical history *</label>
             <textarea className={`${inputCls} min-h-[80px]`} value={form.indication} onChange={(e) => set("indication", e.target.value)} required placeholder="Reason for study, relevant clinical history…" />
+          </div>
+
+          {/* Coded diagnosis. Optional, and deliberately separate from the free text above:
+              the backend never infers a code from prose, because a guessed ICD-10 code is
+              filed by a receiving hospital system as fact. Entered here it becomes a FHIR
+              Condition; left blank, the referral stays narrative-only. */}
+          <div className="pt-2 border-t border-gray-100 dark:border-gray-800">
+            <p className="text-[11px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-3">
+              Coded diagnosis (optional)
+            </p>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div>
+                <label className={labelCls}>Code system</label>
+                <select className={inputCls} value={form.diagnosis_system} onChange={(e) => set("diagnosis_system", e.target.value)}>
+                  <option value="">— none —</option>
+                  <option value="http://hl7.org/fhir/sid/icd-10">ICD-10 (WHO)</option>
+                  <option value="http://hl7.org/fhir/sid/icd-10-cm">ICD-10-CM (US)</option>
+                  <option value="http://snomed.info/sct">SNOMED CT</option>
+                </select>
+              </div>
+              <div>
+                <label className={labelCls}>Code</label>
+                <input className={inputCls} value={form.diagnosis_code} onChange={(e) => set("diagnosis_code", e.target.value)} placeholder="e.g. C34.9" />
+              </div>
+              <div>
+                <label className={labelCls}>Description</label>
+                <input className={inputCls} value={form.diagnosis_display} onChange={(e) => set("diagnosis_display", e.target.value)} placeholder="e.g. Malignant neoplasm of lung" />
+              </div>
+            </div>
+            {form.diagnosis_code.trim() && !form.diagnosis_system && (
+              <p className="mt-2 text-xs text-amber-600 dark:text-amber-500">
+                Select a code system — a code without one cannot be matched by the receiving system.
+              </p>
+            )}
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -279,7 +331,9 @@ export default function OnboardingPage() {
                   <input className={`${inputCls} bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 dark:text-gray-500`} value={calcBmi(form.height_cm, form.weight_kg)} readOnly placeholder="Auto-calculated" title="Auto-calculated from height and weight" />
                 </div>
                 <div><label className={labelCls}>Fasting glucose (mg/dl)</label><input className={inputCls} value={form.fasting_glucose} onChange={(e) => set("fasting_glucose", e.target.value)} /></div>
+                <div><label className={labelCls}>Glucose drawn at</label><input className={inputCls} type="datetime-local" value={form.fasting_glucose_dt} onChange={(e) => set("fasting_glucose_dt", e.target.value)} /></div>
                 <div><label className={labelCls}>Creatinine (mg/dl)</label><input className={inputCls} type="number" step="any" value={form.creatinine} onChange={(e) => set("creatinine", e.target.value)} /></div>
+                <div><label className={labelCls}>Creatinine drawn at</label><input className={inputCls} type="datetime-local" value={form.creatinine_dt} onChange={(e) => set("creatinine_dt", e.target.value)} /></div>
                 <div><label className={labelCls}>Injection site</label><input className={inputCls} value={form.injection_site} onChange={(e) => set("injection_site", e.target.value)} placeholder="e.g. right antecubital" /></div>
               </div>
               <div>
