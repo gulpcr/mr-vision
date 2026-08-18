@@ -110,6 +110,33 @@ def _fmt_dicom_age(raw: str | None) -> str | None:
     return str(raw).strip() or None
 
 
+def _ct_technique_desc(series_desc: str | None, study_desc: str | None) -> str | None:
+    """Contrast/technique descriptor from DICOM series/study description, so the report
+    writer makes technique-appropriate statements (no 'enhancement' on a non-contrast
+    study). Returns e.g. 'contrast-enhanced (venous phase)', 'non-contrast', or None."""
+    import re as _re
+
+    text = " ".join(x for x in [series_desc, study_desc] if x).lower()
+    if not text.strip():
+        return None
+    non = bool(_re.search(r"non[- ]?contrast|unenhanced|\bplain\b|without contrast|\bn/?c\b", text))
+    con = bool(_re.search(
+        r"\bce\b|contrast|\bc\+|post[- ]?contrast|enhanced|venous|arterial|portal|"
+        r"nephrographic|delayed|angio", text))
+    phase = None
+    for p, lab in (("arterial", "arterial phase"), ("portal", "portal-venous phase"),
+                   ("venous", "venous phase"), ("nephrographic", "nephrographic phase"),
+                   ("delayed", "delayed phase")):
+        if p in text:
+            phase = lab
+            break
+    if non:  # 'non-contrast' contains 'contrast'; non-contrast wins over the substring match
+        return "non-contrast"
+    if con:
+        return f"contrast-enhanced ({phase})" if phase else "contrast-enhanced"
+    return None
+
+
 def _report_context_for_study(session: Session, study_uid: str) -> dict[str, Any]:
     """Report context from the study (DICOM) + linked patient intake (sync). Returns
     ``{clinical_history, sex, age, demographics}`` — demographics is a ready 'sex, age'
@@ -1012,6 +1039,16 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
                         if _clin_hist:
                             summ["clinical_history"] = _clin_hist
                         _scan_kw = {**_seq_kw, "demographics": _demo} if _seqs else {}
+                        # EXPERIMENT: age-aware Stage-1 scan for abdomen_ct only (siblings'
+                        # scan_and_report has no `demographics` param). Gated so it reverts
+                        # to the age-blind prompt with one flag flip.
+                        if (
+                            not _seqs
+                            and usecase_name == "abdomen_ct"
+                            and settings.abdomen_scan_age_context
+                            and _demo
+                        ):
+                            _scan_kw = {"demographics": _demo}
 
                         result = loop.run_until_complete(
                             abdomen_ct_report.scan_and_report(
@@ -1072,6 +1109,48 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
                         except Exception as exc:
                             logger.warning("abdomen_ct_rich_read_failed", job_id=job_id, error=str(exc))
 
+                        # Option A — adversarial VLM verification (DISABLED). On ABIDA/SANIA
+                        # it rejected BOTH (0 yes / 3 no each): the "disprove it" framing just
+                        # flips the VLM to under-call — it killed the real ovarian mass too. The
+                        # VLM cannot discriminate real vs phantom (see report.verify_mass_vlm).
+                        # Kept for reference; gated off so it doesn't burn 3 VLM calls/mass.
+                        if False and usecase_name == "abdomen_ct":
+                            try:
+                                import re as _re_mv
+                                _MASS_MV = _re_mv.compile(
+                                    r"mass|tumou?r|neoplas|adnexal|lesion|carcinoma", _re_mv.IGNORECASE
+                                )
+                                _mass_flags = [
+                                    f for f in (result.get("flagged") or [])
+                                    if f.get("finding") and _MASS_MV.search(str(f["finding"]))
+                                ]
+                                if _mass_flags:
+                                    _stw2 = scan_windows[0] if scan_windows else None
+                                    _zpng: dict[int, str] = {}
+                                    for e in manifest:
+                                        lp = e.get("local_path")
+                                        if e.get("window") == _stw2 and lp and os.path.exists(lp):
+                                            _zpng.setdefault(int(e["z"]), lp)
+                                    _mzs = sorted({int(f["z"]) for f in _mass_flags}, reverse=True)
+                                    _mimgs = [
+                                        {"z": z, "bytes": _read_png(_zpng[z])}
+                                        for z in _mzs if z in _zpng
+                                    ][:8]
+                                    if _mimgs:
+                                        _vv = loop.run_until_complete(
+                                            abdomen_ct_report.verify_mass_vlm(
+                                                client=client, images=_mimgs, flagged=_mass_flags,
+                                                study_description=summ.get("study_description"),
+                                                demographics=_demo, votes=3,
+                                            )
+                                        )
+                                        if _vv:
+                                            summ["mass_verification_vlm"] = _vv
+                            except Exception as exc:
+                                logger.warning("abdomen_ct_verify_vlm_failed", job_id=job_id, error=str(exc))
+
+                        _organ = None
+
                         # Tumour measurement (SAM-Med3D): localize the mass, segment it,
                         # and store TS×AP×CC mm in summary["mass_measurement"] for the
                         # report writer to weave in. Opt-in via measure.enabled; fully
@@ -1119,6 +1198,51 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
                             except Exception as exc:
                                 logger.warning("abdomen_ct_measure_failed", job_id=job_id, error=str(exc))
 
+                        # Tier-1 organ grounding (abdomen_ct): deterministic organ sizes →
+                        # hepatomegaly/splenomegaly/AAA as FACTS, fed to the report-writer as
+                        # authoritative ground truth (reports organomegaly the VLM can't
+                        # perceive AND anchors it against confabulating a mass over normal-
+                        # measured organs). Runs AFTER measurement so it REUSES the same
+                        # TotalSeg mask (working_dir/abdomen_measure_seg/organs.nii.gz) —
+                        # cache hit = pure-CPU arithmetic, no extra GPU allocation (a second
+                        # GPU TotalSeg run here previously exhausted VRAM). Non-blocking.
+                        if usecase_name == "abdomen_ct" and settings.organ_grounding_enabled:
+                            try:
+                                import re as _re_age
+                                from app.usecases.abdomen_ct import organ_grounding as _og
+
+                                _age_yr = None
+                                _m_age = _re_age.search(r"\d+", str(_ctx.get("age") or ""))
+                                if _m_age:
+                                    _age_yr = int(_m_age.group())
+                                _vol_g = os.path.join(working_dir, "nifti", "volume.nii.gz")
+                                _organ = _og.analyze_organs(_vol_g, working_dir, age_years=_age_yr)
+                                if _organ:
+                                    summ["organ_measurements"] = _organ["measurements"]
+                                    if _organ.get("findings"):
+                                        summ["organ_findings"] = _organ["findings"]
+                            except Exception as exc:
+                                logger.warning("abdomen_ct_organ_grounding_failed", job_id=job_id, error=str(exc))
+
+                        # Grounded mass verification (option C): does a coherent unlabeled
+                        # soft-tissue mass actually exist at the flagged location, or is the
+                        # region normal/organ tissue (a likely over-call)? Deterministic —
+                        # reuses the TotalSeg cache, no extra GPU. Verdict drives the writer.
+                        _verify = None
+                        if usecase_name == "abdomen_ct" and settings.organ_grounding_enabled:
+                            try:
+                                _vmod = importlib.import_module(
+                                    f"app.usecases.{usecase_name}.measurement"
+                                )
+                                _vol_v = os.path.join(working_dir, "nifti", "volume.nii.gz")
+                                _verify = _vmod.verify_mass(
+                                    _vol_v, result.get("flagged") or [], working_dir, measure_cfg
+                                )
+                                if _verify:
+                                    summ["mass_verification"] = _verify
+                            except Exception as exc:
+                                logger.warning("abdomen_ct_verify_failed", job_id=job_id, error=str(exc))
+
                         # Pre-generate the consolidated Findings/Conclusions report NOW so
                         # opening the report is instant (the /consolidated-report endpoint
                         # returns this cached value instead of writing on first open).
@@ -1135,6 +1259,24 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
                                     demographics=_demo,
                                     region_label=_region["region_label"],
                                     markers_enabled=bool(_region["markers_enabled"]),
+                                    grounded_facts=(_organ or {}).get("facts_text"),
+                                    # Protocol/contrast phase from DICOM → technique-aware
+                                    # statements. Clinical history (already passed) is now
+                                    # framed by the writer as a present/absent question with
+                                    # an open incidental sweep (interpretation layer; the scan
+                                    # pass stays context-blind to avoid anchoring).
+                                    technique=_ct_technique_desc(
+                                        summ.get("series_description"), summ.get("study_description")
+                                    ),
+                                    # NOTE: the residual-exclusion verifier (verify_mass) is
+                                    # NOT used to drive the report — on the ABIDA/SANIA test it
+                                    # INVERTED both (rejected a real cystic mass, confirmed a
+                                    # phantom over unlabelled bowel/mesentery). The verdict is
+                                    # still computed + stored (summary.mass_verification) for
+                                    # analysis, but must not influence the narrative until a
+                                    # method that separates the cases exists.
+                                    verification=None,
+                                    skeptic=False,
                                 )
                             )
                             if _cons:

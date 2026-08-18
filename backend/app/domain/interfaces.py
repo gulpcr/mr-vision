@@ -151,6 +151,11 @@ class PACSClient(abc.ABC):
         self, study_instance_uid: str, series_instance_uid: str, output_dir: str
     ) -> list[str]: ...
 
+    @abc.abstractmethod
+    async def upload_dicom_instance(self, dicom_bytes: bytes) -> str:
+        """Push a single raw DICOM instance into the PACS. Returns its PACS id."""
+        ...
+
 
 class HL7InboundHandler(abc.ABC):
     """Handles one raw inbound HL7 v2 message end to end: parse → map → persist →

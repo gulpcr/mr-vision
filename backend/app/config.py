@@ -108,6 +108,10 @@ class Settings(BaseSettings):
     dicom_sr_enabled: bool = False
     dicom_seg_enabled: bool = False
 
+    # In-app DICOM upload: lets authenticated users push DICOM files/folders from
+    # the browser (POST /api/studies/upload) instead of the open Orthanc Explorer.
+    dicom_upload_enabled: bool = True
+
     # FHIR (F11)
     fhir_enabled: bool = False
     fhir_server_url: str = ""
@@ -200,6 +204,20 @@ class Settings(BaseSettings):
     # summary is preserved unchanged. Runs alongside the Gemini path — it does not
     # replace it — so the pipeline stays runnable when MedGemma is unavailable.
     medgemma_enabled: bool = False
+    # Tier-1 deterministic organ grounding (abdomen_ct): run TotalSegmentator to measure
+    # organ sizes, surface size-based findings (hepatomegaly/splenomegaly/AAA) as facts,
+    # and feed them to the report-writer as authoritative ground truth so it reports
+    # organomegaly the VLM cannot perceive and is anchored against confabulating a mass
+    # over normal-measured organs. Needs TotalSegmentator in the worker; non-blocking.
+    organ_grounding_enabled: bool = True
+    # EXPERIMENT (abdomen_ct only): inject patient age/sex into the Stage-1 scan/flag
+    # prompt as normal-for-age calibration context. TESTED 2026-08-10 on SANIA (pediatric)
+    # and REVERTED: age did NOT improve flagging — with "female, 9 years" injected, 27B
+    # swapped its vague confabulation ("free fluid") for a SPECIFIC age-primed hallucination
+    # ("large right adrenal mass" — the classic pediatric tumor — at an anatomically wrong
+    # pelvic level). The explicit "do NOT hunt age-associated disease" guard failed to stop
+    # the priming. Left OFF; plumbing kept dormant so it can be re-tested (e.g. adults only).
+    abdomen_scan_age_context: bool = False
     # Host-run default; the containerised worker overrides this to
     # http://host.docker.internal:11434 (see docker-compose.yml) because inside a
     # container "103.93.216.37" is the container itself, not the host running Ollama.

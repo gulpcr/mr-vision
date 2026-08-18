@@ -260,3 +260,93 @@ class StudyService:
         studies = await self._study_repo.list_studies(offset, limit, filters)
         total = await self._study_repo.count(filters)
         return studies, total
+
+    async def upload_and_ingest(
+        self, files: list[tuple[str, bytes]]
+    ) -> dict[str, Any]:
+        """Push raw DICOM files into Orthanc, then ingest every distinct study.
+
+        ``files`` is a list of ``(filename, dicom_bytes)`` — already read from the
+        request in the interface layer so no FastAPI type leaks in here. Each file is
+        parsed locally for its StudyInstanceUID (so we know what to ingest) before
+        being uploaded; a file that is not readable DICOM is recorded as failed and
+        skipped rather than aborting the whole batch. Once all files are stored, each
+        unique study is ingested through the same path as PACS/Orthanc ingest, so it
+        lands in the platform identically and is ready for AI routing.
+        """
+        from io import BytesIO
+
+        import pydicom
+
+        file_results: list[dict[str, Any]] = []
+        study_uids: set[str] = set()
+        uploaded = 0
+        failed = 0
+
+        for filename, data in files:
+            try:
+                ds = pydicom.dcmread(
+                    BytesIO(data), stop_before_pixels=True, force=True
+                )
+                study_uid = str(getattr(ds, "StudyInstanceUID", "") or "")
+            except Exception as exc:
+                file_results.append(
+                    {"filename": filename, "status": "error",
+                     "detail": f"Not a readable DICOM file: {exc}"}
+                )
+                failed += 1
+                continue
+
+            if not study_uid:
+                file_results.append(
+                    {"filename": filename, "status": "skipped",
+                     "detail": "No StudyInstanceUID — not a DICOM image (e.g. DICOMDIR)."}
+                )
+                failed += 1
+                continue
+
+            try:
+                orthanc_id = await self._pacs.upload_dicom_instance(data)
+            except Exception as exc:
+                file_results.append(
+                    {"filename": filename, "status": "error",
+                     "detail": f"PACS rejected the file: {exc}"}
+                )
+                failed += 1
+                continue
+
+            study_uids.add(study_uid)
+            file_results.append(
+                {"filename": filename, "status": "uploaded",
+                 "orthanc_id": orthanc_id, "study_instance_uid": study_uid}
+            )
+            uploaded += 1
+
+        studies_ingested: list[dict[str, Any]] = []
+        for uid in study_uids:
+            try:
+                study = await self.ingest_study(uid)
+                studies_ingested.append(
+                    {"study_instance_uid": study.study_instance_uid,
+                     "patient_name": study.patient_name,
+                     "patient_id": study.patient_id,
+                     "modality": study.modality,
+                     "series_count": len(study.series or [])}
+                )
+            except Exception as exc:
+                logger.warning("upload_ingest_failed", study_uid=uid, error=str(exc))
+                studies_ingested.append(
+                    {"study_instance_uid": uid, "error": str(exc)}
+                )
+
+        logger.info(
+            "dicom_upload_batch",
+            files=len(files), uploaded=uploaded, failed=failed,
+            studies=len(studies_ingested),
+        )
+        return {
+            "uploaded": uploaded,
+            "failed": failed,
+            "studies_ingested": studies_ingested,
+            "files": file_results,
+        }

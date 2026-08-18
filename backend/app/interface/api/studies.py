@@ -1,10 +1,12 @@
 import asyncio
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.datastructures import UploadFile as StarletteUploadFile
 
+from app.config import get_settings
 from app.application.study_service import StudyService
 from app.infrastructure.orthanc.client import OrthancPACSClient
 from app.application.job_orchestrator import JobOrchestrator
@@ -82,6 +84,49 @@ async def routing_preview(
     if not study:
         raise HTTPException(status_code=404, detail=f"Study {study_uid} not found")
     return routing.preview_routing(study, study.series or [])
+
+
+# Cap on files per request. Well above the client's batch size but bounded so a
+# single request can't buffer an unlimited number of instances in memory. Raising
+# Starlette's default (1000) is necessary because a DICOM series folder can exceed
+# it — otherwise the whole request is rejected with 400 "Too many files" before our
+# handler ever runs. The browser still uploads in small batches; this is the ceiling.
+_MAX_UPLOAD_FILES = 5000
+
+
+@router.post("/upload")
+async def upload_dicom_files(
+    request: Request,
+    service: Annotated[StudyService, Depends(get_study_service)],
+):
+    """Upload DICOM files (or a whole folder) from the browser and ingest them.
+
+    Session-authed via the platform's RBACMiddleware (unlike the open Orthanc
+    Explorer). Each file is stored in Orthanc and every distinct study it belongs
+    to is ingested into the platform, ready for AI routing. Files that are not
+    valid DICOM are reported per-file rather than failing the whole batch.
+
+    The multipart form is parsed manually so the per-request file limit can be
+    raised above Starlette's default of 1000 (a series folder routinely exceeds
+    it). The browser uploads in small batches; ``_MAX_UPLOAD_FILES`` is the hard
+    ceiling that keeps one request's memory bounded.
+    """
+    if not get_settings().dicom_upload_enabled:
+        raise HTTPException(status_code=403, detail="In-app DICOM upload is disabled")
+
+    try:
+        form = await request.form(
+            max_files=_MAX_UPLOAD_FILES, max_fields=_MAX_UPLOAD_FILES
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Malformed upload: {exc}")
+
+    uploads = [f for f in form.getlist("files") if isinstance(f, StarletteUploadFile)]
+    if not uploads:
+        raise HTTPException(status_code=400, detail="No files provided")
+
+    payload = [(f.filename or "unnamed.dcm", await f.read()) for f in uploads]
+    return await service.upload_and_ingest(payload)
 
 
 @router.post("", response_model=StudyResponse, status_code=201)

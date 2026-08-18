@@ -43,6 +43,10 @@ class AbdomenReportService:
         demographics: str | None = None,
         region_label: str = "an ABDOMEN/PELVIS CT",
         markers_enabled: bool = True,
+        grounded_facts: str | None = None,
+        skeptic: bool = False,
+        verification: str | None = None,
+        technique: str | None = None,
     ) -> dict[str, str] | None:
         """Return ``{findings, conclusions}`` written from the inputs only, or None.
 
@@ -59,7 +63,8 @@ class AbdomenReportService:
         if not self.available:
             return None
         prompt = self._build_prompt(
-            flagged, study_description, detail, clinical_history, demographics, region_label
+            flagged, study_description, detail, clinical_history, demographics, region_label,
+            grounded_facts, skeptic, verification, technique,
         )
         try:
             raw = await self._client.generate_text(prompt)
@@ -162,21 +167,76 @@ class AbdomenReportService:
         clinical_history: str | None = None,
         demographics: str | None = None,
         region_label: str = "this radiology study",
+        grounded_facts: str | None = None,
+        skeptic: bool = False,
+        verification: str | None = None,
+        technique: str | None = None,
     ) -> str:
         context = f' The study is described as "{study_description}".' if study_description else ""
+        if verification == "unconfirmed":
+            context += (
+                "\n\nGROUNDED VERIFICATION (authoritative): an automated 3-D segmentation "
+                "check at the flagged location did NOT confirm a discrete mass — the region "
+                "is largely normal / organ tissue with no coherent unlabelled soft-tissue "
+                "mass. Do NOT assert a confident large mass. If the images still suggest one, "
+                "state that automated verification did NOT confirm a discrete mass at that "
+                "site and that the appearance is unconfirmed / requires radiologist review — "
+                "use hedged wording (\"possible\", \"cannot exclude\") and do not build a "
+                "confident diagnosis on it."
+            )
+        elif verification == "verified":
+            context += (
+                "\n\nGROUNDED VERIFICATION: an automated 3-D segmentation check CONFIRMED a "
+                "coherent soft-tissue mass at the flagged location — you may describe it as a "
+                "genuine mass (still characterise it from the images)."
+            )
+        if grounded_facts and grounded_facts.strip():
+            context += (
+                f"\n\n{grounded_facts.strip()}\n"
+                "The organ sizes above come from automated 3-D segmentation and are "
+                "AUTHORITATIVE — more reliable than visual impression. You MUST state each "
+                "abnormal measured finding (e.g. hepatomegaly) in FINDINGS. You must NOT "
+                "describe an organ as enlarged, or a mass as arising from an organ, that is "
+                "measured NORMAL; where a visual impression conflicts with a measurement, "
+                "DEFER TO THE MEASUREMENT."
+            )
+            if skeptic:
+                context += (
+                    " Furthermore, automated 3-D segmentation did NOT detect or measure any "
+                    "discrete mass in this study. Segmentation does not assess extra-organ "
+                    "masses (adnexal, mesenteric, retroperitoneal), free fluid or lymph nodes, "
+                    "so do not omit a clearly-visible focal finding. But be appropriately "
+                    "SCEPTICAL: a soft, downsampled CT read tends to OVER-call masses and "
+                    "fluid. If you describe a LARGE mass or extensive free fluid / ascites that "
+                    "NO measurement corroborates, you MUST explicitly label it as "
+                    "not measurement-confirmed and requiring radiologist correlation, and "
+                    "prefer hedged, conservative wording (\"possible\", \"cannot exclude\") over "
+                    "a confident assertion — or, if the appearance is equivocal, state that no "
+                    "definite mass is confirmed."
+                )
         if demographics and demographics.strip():
             context += (
                 f' PATIENT: {demographics.strip()}. Use age and sex to inform interpretation '
                 '(sex-appropriate organs and age-appropriate differentials) — but do NOT invent '
                 'findings or state organs not visible.'
             )
+        if technique and technique.strip():
+            context += (
+                f' TECHNIQUE: this is a {technique.strip()} study. Make ONLY technique-appropriate '
+                'statements — e.g. do NOT describe contrast enhancement on a non-contrast study, '
+                'and a non-contrast study cannot characterise enhancement or vascularity.'
+            )
         if clinical_history and clinical_history.strip():
             context += (
-                f' CLINICAL HISTORY: {clinical_history.strip()}. Interpret the findings in this '
-                'clinical context (e.g. a known malignancy post-treatment → frame as assessment '
-                'for recurrence/residual disease and treatment response) and reflect it in the '
-                'CONCLUSIONS. This history is CONTEXT — do NOT turn it into a stated imaging '
-                'finding or invent anything not observed.'
+                f' CLINICAL QUESTION: {clinical_history.strip()}. Address this EXPLICITLY: for each '
+                'condition the history raises, state whether it is PRESENT or ABSENT on this study '
+                '(e.g. "no CT evidence of ..."). Do NOT assume a suspected finding is present just '
+                'because the history mentions it — confirm it from the images/measurements or state '
+                'it is not seen. Frame relevant positives in this clinical context in the CONCLUSIONS '
+                '(e.g. known malignancy post-treatment → recurrence/residual assessment). This '
+                'history is CONTEXT, NOT an imaging finding — do not invent anything not observed. '
+                'SEPARATELY, also report any INCIDENTAL finding UNRELATED to the clinical question — '
+                'do not restrict the report to the suspected conditions.'
             )
 
         # Polish mode: when a detailed read is available it IS the observations — write it

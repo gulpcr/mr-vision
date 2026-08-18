@@ -283,6 +283,121 @@ def mass_localization(
     return {"seed_xyz": seed, "core_path": core_path, "organ_path": organ_path}
 
 
+def verify_mass(
+    volume_path: str,
+    flagged: list[dict[str, Any]],
+    working_dir: str,
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Grounded 'is the flagged mass real?' verification (option C).
+
+    A CONFABULATED mass sits over normal anatomy: after excluding every normal structure
+    TotalSegmentator labels (organs, bowel, muscle, vessels, bone), little coherent
+    *unlabeled* soft tissue remains at the flagged location. A REAL mass leaves a large,
+    coherent unlabeled soft-tissue component. This grounds the VLM's claim in the voxels
+    deterministically instead of re-asking the model.
+
+    Returns ``{verdict, core_volume_ml, coherence, reason, ...}`` where verdict is
+    ``verified`` / ``unconfirmed`` / ``unverifiable`` (segmentation missing), or None when
+    no mass was claimed (nothing to verify). Reuses the cached TotalSeg mask — no extra GPU.
+    """
+    cfg = cfg or {}
+    try:
+        from scipy import ndimage
+    except Exception:
+        return None
+    if not os.path.exists(volume_path):
+        return None
+
+    # Only verify when a MASS was actually claimed on the flags.
+    mass_z = sorted({
+        int(f["z"]) for f in (flagged or [])
+        if f.get("finding") and _MASS_RE.search(str(f["finding"]))
+    })
+    if not mass_z:
+        return None
+
+    img = nib.load(volume_path)
+    arr = np.squeeze(np.asarray(img.get_fdata(), dtype=np.float32))
+    while arr.ndim > 3:
+        arr = arr[..., 0]
+    if arr.ndim != 3:
+        return None
+    sx, sy, sz = (float(z) for z in img.header.get_zooms()[:3])
+    voxel_ml = sx * sy * sz / 1000.0
+    Z = arr.shape[2]
+
+    # Densest flagged cluster → the claimed levels (± a small pad).
+    gap = int(cfg.get("cluster_gap", 25))
+    clusters: list[list[int]] = [[mass_z[0]]]
+    for z in mass_z[1:]:
+        (clusters[-1].append(z) if z - clusters[-1][-1] <= gap else clusters.append([z]))
+    best = max(clusters, key=len)
+    pad = int(cfg.get("verify_z_pad", 10))
+    z0 = max(0, min(best) - pad)
+    z1 = min(Z - 1, max(best) + pad)
+
+    hu_min = float(cfg.get("hu_min", 20.0))
+    hu_max = float(cfg.get("hu_max", 200.0))
+    soft = np.zeros(arr.shape, dtype=bool)
+    soft[:, :, z0:z1 + 1] = (arr[:, :, z0:z1 + 1] > hu_min) & (arr[:, :, z0:z1 + 1] < hu_max)
+
+    organ = _totalseg_organ_mask(volume_path, working_dir, arr.shape)
+    if organ is None:
+        # Can't exclude normal structures → can't verify. Don't claim either way.
+        return {"verdict": "unverifiable", "reason": "organ segmentation unavailable"}
+
+    nonorgan = soft & ~organ
+    nonorgan_vox = int(nonorgan.sum())
+    opened = ndimage.binary_opening(nonorgan, iterations=int(cfg.get("open_iters", 1)))
+    lbl, n = ndimage.label(opened)
+
+    min_ml = float(cfg.get("verify_min_ml", 20.0))
+    min_coh = float(cfg.get("verify_min_coherence", 0.25))
+
+    if n == 0:
+        return {
+            "verdict": "unconfirmed", "core_volume_ml": 0.0, "coherence": 0.0,
+            "z_range": [z0, z1], "min_ml": min_ml, "min_coherence": min_coh,
+            "reason": "no coherent unlabeled soft-tissue component at the flagged location",
+            "method": "totalseg_residual_verify_v1",
+        }
+
+    counts = np.bincount(lbl.ravel())
+    counts[0] = 0
+    comp = int(counts.argmax())
+    core_vox = int(counts[comp])
+    core = lbl == comp
+    core_volume_ml = core_vox * voxel_ml
+    coherence = core_vox / max(nonorgan_vox, 1)  # mass dominates residual, vs scattered
+    xs, ys, zs = np.where(core)
+    bbox = (xs.max() - xs.min() + 1) * (ys.max() - ys.min() + 1) * (zs.max() - zs.min() + 1)
+    fill = core_vox / max(bbox, 1)
+
+    verified = core_volume_ml >= min_ml and coherence >= min_coh
+    result = {
+        "verdict": "verified" if verified else "unconfirmed",
+        "core_volume_ml": round(core_volume_ml, 1),
+        "coherence": round(float(coherence), 2),
+        "fill": round(float(fill), 2),
+        "nonorgan_ml": round(nonorgan_vox * voxel_ml, 1),
+        "z_range": [z0, z1],
+        "min_ml": min_ml, "min_coherence": min_coh,
+        "reason": (
+            "a coherent unlabeled soft-tissue mass of sufficient size is present"
+            if verified else
+            "the flagged region is largely normal/organ tissue — no coherent unlabeled "
+            "mass of sufficient size"
+        ),
+        "method": "totalseg_residual_verify_v1",
+    }
+    logger.info(
+        "abdomen_ct_verify_mass", verdict=result["verdict"],
+        core_volume_ml=result["core_volume_ml"], coherence=result["coherence"],
+    )
+    return result
+
+
 def _totalseg_organ_mask(volume_path: str, working_dir: str, shape: tuple[int, int, int]) -> np.ndarray | None:
     """Binary mask of every normal structure TotalSegmentator labels (label > 0)."""
     import subprocess

@@ -79,6 +79,59 @@ async def rich_read(
     return parsed
 
 
+async def verify_mass_vlm(
+    *,
+    client: Any,
+    images: list[dict[str, Any]],
+    flagged: list[dict[str, Any]] | None,
+    study_description: str | None,
+    demographics: str | None = None,
+    votes: int = 3,
+) -> dict[str, Any] | None:
+    """Adversarial VLM verification of a flagged mass (option A).
+
+    Sends the flagged mass slices back to the VLM ``votes`` times with a DISPROVE-it
+    prompt (opposite bias to the scan pass) and majority-votes. Returns
+    ``{verdict: verified|unconfirmed|uncertain, votes, ...}`` or None. Verdict is
+    independent of the atlas-based ``measurement.verify_mass`` (option C).
+    """
+    if not images:
+        return None
+    zs = [int(e["z"]) for e in images]
+    prompt = prompts.build_mass_verify_prompt(zs, flagged or [], study_description, demographics)
+    results: list[dict[str, Any]] = []
+    for _ in range(max(1, int(votes))):
+        raw = await client.generate_from_images(prompt, [e["bytes"] for e in images])
+        p = prompts.parse_mass_verify(raw) if raw else None
+        if p:
+            results.append(p)
+    if not results:
+        return None
+
+    yes = sum(1 for r in results if r["mass_present"] == "yes")
+    no = sum(1 for r in results if r["mass_present"] == "no")
+    unc = sum(1 for r in results if r["mass_present"] == "uncertain")
+    n = len(results)
+    if yes > no and yes >= n / 2.0:
+        verdict = "verified"
+    elif no >= yes and no >= n / 2.0:
+        verdict = "unconfirmed"
+    else:
+        verdict = "uncertain"
+    feature = next((r["abnormal_feature"] for r in results if r["mass_present"] == "yes"
+                    and r["abnormal_feature"]), "")
+    normal = next((r.get("normal_explanation") for r in results if r["mass_present"] == "no"
+                   and r.get("normal_explanation")), "")
+    logger.info("abdomen_ct_verify_vlm", verdict=verdict, yes=yes, no=no, uncertain=unc, n=n)
+    return {
+        "verdict": verdict,
+        "votes": {"yes": yes, "no": no, "uncertain": unc, "n": n},
+        "abnormal_feature": feature,
+        "normal_explanation": normal,
+        "method": "vlm_adversarial_vote_v1",
+    }
+
+
 async def scan_and_report(
     *,
     client: Any,
@@ -88,6 +141,7 @@ async def scan_and_report(
     windows: list[str],
     batch_size: int = 2,
     max_report_levels: int = 6,
+    demographics: str | None = None,
 ) -> dict[str, Any]:
     """Scan every slice in every scan window, then report on the flagged ones.
 
@@ -112,7 +166,8 @@ async def scan_and_report(
         total_batches += len(batches)
         for i, batch in enumerate(batches, 1):
             prompt = prompts.build_scan_prompt(
-                batch, study_description=study_description, window=window
+                batch, study_description=study_description, window=window,
+                demographics=demographics,
             )
             raw = await client.generate_from_images(prompt, [e["bytes"] for e in batch])
             hits = prompts.parse_scan_response(raw, valid_z={int(e["z"]) for e in batch})

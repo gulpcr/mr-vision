@@ -9,7 +9,6 @@ import {
   Brain,
   CheckCircle,
   XCircle,
-  ExternalLink,
 } from "lucide-react";
 
 export default function SettingsPage() {
@@ -105,14 +104,9 @@ export default function SettingsPage() {
           </div>
           <div className="flex gap-3">
             <span className="text-gray-500 dark:text-gray-400 dark:text-gray-500 w-32">DICOM Viewer:</span>
-            <a
-              href="/orthanc/ui/app/index.html"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-primary-600 hover:text-primary-700 flex items-center gap-1"
-            >
-              Orthanc Stone Viewer <ExternalLink className="w-3.5 h-3.5" />
-            </a>
+            <span className="text-gray-900 dark:text-gray-100">
+              OHIF (opens per study) · Orthanc Explorer is internal-only
+            </span>
           </div>
         </div>
       </div>

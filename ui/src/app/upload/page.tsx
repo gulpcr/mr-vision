@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef, useEffect } from "react";
 import { useOrthancStudies, useStudies } from "@/lib/hooks";
-import { api } from "@/lib/api";
+import { api, DicomUploadResult } from "@/lib/api";
 import { formatDate, formatPatientName } from "@/lib/format";
 import {
   Upload,
@@ -17,6 +17,10 @@ import {
   ChevronDown,
   ChevronUp,
   Info,
+  FolderUp,
+  FileUp,
+  X,
+  Loader2,
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -39,6 +43,236 @@ function ModalityBadge({ modality }: { modality: string }) {
     <span className={`px-2 py-0.5 rounded border text-xs font-semibold ${cfg[m] ?? "bg-gray-50 dark:bg-gray-800 dark:bg-surface-raised text-gray-600 dark:text-gray-400 dark:text-gray-500 border-gray-200 dark:border-gray-700"}`}>
       {m || "—"}
     </span>
+  );
+}
+
+// ── Local folder / file upload panel ──────────────────────────────────────────
+
+// Files DICOM images never use — skip these so a dragged folder's stray PNGs,
+// PDFs or OS junk don't get pushed to the PACS and reported as failures.
+const SKIP_EXT = new Set([
+  "png", "jpg", "jpeg", "gif", "bmp", "tif", "tiff", "txt", "pdf", "zip", "gz",
+  "tar", "json", "xml", "html", "htm", "js", "css", "md", "csv", "xlsx", "doc", "docx",
+]);
+
+function isLikelyDicom(f: File): boolean {
+  const name = f.name;
+  if (!name || name.startsWith(".")) return false;          // hidden / OS files
+  if (name.toLowerCase() === "dicomdir") return false;      // index record, not an image
+  const dot = name.lastIndexOf(".");
+  if (dot === -1) return true;                              // extensionless — typical DICOM
+  return !SKIP_EXT.has(name.slice(dot + 1).toLowerCase());
+}
+
+// Upload this many instances per request. A study can be thousands of files, so
+// one giant multipart request would time out / exhaust memory — batch instead.
+const UPLOAD_BATCH = 40;
+
+function LocalUploadPanel({ onIngested }: { onIngested: () => void }) {
+  const folderRef = useRef<HTMLInputElement>(null);
+  const filesRef = useRef<HTMLInputElement>(null);
+
+  const [queue, setQueue] = useState<File[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const [progress, setProgress] = useState({ done: 0, total: 0 });
+  const [result, setResult] = useState<DicomUploadResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+  const [showFailures, setShowFailures] = useState(false);
+
+  // webkitdirectory / directory aren't valid JSX props — set them on the DOM node
+  // so this input picks a whole folder (recursively) instead of single files.
+  useEffect(() => {
+    const el = folderRef.current;
+    if (el) {
+      el.setAttribute("webkitdirectory", "");
+      el.setAttribute("directory", "");
+      el.setAttribute("mozdirectory", "");
+    }
+  }, []);
+
+  function addFiles(list: FileList | null) {
+    if (!list) return;
+    const incoming = Array.from(list).filter(isLikelyDicom);
+    setResult(null);
+    setError(null);
+    setQueue((prev) => {
+      const seen = new Set(prev.map((f) => `${f.name}:${f.size}`));
+      const merged = [...prev];
+      for (const f of incoming) {
+        const key = `${f.name}:${f.size}`;
+        if (!seen.has(key)) { seen.add(key); merged.push(f); }
+      }
+      return merged;
+    });
+  }
+
+  async function startUpload() {
+    if (!queue.length || uploading) return;
+    setUploading(true);
+    setError(null);
+    setResult(null);
+    setShowFailures(false);
+    setProgress({ done: 0, total: queue.length });
+
+    const agg: DicomUploadResult = { uploaded: 0, failed: 0, studies_ingested: [], files: [] };
+    const seenStudies = new Set<string>();
+    // Each batch is isolated: a failed batch (network error, an unreadable file on
+    // a flaky drive, a server hiccup) is recorded and we move on, so one bad batch
+    // never aborts the rest of the folder.
+    for (let i = 0; i < queue.length; i += UPLOAD_BATCH) {
+      const chunk = queue.slice(i, i + UPLOAD_BATCH);
+      try {
+        const r = await api.studies.upload(chunk);
+        agg.uploaded += r.uploaded;
+        agg.failed += r.failed;
+        agg.files.push(...r.files);
+        for (const s of r.studies_ingested) {
+          if (!seenStudies.has(s.study_instance_uid)) {
+            seenStudies.add(s.study_instance_uid);
+            agg.studies_ingested.push(s);
+          }
+        }
+      } catch (e: any) {
+        agg.failed += chunk.length;
+        for (const f of chunk) {
+          agg.files.push({ filename: f.name, status: "error", detail: e.message || "Batch failed" });
+        }
+      }
+      setProgress({ done: Math.min(i + UPLOAD_BATCH, queue.length), total: queue.length });
+      setResult({ ...agg });
+    }
+    setQueue([]);
+    onIngested();
+    setUploading(false);
+  }
+
+  const pct = progress.total ? Math.round((progress.done / progress.total) * 100) : 0;
+
+  return (
+    <div className="bg-white dark:bg-surface border border-gray-200 dark:border-gray-700 rounded-xl px-5 py-4">
+      <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">
+        Upload from this computer
+      </p>
+      <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+        Pick a study <strong>folder</strong> (or individual <code className="text-[11px] bg-gray-100 dark:bg-gray-800 px-1 rounded">.dcm</code> files) and they&apos;ll be pushed to the PACS and ingested — no need to open Orthanc.
+      </p>
+
+      {/* Drop zone */}
+      <div
+        onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={(e) => { e.preventDefault(); setDragOver(false); addFiles(e.dataTransfer.files); }}
+        className={`rounded-lg border-2 border-dashed px-4 py-6 text-center transition-colors ${
+          dragOver
+            ? "border-primary-400 bg-primary-50 dark:bg-primary-950/30"
+            : "border-gray-200 dark:border-gray-700"
+        }`}
+      >
+        <Upload className="w-6 h-6 mx-auto text-gray-400 dark:text-gray-500 mb-2" />
+        <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">
+          Drag DICOM files here, or
+        </p>
+        <div className="flex items-center justify-center gap-2">
+          <button
+            type="button"
+            onClick={() => folderRef.current?.click()}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 border border-gray-200 dark:border-gray-700 rounded-lg hover:bg-gray-50 dark:hover:bg-white/5 transition-colors"
+          >
+            <FolderUp className="w-3.5 h-3.5" /> Select folder
+          </button>
+          <button
+            type="button"
+            onClick={() => filesRef.current?.click()}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 border border-gray-200 dark:border-gray-700 rounded-lg hover:bg-gray-50 dark:hover:bg-white/5 transition-colors"
+          >
+            <FileUp className="w-3.5 h-3.5" /> Select files
+          </button>
+        </div>
+        <input ref={folderRef} type="file" multiple hidden onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }} />
+        <input ref={filesRef} type="file" multiple hidden onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }} />
+      </div>
+
+      {/* Queue + upload action */}
+      {queue.length > 0 && !uploading && (
+        <div className="flex items-center justify-between mt-3">
+          <p className="text-sm text-gray-600 dark:text-gray-400">
+            <strong className="text-gray-900 dark:text-gray-100">{queue.length}</strong> file{queue.length === 1 ? "" : "s"} ready
+            <button onClick={() => setQueue([])} className="ml-2 text-xs text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 inline-flex items-center gap-0.5">
+              <X className="w-3 h-3" /> clear
+            </button>
+          </p>
+          <button
+            onClick={startUpload}
+            className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-primary-600 rounded-lg hover:bg-primary-700 transition-colors"
+          >
+            <Upload className="w-4 h-4" /> Upload &amp; ingest
+          </button>
+        </div>
+      )}
+
+      {/* Progress */}
+      {uploading && (
+        <div className="mt-3">
+          <div className="flex items-center justify-between text-xs text-gray-500 dark:text-gray-400 mb-1">
+            <span className="flex items-center gap-1.5"><Loader2 className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" /> Uploading…</span>
+            <span>{progress.done} / {progress.total}</span>
+          </div>
+          <div className="h-1.5 w-full bg-gray-100 dark:bg-gray-800 rounded-full overflow-hidden">
+            <div className="h-full bg-primary-600 transition-all" style={{ width: `${pct}%` }} />
+          </div>
+        </div>
+      )}
+
+      {/* Result summary */}
+      {result && !uploading && (
+        <div className="mt-3 space-y-2">
+          <p className="text-sm text-green-700 dark:text-green-400 flex items-center gap-1.5">
+            <CheckCircle className="w-4 h-4" />
+            {result.uploaded} file{result.uploaded === 1 ? "" : "s"} uploaded
+            {result.failed > 0 && <span className="text-amber-600 dark:text-amber-400">· {result.failed} skipped/failed</span>}
+          </p>
+          {result.studies_ingested.length > 0 && (
+            <div className="space-y-1">
+              {result.studies_ingested.map((s) => (
+                <div key={s.study_instance_uid} className="flex items-center justify-between text-sm border border-gray-100 dark:border-gray-800 rounded-lg px-3 py-1.5">
+                  <span className="text-gray-700 dark:text-gray-300 truncate">
+                    {s.error
+                      ? <span className="text-red-600 dark:text-red-400">Ingest failed: {s.error}</span>
+                      : <>{formatPatientName(s.patient_name || "")} <span className="text-gray-400 dark:text-gray-500">· {s.modality || "—"} · {s.series_count} series</span></>}
+                  </span>
+                  {!s.error && (
+                    <Link href={`/study/${s.study_instance_uid}`} className="flex items-center gap-1 text-xs font-medium text-primary-600 dark:text-primary-400 whitespace-nowrap ml-2">
+                      Open <ArrowRight className="w-3 h-3" />
+                    </Link>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+          {result.failed > 0 && (
+            <div>
+              <button onClick={() => setShowFailures((v) => !v)} className="text-xs text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 inline-flex items-center gap-1">
+                {showFailures ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />} {result.failed} skipped/failed file{result.failed === 1 ? "" : "s"}
+              </button>
+              {showFailures && (
+                <ul className="mt-1 text-xs text-gray-500 dark:text-gray-400 space-y-0.5 max-h-40 overflow-y-auto">
+                  {result.files.filter((f) => f.status !== "uploaded").map((f, i) => (
+                    <li key={`${f.filename}-${i}`} className="truncate"><span className="font-mono">{f.filename}</span> — {f.detail}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {error && (
+        <p className="mt-3 text-sm text-red-600 dark:text-red-400 flex items-start gap-1.5">
+          <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" /> {error}
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -162,6 +396,9 @@ export default function UploadPage() {
           </div>
         </div>
       </div>
+
+      {/* ── Upload from this computer ─────────────────────────────────────── */}
+      <LocalUploadPanel onIngested={() => { mutate(); }} />
 
       {/* ── DICOM send config ─────────────────────────────────────────────── */}
       <div className="bg-white dark:bg-surface border border-gray-200 dark:border-gray-700 rounded-xl px-5 py-4">

@@ -11,6 +11,38 @@ async function fetchBlob(path: string): Promise<Blob> {
   return res.blob();
 }
 
+// Multipart upload — same auth + error handling as fetchAPI, but the browser must
+// set the multipart Content-Type (with boundary) itself, so we never set it here.
+async function fetchUpload<T>(path: string, body: FormData): Promise<T> {
+  const headers: Record<string, string> = {};
+  if (typeof window !== "undefined") {
+    const token = localStorage.getItem("auth_token");
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+  }
+  const res = await fetch(`${API_BASE}${path}`, { method: "POST", headers, body });
+  if (!res.ok) {
+    if (res.status === 401 && typeof window !== "undefined") {
+      localStorage.removeItem("auth_token");
+      localStorage.removeItem("user");
+      if (!window.location.pathname.startsWith("/login")) {
+        window.location.href = "/login";
+      }
+    }
+    const error = await res.json().catch(() => ({ detail: res.statusText }));
+    const detail = error.detail;
+    const message =
+      typeof detail === "string"
+        ? detail
+        : Array.isArray(detail)
+        ? detail.map((d: any) => d.msg || JSON.stringify(d)).join("; ")
+        : detail
+        ? JSON.stringify(detail)
+        : `API error: ${res.status}`;
+    throw new Error(message);
+  }
+  return res.json();
+}
+
 async function fetchAPI<T>(path: string, options?: RequestInit): Promise<T> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -473,6 +505,25 @@ export interface BatchUpload {
   created_at: string;
 }
 
+export interface DicomUploadResult {
+  uploaded: number;
+  failed: number;
+  studies_ingested: Array<{
+    study_instance_uid: string;
+    patient_name?: string | null;
+    patient_id?: string | null;
+    modality?: string | null;
+    series_count?: number;
+    error?: string;
+  }>;
+  files: Array<{
+    filename: string;
+    status: "uploaded" | "error" | "skipped";
+    detail?: string;
+    study_instance_uid?: string;
+  }>;
+}
+
 export interface Experiment {
   id: string;
   name: string;
@@ -508,6 +559,14 @@ export const api = {
       }),
     delete: (uid: string) =>
       fetchAPI<void>(`/studies/${uid}`, { method: "DELETE" }),
+    // Upload raw DICOM files (or a folder) straight from the browser. Ingests
+    // every distinct study the files belong to. Upload in batches — a study can
+    // be thousands of instances.
+    upload: (files: File[]) => {
+      const fd = new FormData();
+      files.forEach((f) => fd.append("files", f));
+      return fetchUpload<DicomUploadResult>("/studies/upload", fd);
+    },
   },
   onboarding: {
     searchPatients: (query = "") =>

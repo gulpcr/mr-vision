@@ -54,4 +54,12 @@ DICOMS/
 ./DICOMS/*
 backend/scripts/mammo_finetune/data/*
 
+# HuggingFace model cache (downloaded weights, several GB)
+.hf_cache/
+checkpoints/
+
+# Medical imaging volumes / large binary data (not source)
+*.nii.gz
+*.nii
+
 

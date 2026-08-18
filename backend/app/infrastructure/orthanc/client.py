@@ -278,17 +278,39 @@ class OrthancPACSClient(PACSClient):
         return output_path
 
     async def upload_dicom_instance(self, dicom_bytes: bytes) -> str:
-        """Upload a DICOM instance to Orthanc via POST /instances. Returns the Orthanc instance ID."""
-        response = await self._client.post(
-            "/instances",
-            content=dicom_bytes,
-            headers={"Content-Type": "application/dicom"},
-        )
-        response.raise_for_status()
-        result = response.json()
-        instance_id = result.get("ID", result.get("ParentSeries", "unknown"))
-        logger.info("uploaded_dicom_instance", orthanc_id=instance_id)
-        return instance_id
+        """Upload a DICOM instance to Orthanc via POST /instances. Returns the Orthanc instance ID.
+
+        Transient transport failures (Docker DNS hiccups — "Name or service not
+        known" — connect resets, read timeouts) are retried with a short backoff,
+        because on a multi-hundred-file folder upload a random few otherwise fail
+        spuriously. An HTTP 4xx/5xx from Orthanc is NOT retried: that means the
+        instance itself was rejected (corrupt / not DICOM), so it's surfaced to the
+        caller to record as a per-file failure.
+        """
+        last_exc: Exception | None = None
+        for attempt in range(3):
+            try:
+                response = await self._client.post(
+                    "/instances",
+                    content=dicom_bytes,
+                    headers={"Content-Type": "application/dicom"},
+                )
+                response.raise_for_status()
+                result = response.json()
+                instance_id = result.get("ID", result.get("ParentSeries", "unknown"))
+                logger.info("uploaded_dicom_instance", orthanc_id=instance_id)
+                return instance_id
+            except httpx.HTTPStatusError:
+                raise  # Orthanc rejected the instance — don't retry, report it.
+            except httpx.TransportError as exc:
+                last_exc = exc
+                logger.warning(
+                    "upload_dicom_instance_transient",
+                    attempt=attempt + 1, error=str(exc),
+                )
+                await asyncio.sleep(0.3 * (attempt + 1))
+        assert last_exc is not None
+        raise last_exc
 
     async def close(self):
         await self._client.aclose()

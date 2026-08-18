@@ -1,290 +1,352 @@
-# MRI Platform — Full Audit Report
+# MR Computer Vision Platform — System Architecture Audit
 
-**Date:** 2026-05-24  
-**Scope:** All pipelines, configs, UI schemas, frontend, Docker, API, dependencies
-
----
-
-## 1. MODEL GAPS
-
-| Use Case | Architecture | Status | Notes |
-|----------|-------------|--------|-------|
-| Brain MRI | BraTS SegResNet (MONAI bundle) | Auto-downloads ~18 MB on first run | REAL weights, working |
-| Abdomen MRI | TotalSegmentator v2.2 (total_mr) | Auto-downloads ~450 MB on first run | REAL weights, new |
-| Chest MRI | TotalSegmentator v2.2 (total_mr) | Auto-downloads ~450 MB on first run | REAL weights, new |
-| Spine MRI | TotalSegmentator v2.2 (total_mr) | Auto-downloads ~450 MB on first run | REAL weights, new |
-| PET/CT | Threshold-based (PERCIST 1.0) | No learned model needed | Working |
-
-### Critical Model Issues
-
-1. **PET/CT Brain pipeline missing entirely** — `ui_schema.json` exists but no `pipeline.py`, no `inference_config.yaml`.
-2. **Brain bundle download has no fallback** — `brain_mri/pipeline.py:97-100` raises `RuntimeError` if MONAI download fails. No graceful degradation unlike other pipelines.
-3. **Brain bundle cache not persisted in worker container** — `model_bundles:/app/app/usecases/brain_mri/model/bundles` volume is mounted in worker but the bundle_cache_dir in config points to that same path. OK, but verify the path is exactly right.
-4. **TotalSegmentator weights not shared between worker replicas** — If concurrency > 1, two workers may simultaneously download 450 MB. No locking.
+**Date:** 2026-08-03
+**Scope:** Full-system evidence-based audit (Phase 1–2 style: system overview + architecture
+assessment). Supersedes the 2026-05-24 revision of this file, which documented the
+TotalSegmentator/BraTS-SegResNet MRI pipelines and PET/CT bugs that predate the July 2026 MedGemma
+rewrite — none of that content is still accurate and it has been fully replaced below.
+**Method:** Six parallel read-only sweeps across backend layers, use-case plugins, database/RBAC,
+queue/config/LLM wiring, infra/deployment, and frontend. Every claim below is cited to a
+file/line; anything that couldn't be verified is called out explicitly rather than assumed.
 
 ---
 
-## 2. PIPELINE LOGIC GAPS
+## Executive Summary
 
-### 2.1 Abdomen MRI (`backend/app/usecases/abdomen_mri/pipeline.py`)
-
-- **Line 386**: Post-processing loop hardcoded to `[1, 2, 3, 4, 5]`. If `organ_map` in config adds a 6th organ, label 6 is skipped silently — no volume computed, no artifact saved.
-- **Line 259**: `_build_single_channel_input()` has no try/except. If SimpleITK resampling fails, the pipeline continues with a corrupted `input_path`.
-- **Line 406**: `organ_count_segmented` counts labels with volume > `min_structure_volume_ml`, but synthetic fallback can produce many spurious small voxel clusters.
-- **Missing**: No validation that `organ_map` keys match TotalSegmentator's actual output filenames (`liver.nii.gz`, etc.). Typo silently skips the organ.
-
-### 2.2 Chest MRI (`backend/app/usecases/chest_mri/pipeline.py`)
-
-- **Line 370-378**: Fragment removal loop hardcoded for labels `[1, 2, 3, 4]`. Adding a 5th organ in config will not be post-processed.
-- **Lines 397-401**: Abnormality detection uses volume ratio (0.6–1.6× reference). Thresholds are hardcoded; no config option to adjust.
-- **Missing**: Bilateral asymmetry detection ignores unilateral pathology (e.g., unilateral pleural effusion in one lung looks "normal" if total lung volume is ok).
-
-### 2.3 Spine MRI (`backend/app/usecases/spine_mri/pipeline.py`)
-
-- **Lines 307-316**: `vertebra_prefixes` glob pattern depends on TotalSegmentator naming exactly matching config prefixes (`vertebrae_C1.nii.gz`, etc.). If naming differs (e.g., `vertebra_C1` without `e`), glob returns nothing — label 1 is empty — silent failure.
-- **Line 329-331**: Disc count uses connected components; contiguous discs may count as 1 component, undercounting.
-- **Line 434-437**: Cross-sectional canal/cord area computed per-axial-slice only. Incorrect for scoliosis or rotated acquisitions.
-- **Line 440**: `_infer_levels()` maps disc count to vertebral levels with a crude heuristic. Fails for partial spine coverage (lumbar-only, cervical-only scans).
-- **Spinal canal estimation (lines 329-331)**: Canal estimated as dilated cord region only when `spinal_canal.nii.gz` absent. Dilation radius (3 iterations) hardcoded — no config option.
-
-### 2.4 Brain MRI (`backend/app/usecases/brain_mri/pipeline.py`)
-
-- **Line 329**: Channel input hardcoded as `["T1", "T1", "T2", "FLAIR"]` (T1 duplicated as T1ce). If only 1 sequence available, all 4 channels are the same — model may not handle this correctly.
-- **Line 375**: `if img_data.ndim == 4: img_tensor = torch.from_numpy(img_data).permute(3, 0, 1, 2).unsqueeze(0)` — **crashes if ndim==4 but last dim != 4 channels** (e.g., shape `(H, W, D, 2)`).
-- **Line 407-422**: Sigmoid threshold 0.5 hardcoded. BraTS SegResNet documentation recommends 0.5 for ET but adaptive for TC/WT — suboptimal segmentation.
-- **Missing**: No handling for images with anisotropic spacing > 3.0 mm (quality check flags it but does not skip inference).
-
-### 2.5 PET/CT (`backend/app/usecases/pet_ct/pipeline.py`)
-
-- **Line 784-785**: Physiological exclusion mask (brain, thyroid, bladder, liver) assumes superior-to-inferior image orientation. Toe-to-head acquisitions would exclude wrong regions.
-- **Line 154**: `suv_factor = weight_g / max(dose_at_scan, 1.0)` — if `weight_g == 0.0` (missing DICOM tag), returns 0, making all SUV values 0. Fallback at line 188 uses SUVbw estimate but does not log a warning flag.
-- **Line 829**: Anatomical region assigned from lesion centroid position. For large lesions spanning multiple regions, the centroid may fall inside the wrong region.
-- **Lines 535, 495-499**: `_resample_ct_to_pet()` uses `scipy.ndimage.zoom` with no memory bounds check. Very different CT/PET shapes (e.g., CT at 0.5mm, PET at 3mm) could allocate multi-GB arrays.
+This is a clinical radiology AI platform: FastAPI backend + Celery/Redis async inference +
+PostgreSQL + MinIO + Orthanc PACS, Next.js 14 frontend, 17 imaging use-case plugins covering
+CT/MRI/PET-CT/mammography/coronary CTA. The intended architecture is a clean 4-layer hexagonal
+design (domain/application/infrastructure/interface); in practice the **application layer breaks
+its own boundary rules pervasively** — most services import SQLAlchemy and infrastructure modules
+directly instead of going through the domain repository interfaces, and one service imports the
+FastAPI-layer websocket manager. The use-case plugin system itself is a genuine strength: all 17
+plugins are file-complete, self-contained (no cross-plugin imports), and share a well-factored
+MedGemma orchestration hook for 13 of them. The most consequential findings are operational, not
+architectural: a `DELETE /studies/{uid}` and an admin `/reset` endpoint that destroy data with
+**no permission check and no audit trail**, an audit log that is itself an unaudited deletion
+target, several security-relevant settings absent from `.env.example` with insecure hardcoded
+defaults (`jwt_secret_key="changeme"`), zero CI, zero frontend tests, and ~zero test coverage on
+the 17 imaging pipelines (the highest-clinical-risk code in the repo).
 
 ---
 
-## 3. CONFIG GAPS
+## 1. System Overview
 
-### 3.1 Label Loop Hardcoding vs Config
+**Domain:** Clinical radiology AI — every use case ingests a DICOM study from PACS, runs an
+inference pipeline, and produces a structured + narrative result for radiologist review/sign-off.
 
-Every pipeline hardcodes label IDs in post-processing loops instead of reading them dynamically from `label_map`. Adding an organ to config will not automatically be processed.
+**Core workflow:** Study arrives in Orthanc → routed to a matching use-case by body part/modality
+→ Celery job runs `preprocess → infer → postprocess` → result stored (versioned) → optional LLM
+report-authoring, VLM QA, CDS, longitudinal comparison, DICOM SR/Seg export, alerting, active
+learning queueing, FHIR Observation/Condition derivation → radiologist claims/reads/signs via the
+reading workflow → optional referring-physician portal share.
 
-| Pipeline | Hardcoded Loop | Config Labels |
-|----------|---------------|---------------|
-| abdomen_mri:386 | `[1,2,3,4,5]` | liver,spleen,kidney_right,kidney_left,pancreas |
-| chest_mri:370 | `[1,2,3,4]` | right_lung,left_lung,heart,aorta |
-| spine_mri:414 | `[1,2,3,4]` | vertebra,disc,canal,cord |
-| brain_mri:471 | `[1,2,3]` | tumor_core,whole_tumor,enhancing_tumor |
+**Tech stack (backend):** Python 3.11, FastAPI 0.111, SQLAlchemy 2.0 (async, asyncpg) +
+sync engine for Celery, Celery 5.4/Redis 7, MinIO, structlog, Pydantic 2.8. Imaging: SimpleITK,
+MONAI 1.4, TotalSegmentator ≥2.2, nnU-Net v2, pydicom, nibabel. LLM: Gemini
+(`google-generativeai`) and a local MedGemma-via-Ollama client. FHIR (`fhir.resources`) and HL7
+(`hl7apy`) are dependencies but see §2.6/§4 for how much is actually wired up.
 
-**Fix**: Replace all hardcoded loops with `for label_id, name in label_map.items(): ...`
+**Tech stack (frontend):** Next.js 14 (App Router) + React 18, TypeScript strict mode, Tailwind,
+Cornerstone for DICOM viewing, SWR as a thin cache layer over a hand-written `fetch()` wrapper
+(`ui/src/lib/api.ts`) — no axios/react-query, no Redux/Zustand (auth state is one React Context),
+no charting library (hand-rolled inline SVG).
 
-### 3.2 Missing Config Validation
-
-- **PET/CT**: `suv_threshold_absolute`, `percist_liver_factor`, `sphere_radius_mm` hardcoded in pipeline code but not exposed in config.
-- **All pipelines**: No schema validation on YAML at load time. A typo in `min_structure_volume_ml` (e.g., string instead of float) silently becomes `None`, causing a crash deep in postprocessing.
-- **Abdomen**: `reference_volumes_ml.liver_normal_max` (line 46) defined but if set to 0 or negative, volume comparison logic at line 412 silently marks everything as abnormal.
-
-### 3.3 TotalSegmentator Config Issues
-
-- `totalseg_weights_dir: /model_cache/totalsegmentator` — this must match the Docker volume mount path exactly. If the path doesn't exist inside the container, TotalSegmentator downloads to a temp dir and the cache is lost on restart.
-- `version: "2.2"` in all three configs but the Python API doesn't accept a version parameter — this field is unused and misleading.
-
----
-
-## 4. UI / FRONTEND GAPS
-
-### 4.1 ReportView.tsx — Missing Renderers
-
-- **Lesion table**: PET-CT `ui_schema.json` defines a table section with columns (anatomical_region, suv_max, volume_ml, etc.) but `ReportView.tsx` has no generic table renderer for measurement data. The lesion list must be hard-coded in the component rather than schema-driven.
-- **Overlay images**: Brain and PET-CT schemas define `type: "overlay"` sections (MIP images, segmentation overlays). No overlay renderer exists — these sections produce nothing.
-- **Supplementary data**: Brain schema defines `supplementary` section with volume percentages. No renderer.
-- **Spine levels_analyzed**: Array of level strings (`["C3", "C4", "T1"...]`). No renderer — displays as raw JSON.
-
-### 4.2 ReportView.tsx — Logic Bugs
-
-- **Line 110**: `diagnosis.toLowerCase().startsWith("tumor positive")` — hardcoded for PET-CT/Brain. For Abdomen/Chest/Spine which have no `diagnosis` field, this returns `undefined`, causing the banner section to silently render nothing (OK) but the `.startsWith()` call on undefined would crash if the guard at line 108 fails.
-- **Line 147**: `result.summary?.tumorDetected` — only exists in Brain MRI output. Chest uses `lesion_detected`, Abdomen uses `organ_segmentation_complete`. Reading wrong field name silently shows nothing.
-- **Diagnosis banner** excluded from Clinical Findings grid (correct), but if `diagnosis` key appears in other pipelines for different purposes, it will be silently hidden.
-
-### 4.3 api.ts — Missing / Incorrect Functions
-
-- `getArtifactUrl()` added with `?redirect=false` parameter — correct fix for MinIO internal URL redirect.
-- `getPreviewUrl()` — verify this exists and correctly constructs the preview endpoint URL.
-- No retry logic or error handling for failed artifact fetches. If MinIO is slow, image shows "Image not available" permanently.
-
-### 4.4 UI Schema Gaps
-
-| Schema | Gap |
-|--------|-----|
-| `pet_ct/ui_schema.json` | `artifact_filter: mip_png` — must exactly match artifact_type stored in DB |
-| `pet_ct/ui_schema.json` | `artifact_filter: fused_png` — must exactly match artifact_type stored in DB |
-| `brain_mri/ui_schema.json` | No image section for segmentation overlay PNGs |
-| `spine_mri/ui_schema.json` | No image section for spine overview PNGs |
-| `chest_mri/ui_schema.json` | No image section for lung segmentation PNGs |
-| `abdomen_mri/ui_schema.json` | No image section for organ segmentation PNGs |
+**Deployment:** Docker Compose, 9 services (postgres, redis, minio, orthanc, backend, worker,
+beat, ohif, ui, nginx). GPU worker via NVIDIA runtime with a CPU-only override compose file.
 
 ---
 
-## 5. DEPENDENCY GAPS
+## 2. Architecture
 
-### 5.1 `backend/pyproject.toml`
+### 2.1 Layered architecture — as designed vs. as built
 
-| Package | Status | Issue |
-|---------|--------|-------|
-| `torch` | **Missing** — listed in comment only | Must be installed via Docker separately; not declared; CPU-only if GPU wheel missing |
-| `totalsegmentator>=2.2.0` | Added | Correct |
-| `nnunetv2>=2.4` | Added | Risk: TotalSegmentator bundles its own nnU-Net; dual installation may conflict |
-| `SimpleITK==2.3.1` | Pinned to old version | Current is 2.4.x; 2.3.1 has known bugs in anisotropic resampling |
-| `scikit-image` | Listed but unused | Dead dependency; remove |
-| `h5py` | Not listed | TotalSegmentator model files are HDF5; needed transitively but not declared |
-| `connected-components-3d` | Not listed | Used by some pipeline code for CC labeling |
+CLAUDE.md specifies a strict 4-layer hexagonal design with import rules (domain: stdlib only;
+application: domain only; infrastructure: domain+application; interface: all layers). Verified
+against the actual codebase:
 
-### 5.2 Docker Build
+| Layer | Compliance | Evidence |
+|---|---|---|
+| `domain/` | **Compliant.** Zero fastapi/sqlalchemy/infrastructure/interface imports. | grep across `domain/**`, zero matches |
+| `application/` | **Non-compliant, pervasively.** | 15 files import `sqlalchemy` directly; ~85 import-sites across 22 files import `app.infrastructure.*` directly (mostly `infrastructure.database.models` — the ORM records — bypassing the `domain.interfaces.*Repository` abstraction entirely); `alerting_service.py:401,527` imports `app.interface.api.ws` (application → interface, the layer the rule explicitly forbids) |
+| `infrastructure/` | **One violation.** | `infrastructure/queue/tasks.py:1608` imports `app.interface.api.ws` (infra → interface) |
+| `interface/` | Compliant (may import all layers by design). | — |
 
-- PyTorch GPU wheel must be installed before `pip install -e .` in Dockerfile. If the Dockerfile installs packages alphabetically or runs `pip install .` before the torch-cu128 wheel, CPU-only torch installs first and GPU support breaks.
-- No pinned CUDA version in Dockerfile. If base image CUDA (12.8) doesn't match `torch+cu128` (CUDA 12.8), GPU ops fail at runtime.
+**Reading of this:** the domain layer (interfaces, dataclasses, enums) is genuinely clean and
+well-factored — 10 interfaces (`StudyRepository`, `SeriesRepository`, `JobRepository`,
+`ResultRepository`, `UseCaseRegistryRepository`, `AuditRepository`, `ArtifactStore`, `PACSClient`,
+`HL7InboundHandler`, `HL7OutboundClient`) and a `UseCasePipeline` Protocol exist, but the
+application layer largely doesn't use them — it reaches past the interfaces straight into
+`infrastructure.database.models` ORM classes. The abstraction exists on paper; in the running
+code it's bypassed often enough that "inject a fake `StudyRepository` for testing" would not
+actually decouple most services from Postgres today. This is the single largest architectural gap
+in the codebase — not a few stray imports, but the dominant pattern across 22 of 41
+application-layer files.
 
----
+Two overlapping pipeline contracts also exist: `domain.interfaces.UseCasePipeline` (Protocol,
+`preprocess` with no `event_loop` param) and `usecases/base.py:BasePipeline` (ABC, `preprocess`
+*with* `event_loop`). All 17 plugins subclass `BasePipeline`; the domain Protocol appears to be
+vestigial/unused by anything concrete.
 
-## 6. DOCKER / INFRA GAPS
+### 2.2 Textual module map
 
-### 6.1 Volumes
-
-| Gap | Severity |
-|-----|----------|
-| `model_cache:/model_cache` added to worker — correct | Fixed |
-| Brain bundle cache: `model_bundles` volume maps to `/app/app/usecases/brain_mri/model/bundles` — OK | Fixed |
-| `beat` service has no `model_cache` volume (beat doesn't run inference — OK) | Low |
-| No volume for TotalSegmentator temp files during inference | Medium — large temp files accumulate in container ephemeral layer |
-
-### 6.2 Missing Environment Variables
-
-- `TOTALSEG_WEIGHTS_PATH=/model_cache/totalsegmentator` set in worker env — but TotalSegmentator Python API reads `weights_dir` parameter, not this env var. The env var `TOTALSEG_WEIGHTS_PATH` is non-standard. Check TotalSegmentator docs — it may read `TOTALSEG_WEIGHTS_PATH` internally. **Verify or remove.**
-- `MONAI_HOME` / `MONAI_MODEL_ZOO_DIR` — brain pipeline doesn't set these; MONAI uses default `~/.cache/monai`. Inside container this is ephemeral unless mapped to a volume. Brain bundle re-downloads on every container restart if not explicitly mapped.
-- `NVIDIA_VISIBLE_DEVICES` — not set. `CUDA_VISIBLE_DEVICES=0,1` is set but the nvidia-container-runtime uses `NVIDIA_VISIBLE_DEVICES`. Both should be set for compatibility.
-
-### 6.3 Service Dependencies
-
-- `beat` service doesn't depend on `minio` — if beat triggers artifact cleanup, minio must be available.
-- `worker` concurrency is `--concurrency=2`. With 2x RTX 5070 Ti, two concurrent GPU jobs may run simultaneously and exceed VRAM if both do inference on large volumes. Consider `--concurrency=1` per GPU or implement GPU semaphore.
-
-### 6.4 GPU Limits
-
-No GPU resource limits set in compose:
-```yaml
-# Current — unlimited GPU access
-deploy:
-  resources:
-    reservations:
-      devices:
-        - driver: nvidia
-          count: all
-          capabilities: [gpu]
-# Missing — no limits
 ```
-Worker can monopolize both GPUs, starving other GPU-dependent services.
+backend/app/
+├── domain/            7 files  — interfaces.py, models.py (20 dataclasses), enums.py (15 enums),
+│                                 permissions.py, hl7_models.py, fhir_terminology.py
+├── application/       41 files — flat; 37 business-logic services (see §2.3)
+├── infrastructure/
+│   ├── database/      models.py (27 tables) · repositories.py (Pg*Repository) · session.py
+│   ├── orthanc/        client.py — OrthancPACSClient(PACSClient)
+│   ├── storage/         client.py — MinIOArtifactStore(ArtifactStore)
+│   ├── queue/          celery_app.py · tasks.py (1693 lines — pipeline lifecycle + hooks)
+│   ├── llm/             gemini_client.py · medgemma_client.py
+│   └── dicomweb/       client.py — QIDO/WADO-RS client
+├── interface/
+│   ├── api/            20 routers (see §2.6)
+│   ├── middleware/      auth.py
+│   └── schemas/         job/result/study/usecase Pydantic models
+├── usecases/           base.py (BasePipeline ABC) + 17 self-contained plugin dirs (see §2.4)
+├── fhir/               client.py (FHIRClient, outbound DiagnosticReport) · fhir_export_service.py
+└── services / reports / dicom / deidentify   (additional top-level packages outside the 4-layer
+                                                 set — not covered by the CLAUDE.md layer table;
+                                                 not deep-audited in this pass)
+```
+
+Also present outside `backend/`: `orthanc/` (Dockerfile for the PACS container), `ohif/`
+(viewer config), `nginx/`, `backend/external/` (vendored `GMIC`, `SAM-Med3D-main`).
+
+### 2.3 Application-layer service catalog (41 files)
+
+Grouped by concern — job lifecycle & routing (`job_orchestrator`, `routing_service`,
+`usecase_registry`, `study_service`, `result_service`, `qa_service`, `ensemble_service`,
+`gpu_scheduler`), RBAC/auth (`auth_service`, `role_service`), reporting/narrative
+(`llm_report_service`, `report_service`, `abdomen_report_service`, `pet_ct_narrative_service`,
+`mammography_narrative_service`, `mammography_radiologist_service`,
+`coronary_cta_narrative_service`, `cds_service`, `longitudinal_service`), clinical-data-standard
+writers (`observation_service`, `condition_service`, `dicom_demographics`, `practitioner_service`,
+`fhir_terminology.py`), operational (`alerting_service`, `retention_service`,
+`active_learning_service`, `audit_service`, `analytics_service`, `batch_service`,
+`ab_testing_service`, `model_registry.py`, `portal_service`, `onboarding_service`, `cpt_service`,
+`vlm_qa_service`), mammography-specific (`mammography_service`), and `ct_report_regions.py` (region
+metadata shared by the 13-plugin MedGemma hook). Full one-line-per-file list captured during this
+audit is available on request; omitted here to keep this document from ballooning.
+
+### 2.4 Use-case plugin catalog (17 plugins — all file-complete, all self-contained)
+
+| Plugin | Body region | Model / architecture |
+|---|---|---|
+| `abdomen_ct` | Abdomen/pelvis CT | MedGemma two-pass + SAM-Med3D tumour measurement + deterministic organ-size grounding (new, see below) |
+| `ct_brain`, `ct_chest`, `ct_face`, `ct_lower_limb`, `ct_lumbar_spine`, `ct_neck` | CT, per-region | MedGemma two-pass (templated pipeline, `infer()` is a no-op — real inference runs in the Celery task hook) |
+| `abdomen_mri`, `brain_mri`, `chest_mri`, `lumbar_spine_mri`, `lower_limb_mri`, `neck_mri` | MRI, per-region | MedGemma multiparametric two-pass (sequence classification → labeled montage → same shared hook) |
+| `coronary_cta` | Cardiac CTA | Agatston calcium scoring (fully implemented) + TotalSegmentator heart ROI; DL stenosis/CAD-RADS **stubbed** — `NotImplementedError` at `coronary_cta/pipeline.py:690`, caught and gracefully degraded to calcium-only at `:1234`. Self-disclosed in its own manifest as "planned but not implemented." |
+| `mammography` | Breast MG | NYU GMIC 5-model ensemble; falls back to a disclosed, non-diagnostic placeholder (`qa_flags: ["placeholder_no_model"]`) when weights aren't present |
+| `pet_ct` | Whole-body FDG PET/CT | PERCIST 1.0 SUV threshold (default) or optional SwinUNETR DL segmentation; TotalSegmentator for physiologic-uptake suppression |
+| `pet_ct_brain` | Brain PET/CT | Deterministic AAL3/MNI152 atlas SUVR + asymmetry index + Centiloid — no VLM, no DL |
+
+13 of 17 (all `ct_*`, all `*_mri`, plus `abdomen_ct`) share one central orchestration hook —
+`_CT_REPORT_USECASES` in `application/ct_report_regions.py:27-43`, driving the scan→flag→report
+MedGemma sequence from `infrastructure/queue/tasks.py:962`. The remaining 4
+(`coronary_cta`, `mammography`, `pet_ct`, `pet_ct_brain`) have fully bespoke pipeline logic. No
+plugin imports another plugin's internals anywhere in the codebase — the "self-contained plugin"
+rule holds without exception.
+
+**New/untracked:** `abdomen_ct/organ_grounding.py` — a Tier-1 deterministic TotalSegmentator-based
+organ-size measurement module (liver/spleen/kidneys volume + span, aortic diameter), built because
+the MedGemma VLM alone "missed a 15.5 cm hepatomegaly while confabulating a mass" (module
+docstring). Gated by `settings.organ_grounding_enabled` (default `True`), abdomen_ct-only, wired
+into the shared hook at `tasks.py:1199-1225`. This matches project memory on the Tier-1
+organ-grounding work; the mass-verification "option C" approach mentioned in that memory is
+correctly absent from this file (it was disabled after failing validation).
+
+### 2.5 Pipeline lifecycle (Celery `run_usecase_pipeline`, `tasks.py:368`)
+
+Verified against code, not assumed from CLAUDE.md: PREPROCESSING 0.05 → 0.15 → [VLM QA 0.30,
+gated] → INFERRING 0.40 → POSTPROCESSING 0.75 → [CDS 0.80, gated] → [Longitudinal 0.83, gated] →
+**one of four mutually-exclusive report-authoring branches at 0.84** (mammography / PET-CT /
+coronary-CTA / CT-report-family MedGemma — CLAUDE.md's summary collapses these into one step) →
+Storing artifacts 0.85 → [DICOM SR/Seg export 0.90, gated] → post-result hooks (critical alerting,
+active-learning queueing, prior-comparison audit entry, FHIR Observation derivation) → COMPLETED
+1.0. Non-happy-path states: PENDING 0.0 (retry), CANCELLED 0.0, FAILED 0.0. DICOM export runs
+*outside* the `_run_post_result_hooks` function despite being conceptually a post-result hook —
+a naming/grouping nuance worth knowing before touching either.
+
+### 2.6 API surface
+
+20 routers under `interface/api/`: `auth`, `studies` (+ an `orthanc_router` sub-router), `jobs`,
+`results`, `reports`, `reading` (claim/assign/sign workflow), `roles`, `critical_alerts`,
+`clinical` (FHIR Observation/Condition read), `dicomweb` (QIDO/WADO proxy — includes the
+series-filter used to hide non-diagnostic series), `mammography`, `onboarding`, `practitioners`,
+`admin`, `usecases`, `health`, `landing`, `ws` (websocket), `medgemma_debug`. Two helper modules
+(`dependencies.py`, `validators.py`) carry no routes.
+
+### 2.7 Database (27 tables, 33 linear migrations, no branches)
+
+Logical groups: studies/series/jobs/results (versioned via `is_latest`), FHIR-shaped clinical data
+(`observations`, `conditions` — migrations 030/031), RBAC (`users`, `tenants`, `roles`,
+`user_roles` — 16-permission catalog, 5 system roles), patient intake (`patients`, `orders`),
+radiologist-authored reports (`mammography_reports`, `mri_reports`), critical alerting
+(`critical_alerts`, `alert_rules`, `alert_history`), audit (`audit_log`, with a typed
+`actor_type`/`action_crude` FHIR-AuditEvent-coded pair added in migration 032 alongside the
+original free-text columns), portal shares, retention policy config. The result-versioning
+invariant ("previous latest set False before inserting new latest") is implemented **twice,
+independently** — `tasks.py:181-213` (`_save_result`, the sync/Celery path, which is the function
+CLAUDE.md names) and `repositories.py:344-391` (`PgResultRepository.save`, the async API path,
+under a different name). A maintainer following CLAUDE.md's pointer literally would find only one
+of the two copies.
+
+### 2.8 Deployment topology
+
+9 Compose services: postgres, redis, minio, orthanc (DICOM :4242, admin REST bound to
+`127.0.0.1:8042` only — the unauthenticated admin UI is deliberately not exposed), backend (API,
+live source mount), worker (GPU, `NVIDIA_VISIBLE_DEVICES=all` + a health-probing entrypoint script
+that reassigns `CUDA_VISIBLE_DEVICES` around a known-bad GPU), beat, ohif, ui, nginx (single public
+entrypoint; explicitly `return 404`s `/orthanc/` to keep the PACS admin UI off the public path; has
+a custom regex route that proxies only the QIDO series-list query through the backend for
+non-diagnostic-series filtering, while all other DICOMweb traffic goes straight to Orthanc). A
+`docker-compose.cpu.yml` overlay swaps the worker to the CPU `api` build target, forces
+`runtime: runc`, and clears the GPU device reservation. `ui`'s `docker-compose.yml` bakes a literal
+production IP (`103.93.216.37`) into `NEXT_PUBLIC_API_URL`/`NEXT_PUBLIC_DICOMWEB_URL` rather than
+templating it — worth knowing before spinning up a second environment from this compose file
+as-is.
 
 ---
 
-## 7. API GAPS
+## 3. Strengths (evidence-backed)
 
-### 7.1 Missing Endpoints
-
-| Endpoint | Status | Impact |
-|----------|--------|--------|
-| `GET /studies/{uid}/artifacts` | Missing | Cannot list artifacts for a study |
-| `DELETE /studies/{uid}` | Missing | Cannot delete studies (GDPR) |
-| `GET /studies/{uid}/jobs` | Missing | Cannot check job status from UI |
-| `GET /results/{id}` | Missing | Frontend can't fetch single result |
-| `GET /artifacts/{uid}/{usecase}/{name}?redirect=false` | Implemented | Fixed MinIO redirect issue |
-
-### 7.2 Response Shape Issues
-
-- `body_part_examined` serialized as `.value` (enum) — if `None`, raises `AttributeError`.
-- Study list response doesn't include `latest_result` or `result_count` — UI must make N+1 queries to show status for each study.
-- Artifact endpoint: when `redirect=false`, response must set correct `Content-Type` header based on artifact format (PNG, NIfTI, JSON). If hardcoded to `application/octet-stream`, browsers won't render images inline.
-
-### 7.3 Authentication
-
-- No API key / JWT authentication on any endpoint visible in codebase. All endpoints are unauthenticated. Acceptable for internal/research use; unacceptable for clinical deployment.
-
----
-
-## 8. CRITICAL BUGS (Immediate Runtime Failures)
-
-### BUG-1: Brain pipeline 4D tensor permutation crash
-
-**File**: `brain_mri/pipeline.py:375`  
-**Code**: `img_tensor = torch.from_numpy(img_data).permute(3, 0, 1, 2).unsqueeze(0)`  
-**Crash**: Raises `IndexError` if `img_data.shape[3] != 4`. Happens when only 1-2 MRI sequences are available (common in clinical practice).  
-**Fix**: Check `img_data.shape[-1]` before permute; pad to 4 channels if needed.
-
-### BUG-2: Spine vertebra glob silent failure
-
-**File**: `spine_mri/pipeline.py:307-316`  
-**Code**: `glob.glob(f"{prefix}*.nii.gz")` — returns empty list if naming doesn't match.  
-**Result**: Label 1 (vertebra) is entirely empty in segmentation. User sees "0 vertebrae detected."  
-**Fix**: Log `WARNING` if `len(vertebra_files) == 0` and add QA flag `"no_vertebrae_found"`.
-
-### BUG-3: PET/CT SUV = 0 when patient weight missing
-
-**File**: `pet_ct/pipeline.py:154`  
-**Code**: `suv_factor = weight_g / max(dose_at_scan, 1.0)` — if `weight_g == 0`, all SUV = 0.  
-**Result**: All lesions below threshold, diagnosis always "Tumor Negative" regardless of actual uptake.  
-**Fix**: Add `if weight_g <= 0: qa_flags.append("suv_calibration_failed"); use fallback`.
-
-### BUG-4: Artifact Content-Type wrong
-
-**File**: Artifact serving endpoint  
-**Code**: If serving PNGs as `application/octet-stream`, `<img src=...>` renders nothing.  
-**Result**: "Image not available" for all images even after `?redirect=false` fix.  
-**Fix**: Set `media_type="image/png"` when serving PNG artifacts.
-
-### BUG-5: PET/CT CT resampling unbounded memory
-
-**File**: `pet_ct/pipeline.py:495-499`  
-**Code**: `scipy.ndimage.zoom(ct_arr, factors)` — no memory check.  
-**Example**: CT 512×512×500 resampled to PET 128×128×500 → zoom factor < 1 (OK). But CT at 0.3mm to PET at 3mm → factor 0.1 → output tiny (OK). Reverse: CT at 3mm, PET at 0.5mm → factor 6× → 512×512×500 → allocates 512×512×3000 float32 ≈ 3 GB.  
-**Fix**: Cap zoom factors; refuse to upsample CT more than 3×.
-
-### BUG-6: Model version string for TotalSegmentator pipelines
-
-**File**: `chest_mri/pipeline.py:403`, `spine_mri/pipeline.py:411`  
-**Code**: `model_version_str = f"chest_mri_v{model_version}"` — still uses old format even when TotalSegmentator is active. The version reported to DB is wrong.  
-**Fix**: Add same arch-check as abdomen (`if architecture == "totalsegmentator_mr": model_version_str = f"totalsegmentator_{task}_v{model_version}"`).
+- **Plugin isolation is real, not aspirational.** All 17 use cases are file-complete and
+  genuinely self-contained; zero cross-plugin imports found anywhere.
+- **Domain layer is clean.** Interfaces, dataclasses, and enums have zero framework leakage — the
+  one part of the hexagonal design that's fully honored.
+- **Graceful degradation is a consistent pattern, not an afterthought.** `coronary_cta`'s stenosis
+  stub, `mammography`'s placeholder model, and `pet_ct`'s PERCIST fallback all disclose their
+  degraded state via `qa_flags` rather than failing silently or crashing.
+- **Deliberate incident-driven fixes are documented in the code itself.** `celery_app.py:26-33`'s
+  comment about a beat task stuck since 2026-06-18, and the Orthanc-admin-UI/localhost-binding +
+  nginx 404 block, both read as real production lessons encoded directly at the point of the fix.
+- **Logging convention adopted almost universally** — 113/114 files use `structlog`; a single
+  stdlib-`logging` holdout (`longitudinal_service.py`).
+- **RBAC is coherent and enforced end-to-end for the workflows it covers** — 16-permission catalog,
+  5 system roles, consistently audit-logged for role mutations and reading-workflow transitions
+  (claim/assign/report/sign).
+- **FHIR export, while self-rated only 27/100 conformant, is a real substantive implementation**
+  (419-line `FHIRClient`, `ObservationService`, `ConditionService`, per-plugin `fhir_map.yaml`) —
+  not vaporware, unlike the HL7 side (§4).
 
 ---
 
-## 9. SUMMARY BY PRIORITY
+## 4. Weaknesses & Technical Debt
 
-### CRITICAL (will crash or produce wrong diagnosis)
+Ordered roughly by severity/blast-radius, each rated **Low/Medium/High**.
 
-1. Brain 4D permutation IndexError on < 4 sequences
-2. PET-CT task traceback (currently failing)
-3. Artifact Content-Type wrong → images never render
-4. PET/CT SUV = 0 on missing patient weight → false Tumor Negative
-5. Missing PET/CT Brain pipeline implementation
+### HIGH
 
-### HIGH (causes silent failures or degraded output)
+1. **Destructive, unauthenticated, unaudited data-deletion endpoints.**
+   `DELETE /studies/{study_uid}` (`interface/api/studies.py:144-192`) and
+   `POST /api/admin/reset` (`interface/api/admin.py:692-774`) both cascade-delete studies,
+   series, jobs, results, and (for `/reset`) the entire alert/review-queue/audit-log/share-link
+   tables plus every MinIO object — with **no `require_permission` dependency on either route**
+   and **no `AuditLogRecord` written for either operation**. `/reset` deletes `audit_log` itself,
+   so even a retroactive forensic reconstruction is impossible. In a clinical-data system this is
+   the single highest-risk finding in this audit — patient imaging/results can be permanently
+   destroyed by any caller who can reach the endpoint, with zero trace.
+   *Mitigation:* add `require_permission(Permission.DATA_PURGE)` / `STUDY_DELETE` to both routes
+   and an explicit audit write **before** the destructive operation executes (not after, given
+   `/reset` deletes its own audit trail).
 
-6. Spine vertebra glob failure → empty vertebra label
-7. Brain bundle cache not persisted → re-downloads every restart
-8. Label loops hardcoded in post-processing (all pipelines)
-9. TotalSegmentator `version` field unused and misleading in configs
-10. `TOTALSEG_WEIGHTS_PATH` env var not read by TotalSegmentator Python API
+2. **Application layer does not actually honor the repository-interface abstraction.**
+   22 of 41 application-layer files import `infrastructure.database.models` (ORM) or other
+   infrastructure modules directly rather than the injected `domain.interfaces.*Repository`
+   contracts; 15 import `sqlalchemy` directly. The abstraction CLAUDE.md documents as a hard rule
+   is the exception, not the norm, in the actual codebase. Practical consequence: most
+   application-layer unit tests that exist today (`tests/unit/application/`) are necessarily
+   coupled to SQLAlchemy/Postgres rather than testable against a fake repository, and any future
+   swap of the persistence layer would touch the majority of `application/`, not just
+   `infrastructure/`.
 
-### MEDIUM (functional but suboptimal or risky)
+3. **Zero test coverage on the highest-clinical-risk code.** 14 of 17 imaging pipelines have no
+   tests at all (only `coronary_cta` and a `pet_ct` classification sub-function are covered, and
+   narrowly). No CI pipeline exists at all (no `.github/workflows`, confirmed absent). The frontend
+   has zero automated tests of any kind (no jest/vitest/playwright config, no `*.test.tsx` files).
+   For a platform whose outputs are "potentially patient-affecting" per CLAUDE.md's own framing,
+   this is a large gap between stated intent and actual verification.
 
-11. Chest/Spine model_version_str incorrect for TotalSegmentator
-12. nnunetv2 dual installation conflict risk
-13. No API authentication
-14. Worker concurrency 2 may cause GPU OOM on large volumes
-15. SimpleITK 2.3.1 old version with anisotropic resampling bugs
+4. **Insecure defaults for security-relevant settings, several undocumented.**
+   `jwt_secret_key: str = "changeme"`, `phi_hash_salt: str = "changeme"`, `secret_key`,
+   `orthanc_password="orthanc"`, `postgres_password`/`minio_secret_key = "changeme_in_production"`
+   are all real shipped defaults in `config.py`. Worse: `auth_mode`, `jwt_secret_key`,
+   `multi_tenant_enabled`, `phi_deidentify_enabled`/`phi_hash_salt`, `alerting_enabled`,
+   `retention_enabled`, `active_learning_enabled`, `model_registry_enabled`, `worklist_enabled`,
+   and several report-layout strings exist as real `Settings` fields but are **absent from
+   `.env.example`** — an operator following the example file alone would never learn these need
+   overriding, and several would silently run with insecure defaults in production.
 
-### LOW (quality / maintainability)
+### MEDIUM
 
-16. Hardcoded thresholds not exposed in config (chest, brain)
-17. Dead `scikit-image` dependency
-18. No DELETE /studies endpoint (GDPR)
-19. No GPU resource limits in docker-compose
-20. Missing image sections in spine/chest/abdomen UI schemas
+5. **`application → interface` and `infrastructure → interface` layer violations.**
+   `alerting_service.py:401,527` and `infrastructure/queue/tasks.py:1608` all import
+   `app.interface.api.ws` (the FastAPI websocket manager) from lower layers, inverting the
+   dependency direction CLAUDE.md's table forbids outright (interface may depend on all layers;
+   nothing may depend on interface).
+
+6. **`is_latest` result-versioning invariant is duplicated under two different names in two
+   different modules** (`tasks.py:_save_result` sync path vs. `repositories.py:PgResultRepository.save`
+   async path) — CLAUDE.md's "read `_save_result()` first" guidance only surfaces one of the two
+   copies to a reader following the docs literally.
+
+7. **HL7 is scaffolding-only despite substantial planning documents.** `HL7_INTEGRATION_PLAN.md`
+   describes a full MLLP listener/parser/ACK/mapper stack; only the domain dataclasses
+   (`domain/hl7_models.py`, 114 lines, no logic) exist. No `infrastructure/hl7/` directory, no
+   MLLP server, no listener entry point exist on disk. Anyone reading the plan doc without
+   checking code would reasonably believe more is built than actually is — this is exactly the
+   kind of doc/code mismatch CLAUDE.md says to flag.
+
+8. **Config/`.env.example` drift.** `gemini_model` code default is `gemini-1.5-flash`;
+   `.env.example` documents `gemini-2.5-flash`. Small, but a real example of the config surface
+   not being kept in lockstep with documentation.
+
+9. **Frontend has 3 independent copies of the same auth-header-fetch logic**
+   (`lib/api.ts`'s `fetchAPI`/`fetchBlob`, `components/FusedViewer.tsx:51`,
+   `lib/useAuthenticatedImage.ts:74`) — two of which are raw `fetch()` calls that bypass the
+   central API module CLAUDE.md explicitly says not to bypass.
+
+10. **`ui/tsconfig.tsbuildinfo` is tracked in git** (committed in `90078c6c`), a TypeScript
+    incremental-compile cache that's environment-specific and conventionally gitignored — explains
+    why it shows as modified on nearly every commit touching TypeScript, with no product value in
+    version control.
+
+### LOW
+
+11. Vestigial/dead abstraction: `domain.interfaces.UseCasePipeline` Protocol appears unused by any
+    concrete pipeline (all 17 subclass `usecases/base.py:BasePipeline` instead, which has a
+    slightly different signature).
+12. `celery_app.py`'s multi-GPU queue routing (`gpu_worker_queues` config, routes for
+    `run_usecase_pipeline_gpu_<queue>`) is speculative scaffolding — no such task is actually
+    defined in `tasks.py`.
+13. One remaining stdlib-`logging` holdout (`longitudinal_service.py`) against an otherwise
+    universal `structlog` convention.
+14. `AUDIT_REPORT.md` (this file, prior revision) and other planning docs
+    (`FHIR_R4_COMPLIANCE_AUDIT.md` self-rates 27/100 conformant) had drifted significantly out of
+    date relative to the shipped system — a general note that architecture/planning docs in this
+    repo need an explicit "supersedes" trail when a major rewrite (like the July MedGemma
+    migration) happens, or they actively mislead the next reader.
+
+---
+
+## 5. Open Questions (not derivable from the code — needs a human answer)
+
+- Is the application-layer's bypass of the repository-interface abstraction (finding #2) an
+  accepted, deliberate tradeoff (speed of delivery over strict layering) or unintentional drift
+  that should be scheduled for cleanup? This determines whether it's worth a remediation plan at
+  all.
+- Are the two destructive unauthenticated endpoints (finding #1) actually reachable in the current
+  deployment (e.g. behind a network boundary / internal-only), or exposed on the public nginx
+  entrypoint? This audit did not find nginx blocking either path the way `/orthanc/` is blocked —
+  worth an explicit confirmation before treating severity as "theoretical."
+- Is HL7 v2 (finding #7) still a live roadmap item, or has `FHIR_INTEGRATION_PLAN.md`'s framing
+  ("HL7 v2 ... parked") fully superseded it? If parked, the domain-stub files and plan doc could be
+  either removed or explicitly marked archival to avoid confusing future contributors.
+- Should `backend/app/services`, `app/reports`, `app/dicom`, `app/deidentify`, `app/fhir` (found
+  to exist alongside the 4 canonical layers, §2.2) be formally folded into the layer model in
+  CLAUDE.md, or are they intentionally exempt? They weren't deep-audited against the layer rules
+  in this pass.

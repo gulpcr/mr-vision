@@ -95,18 +95,33 @@ def build_scan_prompt(
     batch: list[dict[str, Any]],
     study_description: str | None = None,
     window: str = "soft-tissue",
+    demographics: str | None = None,
 ) -> str:
     """Prompt for one scan batch. ``batch`` is an ordered list of ``{"z": int, ...}``.
 
     Each image the caller sends corresponds, in order, to one entry in ``batch``; the
     prompt tells MedGemma the z index of each image so it can flag slices by z.
+
+    ``demographics`` (e.g. "female, 55 years"), when supplied, replaces the age-blind
+    clause with a normal-for-age calibration clause — used ONLY to judge what is normal
+    for age, never as a directive to hunt age-associated disease.
     """
     context = f' The study is described as "{study_description}".' if study_description else ""
     legend = "\n".join(f"  Image {i}: slice z={e['z']}" for i, e in enumerate(batch, 1))
     zs = ", ".join(str(e["z"]) for e in batch)
 
+    if demographics:
+        history_clause = (
+            f"Patient: {demographics}. Use age ONLY to calibrate what is normal for age "
+            "(organ proportions, thymus, marrow, unfused growth plates, age-expected "
+            "involution) — do NOT assume or hunt for any age-associated diagnosis. Assess "
+            "each image on its own merits."
+        )
+    else:
+        history_clause = "No clinical history is assumed — assess each image on its own merits."
+
     return f"""You are a board-certified radiologist triaging {REGION['exam_phrase']}.{context} \
-No clinical history is assumed — assess each image on its own merits.
+{history_clause}
 
 You are shown {len(batch)} axial CT image(s) rendered in the {window} HU window, ordered \
 superior→inferior. The images are given in this exact order; each corresponds to one slice:
@@ -299,6 +314,70 @@ Respond ONLY with a valid JSON object — no markdown fences, no extra text:
   "disclaimer": "{_DISCLAIMER}"
 }}
 """
+
+
+def build_mass_verify_prompt(
+    image_zs: list[int],
+    flagged: list[dict[str, Any]] | None,
+    study_description: str | None,
+    demographics: str | None = None,
+) -> str:
+    """Adversarial SECOND-READ prompt: is the flagged mass REAL, or normal anatomy?
+
+    Framed to DISPROVE the mass (a first-pass screen over-calls), so the model is biased
+    the opposite way to the scan pass. Called several times and majority-voted by
+    ``report.verify_mass_vlm``. Returns a JSON verdict parsed by :func:`parse_mass_verify`.
+    """
+    context = f' The study is described as "{study_description}".' if study_description else ""
+    if demographics and demographics.strip():
+        context += f' Patient: {demographics.strip()}.'
+    hint = ""
+    if flagged:
+        items = "; ".join(
+            re.sub(r"^\s*\[[^\]]*\]\s*", "", str(f.get("finding", ""))).strip()
+            for f in flagged if f.get("finding")
+        )
+        if items:
+            hint = f' The first pass said: "{items}".'
+
+    return f"""You are a senior radiologist doing a CRITICAL SECOND READ. A first-pass screen \
+FLAGGED a possible MASS on the {len(image_zs)} axial soft-tissue image(s) shown.{context}{hint}
+
+First-pass screens OVER-CALL masses. On abdominal CT, these NORMAL things are routinely mistaken \
+for a "mass": collapsed or fluid-filled bowel loops, un-opacified bowel and its contents, the psoas \
+/ iliacus muscles, normal vessels, mesenteric fat, and partial-volume averaging. Your job is to \
+DISPROVE the mass unless it is unmistakable.
+
+Judge ONLY from the images. Is there a TRUE abnormal mass — a discrete abnormal soft-tissue \
+structure NOT explained by normal anatomy — with a specific abnormal feature you can name \
+(abnormal contour, heterogeneity, abnormal enhancement, effacement of fat planes, displacement of \
+organs)? DEFAULT to "no" if you cannot point to such a feature; say "uncertain" only if genuinely \
+equivocal.
+
+Respond ONLY with a valid JSON object — no markdown fences, no extra text:
+{{
+  "mass_present": "yes" | "no" | "uncertain",
+  "abnormal_feature": "<the specific abnormal feature, or empty if none>",
+  "normal_explanation": "<if no/uncertain: the normal structure this most likely is>",
+  "reason": "<one short sentence>"
+}}
+"""
+
+
+def parse_mass_verify(raw: str) -> dict[str, str] | None:
+    """Parse an adversarial-verify reply → ``{mass_present, abnormal_feature, reason}``."""
+    data = _loads(raw)
+    if not isinstance(data, dict):
+        return None
+    mp = str(data.get("mass_present", "") or "").strip().lower()
+    if mp not in ("yes", "no", "uncertain"):
+        mp = "yes" if "yes" in mp else ("no" if "no" in mp else "uncertain")
+    return {
+        "mass_present": mp,
+        "abnormal_feature": str(data.get("abnormal_feature", "") or "").strip(),
+        "normal_explanation": str(data.get("normal_explanation", "") or "").strip(),
+        "reason": str(data.get("reason", "") or "").strip(),
+    }
 
 
 def parse_report(raw: str) -> dict[str, str] | None:
