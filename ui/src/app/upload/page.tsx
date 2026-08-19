@@ -4,6 +4,7 @@ import { useState, useMemo, useRef, useEffect } from "react";
 import { useOrthancStudies, useStudies } from "@/lib/hooks";
 import { api, DicomUploadResult } from "@/lib/api";
 import { formatDate, formatPatientName } from "@/lib/format";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import {
   Upload,
   RefreshCw,
@@ -21,6 +22,11 @@ import {
   FileUp,
   X,
   Loader2,
+  Hash,
+  Clock,
+  FileStack,
+  RotateCcw,
+  Trash2,
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -46,6 +52,41 @@ function ModalityBadge({ modality }: { modality: string }) {
   );
 }
 
+// ── Source selector card ───────────────────────────────────────────────────────
+// One clickable "source" tile per way a study can enter the platform — Local
+// upload, the on-site PACS, the DICOM network (AE/port config), or a manual
+// Study Instance UID. Mirrors a standard PACS ops-console pattern: pick a
+// source, then work in a single focused panel below instead of scrolling past
+// every source at once.
+
+function SourceCard({
+  icon: Icon, label, desc, meta, active, onClick,
+}: {
+  icon: React.ElementType; label: string; desc: string; meta?: string;
+  active: boolean; onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`group text-left glass rounded-2xl p-4 hover-lift transition-colors ${
+        active ? "ring-2 ring-accent border-accent/60 bg-accent/5" : ""
+      }`}
+    >
+      <span
+        className={`grid place-items-center w-10 h-10 rounded-xl mb-3 transition-transform duration-300 group-hover:scale-110 ${
+          active ? "bg-accent-gradient text-white shadow-glow-sm" : "bg-accent/10 ring-1 ring-accent/20 text-accent"
+        }`}
+      >
+        <Icon className="w-5 h-5" />
+      </span>
+      <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">{label}</p>
+      <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{desc}</p>
+      {meta && <p className="text-[11px] text-accent font-medium mt-1.5">{meta}</p>}
+    </button>
+  );
+}
+
 // ── Local folder / file upload panel ──────────────────────────────────────────
 
 // Files DICOM images never use — skip these so a dragged folder's stray PNGs,
@@ -64,15 +105,40 @@ function isLikelyDicom(f: File): boolean {
   return !SKIP_EXT.has(name.slice(dot + 1).toLowerCase());
 }
 
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = bytes / 1024;
+  let i = 0;
+  while (value >= 1024 && i < units.length - 1) { value /= 1024; i++; }
+  return `${value.toFixed(value >= 10 || i === 0 ? 0 : 1)} ${units[i]}`;
+}
+
 // Upload this many instances per request. A study can be thousands of files, so
 // one giant multipart request would time out / exhaust memory — batch instead.
 const UPLOAD_BATCH = 40;
+
+type FileStatus = "queued" | "uploading" | "uploaded" | "failed";
+interface QueuedFile {
+  id: string; file: File; status: FileStatus; detail?: string;
+  // This item's index in the aggregate `result.files` array (set once its
+  // batch resolves) — lets a later single-file retry patch exactly that slot
+  // instead of matching by filename, which collides across series subfolders.
+  resultIndex?: number;
+}
+
+function FileStatusIcon({ status }: { status: FileStatus }) {
+  if (status === "uploaded") return <CheckCircle className="w-4 h-4 text-green-500 shrink-0" />;
+  if (status === "failed") return <AlertCircle className="w-4 h-4 text-red-500 shrink-0" />;
+  if (status === "uploading") return <Loader2 className="w-4 h-4 text-primary-500 animate-spin motion-reduce:animate-none shrink-0" />;
+  return <Clock className="w-4 h-4 text-gray-300 dark:text-gray-600 shrink-0" />;
+}
 
 function LocalUploadPanel({ onIngested }: { onIngested: () => void }) {
   const folderRef = useRef<HTMLInputElement>(null);
   const filesRef = useRef<HTMLInputElement>(null);
 
-  const [queue, setQueue] = useState<File[]>([]);
+  const [queue, setQueue] = useState<QueuedFile[]>([]);
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [result, setResult] = useState<DicomUploadResult | null>(null);
@@ -97,14 +163,37 @@ function LocalUploadPanel({ onIngested }: { onIngested: () => void }) {
     setResult(null);
     setError(null);
     setQueue((prev) => {
-      const seen = new Set(prev.map((f) => `${f.name}:${f.size}`));
+      const seen = new Set(prev.map((q) => `${q.file.name}:${q.file.size}`));
       const merged = [...prev];
       for (const f of incoming) {
         const key = `${f.name}:${f.size}`;
-        if (!seen.has(key)) { seen.add(key); merged.push(f); }
+        if (!seen.has(key)) { seen.add(key); merged.push({ id: key, file: f, status: "queued" }); }
       }
       return merged;
     });
+  }
+
+  function removeFile(id: string) {
+    setQueue((prev) => prev.filter((q) => q.id !== id));
+  }
+
+  // Match a batch's per-file results back onto the queue rows by ARRAY
+  // POSITION, not filename. A whole-folder DICOM upload routinely has the same
+  // basename (e.g. "IM00001") in every series subfolder — the browser's File
+  // object strips the subfolder path, so filenames collide constantly and are
+  // NOT a safe join key. The backend (study_service.upload_and_ingest) appends
+  // exactly one result per input file in the order received, so positional
+  // zip against the same-order `ids` we sent is the only reliable match.
+  function applyFileResults(ids: string[], files: DicomUploadResult["files"], baseIndex: number) {
+    const resultById = new Map(ids.map((id, i) => [id, { r: files[i], idx: baseIndex + i }]));
+    setQueue((prev) => prev.map((q) => {
+      const entry = resultById.get(q.id);
+      if (!entry) return q;
+      const { r, idx } = entry;
+      return r.status === "uploaded"
+        ? { ...q, status: "uploaded", resultIndex: idx }
+        : { ...q, status: "failed", detail: r.detail, resultIndex: idx };
+    }));
   }
 
   async function startUpload() {
@@ -122,11 +211,15 @@ function LocalUploadPanel({ onIngested }: { onIngested: () => void }) {
     // never aborts the rest of the folder.
     for (let i = 0; i < queue.length; i += UPLOAD_BATCH) {
       const chunk = queue.slice(i, i + UPLOAD_BATCH);
+      const chunkIds = chunk.map((q) => q.id);
+      setQueue((prev) => prev.map((q) => chunkIds.includes(q.id) ? { ...q, status: "uploading" } : q));
       try {
-        const r = await api.studies.upload(chunk);
+        const r = await api.studies.upload(chunk.map((q) => q.file));
         agg.uploaded += r.uploaded;
         agg.failed += r.failed;
+        const baseIndex = agg.files.length;
         agg.files.push(...r.files);
+        applyFileResults(chunkIds, r.files, baseIndex);
         for (const s of r.studies_ingested) {
           if (!seenStudies.has(s.study_instance_uid)) {
             seenStudies.add(s.study_instance_uid);
@@ -135,19 +228,68 @@ function LocalUploadPanel({ onIngested }: { onIngested: () => void }) {
         }
       } catch (e: any) {
         agg.failed += chunk.length;
-        for (const f of chunk) {
-          agg.files.push({ filename: f.name, status: "error", detail: e.message || "Batch failed" });
+        const detail = e.message || "Batch failed";
+        const baseIndex = agg.files.length;
+        for (const q of chunk) {
+          agg.files.push({ filename: q.file.name, status: "error", detail });
         }
+        const resultIndexById = new Map(chunkIds.map((cid, i) => [cid, baseIndex + i]));
+        setQueue((prev) => prev.map((q) =>
+          chunkIds.includes(q.id) ? { ...q, status: "failed", detail, resultIndex: resultIndexById.get(q.id) } : q
+        ));
       }
       setProgress({ done: Math.min(i + UPLOAD_BATCH, queue.length), total: queue.length });
       setResult({ ...agg });
     }
-    setQueue([]);
+    // Successfully uploaded files fold into the result summary below; only the
+    // stragglers that need attention stay visible, each with a Retry action.
+    setQueue((prev) => prev.filter((q) => q.status === "failed"));
     onIngested();
     setUploading(false);
   }
 
+  async function retryFile(id: string) {
+    const item = queue.find((q) => q.id === id);
+    if (!item || item.status === "uploading") return;
+    setQueue((prev) => prev.map((q) => (q.id === id ? { ...q, status: "uploading" } : q)));
+    try {
+      const r = await api.studies.upload([item.file]);
+      // Exactly one file was sent, so the response has exactly one entry —
+      // positional, unambiguous regardless of filename collisions.
+      const fileResult = r.files[0];
+      const ok = fileResult?.status === "uploaded";
+      setQueue((prev) =>
+        ok
+          ? prev.filter((q) => q.id !== id)
+          : prev.map((q) => (q.id === id ? { ...q, status: "failed", detail: fileResult?.detail } : q))
+      );
+      setResult((prev) => {
+        if (!prev) return prev;
+        // Patch by the item's own slot in the aggregate array — filename alone
+        // is not unique (duplicate basenames across series subfolders), so
+        // matching by name here would risk overwriting an unrelated file's
+        // already-correct result.
+        const next = {
+          ...prev,
+          files: item.resultIndex !== undefined
+            ? prev.files.map((f, idx) => (idx === item.resultIndex ? (fileResult || f) : f))
+            : prev.files,
+        };
+        if (ok) { next.uploaded += 1; next.failed = Math.max(0, next.failed - 1); }
+        const seen = new Set(next.studies_ingested.map((s) => s.study_instance_uid));
+        for (const s of r.studies_ingested) {
+          if (!seen.has(s.study_instance_uid)) { seen.add(s.study_instance_uid); next.studies_ingested = [...next.studies_ingested, s]; }
+        }
+        return next;
+      });
+      if (ok) onIngested();
+    } catch (e: any) {
+      setQueue((prev) => prev.map((q) => (q.id === id ? { ...q, status: "failed", detail: e.message || "Retry failed" } : q)));
+    }
+  }
+
   const pct = progress.total ? Math.round((progress.done / progress.total) * 100) : 0;
+  const queueBytes = queue.reduce((a, q) => a + q.file.size, 0);
 
   return (
     <div className="bg-white dark:bg-surface border border-gray-200 dark:border-gray-700 rounded-xl px-5 py-4">
@@ -193,34 +335,82 @@ function LocalUploadPanel({ onIngested }: { onIngested: () => void }) {
         <input ref={filesRef} type="file" multiple hidden onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }} />
       </div>
 
-      {/* Queue + upload action */}
-      {queue.length > 0 && !uploading && (
-        <div className="flex items-center justify-between mt-3">
-          <p className="text-sm text-gray-600 dark:text-gray-400">
-            <strong className="text-gray-900 dark:text-gray-100">{queue.length}</strong> file{queue.length === 1 ? "" : "s"} ready
-            <button onClick={() => setQueue([])} className="ml-2 text-xs text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 inline-flex items-center gap-0.5">
-              <X className="w-3 h-3" /> clear
-            </button>
-          </p>
-          <button
-            onClick={startUpload}
-            className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-primary-600 rounded-lg hover:bg-primary-700 transition-colors"
-          >
-            <Upload className="w-4 h-4" /> Upload &amp; ingest
-          </button>
-        </div>
-      )}
+      {/* Queue — a live per-file list, not just one aggregate bar. Rows carry
+          real, non-fabricated status: queued → uploading (while their batch is
+          in flight) → uploaded / failed, taken straight from the per-file
+          result the upload endpoint returns for that batch. */}
+      {queue.length > 0 && (
+        <div className="mt-3 rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden">
+          <div className="flex items-center justify-between gap-3 px-3 py-2.5 bg-gray-50 dark:bg-white/5 border-b border-gray-200 dark:border-gray-700">
+            <div className="flex items-center gap-2 min-w-0">
+              <FileStack className="w-4 h-4 text-gray-400 dark:text-gray-500 shrink-0" />
+              <p className="text-sm text-gray-700 dark:text-gray-300 truncate">
+                <strong className="text-gray-900 dark:text-gray-100">{queue.length}</strong> file{queue.length === 1 ? "" : "s"}
+                <span className="text-gray-400 dark:text-gray-500"> · {formatBytes(queueBytes)}</span>
+              </p>
+            </div>
+            {!uploading ? (
+              <div className="flex items-center gap-2 shrink-0">
+                <button onClick={() => setQueue([])} className="text-xs text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 inline-flex items-center gap-0.5">
+                  <X className="w-3 h-3" /> Clear
+                </button>
+                <button
+                  onClick={startUpload}
+                  className="press flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold text-white bg-primary-600 rounded-lg hover:bg-primary-700 transition-colors"
+                >
+                  <Upload className="w-3.5 h-3.5" /> Upload &amp; ingest
+                </button>
+              </div>
+            ) : (
+              <span className="flex items-center gap-1.5 text-xs font-semibold text-primary-600 dark:text-primary-400 shrink-0 tabular-nums">
+                <Loader2 className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" /> {progress.done} / {progress.total} · {pct}%
+              </span>
+            )}
+          </div>
 
-      {/* Progress */}
-      {uploading && (
-        <div className="mt-3">
-          <div className="flex items-center justify-between text-xs text-gray-500 dark:text-gray-400 mb-1">
-            <span className="flex items-center gap-1.5"><Loader2 className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" /> Uploading…</span>
-            <span>{progress.done} / {progress.total}</span>
-          </div>
-          <div className="h-1.5 w-full bg-gray-100 dark:bg-gray-800 rounded-full overflow-hidden">
-            <div className="h-full bg-primary-600 transition-all" style={{ width: `${pct}%` }} />
-          </div>
+          {uploading && (
+            <div className="h-1 w-full bg-gray-100 dark:bg-gray-800 overflow-hidden">
+              <div
+                className="h-full bg-gradient-to-r from-primary-500 to-primary-600 transition-all duration-300"
+                style={{ width: `${pct}%` }}
+              />
+            </div>
+          )}
+
+          <ul className="max-h-64 overflow-y-auto divide-y divide-gray-100 dark:divide-gray-800">
+            {queue.map((item) => (
+              <li key={item.id} className="group flex items-center gap-2.5 px-3 py-2">
+                <FileStatusIcon status={item.status} />
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-mono text-gray-700 dark:text-gray-300 truncate" title={item.file.name}>
+                    {item.file.name}
+                  </p>
+                  {item.status === "failed" && item.detail && (
+                    <p className="text-[11px] text-red-500 dark:text-red-400 truncate">{item.detail}</p>
+                  )}
+                </div>
+                <span className="text-[11px] text-gray-400 dark:text-gray-500 shrink-0 tabular-nums">
+                  {formatBytes(item.file.size)}
+                </span>
+                {item.status === "failed" ? (
+                  <button
+                    onClick={() => retryFile(item.id)}
+                    className="flex items-center gap-1 text-[11px] font-medium text-primary-600 dark:text-primary-400 hover:underline shrink-0"
+                  >
+                    <RotateCcw className="w-3 h-3" /> Retry
+                  </button>
+                ) : !uploading && item.status === "queued" && (
+                  <button
+                    onClick={() => removeFile(item.id)}
+                    aria-label={`Remove ${item.file.name}`}
+                    className="opacity-0 group-hover:opacity-100 text-gray-300 dark:text-gray-600 hover:text-gray-500 dark:hover:text-gray-400 transition-opacity shrink-0"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 
@@ -291,7 +481,15 @@ export default function UploadPage() {
   const [manualUid, setManualUid] = useState("");
   const [manualLoading, setManualLoading] = useState(false);
   const [manualError, setManualError] = useState<string | null>(null);
-  const [showManual, setShowManual] = useState(false);
+  const [activeSource, setActiveSource] = useState<"local" | "pacs" | "network" | "manual">("pacs");
+
+  // Bulk select — keyed by orthanc_id (unique per row; study_instance_uid is only
+  // needed for the ingest call, resolved from `filtered` when acting on it).
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkIngesting, setBulkIngesting] = useState(false);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
+  const [bulkMessage, setBulkMessage] = useState<string | null>(null);
 
   // Build a set of UIDs already in the platform for quick lookup
   const platformUidSet = useMemo(
@@ -310,6 +508,30 @@ export default function UploadPage() {
     );
   });
 
+  const allFilteredSelected = filtered.length > 0 && filtered.every((s) => selected.has(s.orthanc_id));
+
+  function toggleSelected(orthancId: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(orthancId)) next.delete(orthancId);
+      else next.add(orthancId);
+      return next;
+    });
+  }
+
+  function toggleSelectAll() {
+    setSelected((prev) => {
+      if (allFilteredSelected) {
+        const next = new Set(prev);
+        for (const s of filtered) next.delete(s.orthanc_id);
+        return next;
+      }
+      const next = new Set(prev);
+      for (const s of filtered) next.add(s.orthanc_id);
+      return next;
+    });
+  }
+
   async function handleIngest(uid: string) {
     setIngesting(uid);
     setIngestError(null);
@@ -321,6 +543,61 @@ export default function UploadPage() {
     } finally {
       setIngesting(null);
     }
+  }
+
+  // Sequential, not Promise.all — mirrors the worklist's bulk actions so one
+  // slow/failing study doesn't fire a burst of parallel requests, and each
+  // row's own state still updates live as its call resolves.
+  async function handleBulkIngest() {
+    if (bulkIngesting) return;
+    const targets = filtered.filter((s) => selected.has(s.orthanc_id) && !alreadyInPlatform(s.study_instance_uid));
+    if (!targets.length) {
+      setBulkMessage("All selected studies are already in the platform");
+      setTimeout(() => setBulkMessage(null), 5000);
+      return;
+    }
+    setBulkIngesting(true);
+    setBulkMessage(null);
+    let ok = 0, fail = 0;
+    for (const s of targets) {
+      try {
+        await api.studies.ingest(s.study_instance_uid);
+        setIngestedUids((prev) => [...prev, s.study_instance_uid]);
+        ok++;
+      } catch {
+        fail++;
+      }
+    }
+    await mutate();
+    setSelected(new Set());
+    setBulkIngesting(false);
+    setBulkMessage(
+      fail > 0 ? `Ingested ${ok} of ${targets.length} studies — ${fail} failed` : `Ingested ${ok} stud${ok === 1 ? "y" : "ies"}`
+    );
+    setTimeout(() => setBulkMessage(null), 5000);
+  }
+
+  async function handleBulkDelete() {
+    const ids = Array.from(selected);
+    setConfirmBulkDelete(false);
+    if (!ids.length) return;
+    setBulkDeleting(true);
+    let ok = 0, fail = 0;
+    for (const id of ids) {
+      try {
+        await api.orthanc.deleteStudy(id);
+        ok++;
+      } catch {
+        fail++;
+      }
+    }
+    await mutate();
+    setSelected(new Set());
+    setBulkDeleting(false);
+    setBulkMessage(
+      fail > 0 ? `Deleted ${ok} of ${ids.length} studies from Orthanc — ${fail} failed` : `Deleted ${ok} stud${ok === 1 ? "y" : "ies"} from Orthanc`
+    );
+    setTimeout(() => setBulkMessage(null), 5000);
   }
 
   async function handleManualIngest(e: React.FormEvent) {
@@ -381,7 +658,7 @@ export default function UploadPage() {
                 <Database className="w-5 h-5 text-primary-500" />
                 <p className="text-sm font-semibold text-gray-800 dark:text-gray-200">Ingest into Platform</p>
               </div>
-              <p className="text-xs text-gray-600 dark:text-gray-400 dark:text-gray-500 leading-relaxed">Click <strong>Ingest</strong> next to a study below. The platform reads the DICOM metadata from Orthanc and registers the study so AI can analyse it.</p>
+              <p className="text-xs text-gray-600 dark:text-gray-400 dark:text-gray-500 leading-relaxed">Pick a source below, then click <strong>Ingest</strong> next to a study. The platform reads the DICOM metadata and registers the study so AI can analyse it.</p>
             </div>
           </div>
           <div className="flex gap-3">
@@ -397,10 +674,47 @@ export default function UploadPage() {
         </div>
       </div>
 
+      {/* ── Source selector ──────────────────────────────────────────────── */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <SourceCard
+          icon={Upload}
+          label="Upload from Computer"
+          desc="Files or a whole folder from this device"
+          meta="Drag & drop supported"
+          active={activeSource === "local"}
+          onClick={() => setActiveSource("local")}
+        />
+        <SourceCard
+          icon={Database}
+          label="Orthanc PACS"
+          desc="Browse studies already received on-site"
+          meta={orthancStudies ? `${orthancStudies.length} available` : undefined}
+          active={activeSource === "pacs"}
+          onClick={() => setActiveSource("pacs")}
+        />
+        <SourceCard
+          icon={Network}
+          label="DICOM Network"
+          desc="Point your scanner or modality at this AE"
+          meta="AE ORTHANC · Port 4242"
+          active={activeSource === "network"}
+          onClick={() => setActiveSource("network")}
+        />
+        <SourceCard
+          icon={Hash}
+          label="Manual Study UID"
+          desc="Ingest a study you already know the UID for"
+          meta="Advanced"
+          active={activeSource === "manual"}
+          onClick={() => setActiveSource("manual")}
+        />
+      </div>
+
       {/* ── Upload from this computer ─────────────────────────────────────── */}
-      <LocalUploadPanel onIngested={() => { mutate(); }} />
+      {activeSource === "local" && <LocalUploadPanel onIngested={() => { mutate(); }} />}
 
       {/* ── DICOM send config ─────────────────────────────────────────────── */}
+      {activeSource === "network" && (
       <div className="bg-white dark:bg-surface border border-gray-200 dark:border-gray-700 rounded-xl px-5 py-4">
         <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-3">
           Configure your scanner to send DICOMs here
@@ -421,11 +735,13 @@ export default function UploadPage() {
           ))}
         </div>
         <p className="text-xs text-gray-400 dark:text-gray-500 mt-3">
-          After the scanner sends a study and Orthanc marks it "stable", it appears in the table below automatically. Hit <strong>Refresh</strong> if you don't see it yet.
+          After the scanner sends a study and Orthanc marks it "stable", it appears in the Orthanc PACS source automatically. Switch there and hit <strong>Refresh</strong> if you don't see it yet.
         </p>
       </div>
+      )}
 
       {/* ── Orthanc PACS Browser ──────────────────────────────────────────── */}
+      {activeSource === "pacs" && (
       <div className="bg-white dark:bg-surface rounded-xl shadow-sm border border-gray-200 dark:border-gray-700">
         <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 dark:border-gray-800">
           <div>
@@ -483,7 +799,16 @@ export default function UploadPage() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-white/5">
-                  <th className="text-left px-5 py-2.5 text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase tracking-wider">Patient</th>
+                  <th className="w-10 px-5 py-2.5">
+                    <input
+                      type="checkbox"
+                      checked={allFilteredSelected}
+                      onChange={toggleSelectAll}
+                      aria-label="Select all studies"
+                      className="accent-primary-600 cursor-pointer"
+                    />
+                  </th>
+                  <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase tracking-wider">Patient</th>
                   <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase tracking-wider">MRN</th>
                   <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase tracking-wider">Date</th>
                   <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase tracking-wider">Description</th>
@@ -497,13 +822,23 @@ export default function UploadPage() {
                   const inPlatform = alreadyInPlatform(s.study_instance_uid);
                   const isIngesting = ingesting === s.study_instance_uid;
                   const hasError = ingestError?.uid === s.study_instance_uid;
+                  const isSelected = selected.has(s.orthanc_id);
 
                   return (
                     <tr
                       key={s.orthanc_id}
-                      className={`transition-colors ${inPlatform ? "bg-green-50/40 dark:bg-green-950/20" : "hover:bg-gray-50 dark:hover:bg-white/5"}`}
+                      className={`transition-colors ${isSelected ? "bg-accent/5" : inPlatform ? "bg-green-50/40 dark:bg-green-950/20" : "hover:bg-gray-50 dark:hover:bg-white/5"}`}
                     >
                       <td className="px-5 py-3">
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => toggleSelected(s.orthanc_id)}
+                          aria-label={`Select ${formatPatientName(s.patient_name)}`}
+                          className="accent-primary-600 cursor-pointer"
+                        />
+                      </td>
+                      <td className="px-3 py-3">
                         <p className="font-semibold text-gray-900 dark:text-gray-100">{formatPatientName(s.patient_name)}</p>
                       </td>
                       <td className="px-3 py-3 text-gray-600 dark:text-gray-300 font-mono text-xs">{s.patient_id || "—"}</td>
@@ -566,54 +901,99 @@ export default function UploadPage() {
           </div>
         )}
       </div>
+      )}
 
-      {/* ── Manual UID (collapsed by default) ────────────────────────────── */}
-      <div className="bg-white dark:bg-surface rounded-xl border border-gray-200 dark:border-gray-700">
-        <button
-          onClick={() => setShowManual(!showManual)}
-          className="w-full flex items-center justify-between px-5 py-4 text-left hover:bg-gray-50 dark:hover:bg-gray-800 dark:hover:bg-surface-raised transition-colors rounded-xl"
-        >
-          <div>
-            <p className="text-sm font-semibold text-gray-700 dark:text-gray-300">Ingest by Study Instance UID</p>
-            <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">
-              Use this if the study doesn't appear above (e.g. sent via a worklist or external PACS).
-            </p>
-          </div>
-          {showManual ? <ChevronUp className="w-4 h-4 text-gray-400 dark:text-gray-500" /> : <ChevronDown className="w-4 h-4 text-gray-400 dark:text-gray-500" />}
-        </button>
-
-        {showManual && (
-          <div className="px-5 pb-5 border-t border-gray-100 dark:border-gray-800 pt-4">
-            <p className="text-xs text-gray-500 dark:text-gray-400 dark:text-gray-500 mb-3">
-              The <strong>Study Instance UID</strong> is a DICOM tag (0020,000D) that uniquely identifies the study. You can find it in the Orthanc web UI at{" "}
-              <code className="text-xs bg-gray-100 dark:bg-gray-800 px-1 rounded">http://103.93.216.37:8042</code> or in the scanner's DICOM worklist.
-            </p>
-            <form onSubmit={handleManualIngest} className="flex gap-3">
-              <input
-                type="text"
-                value={manualUid}
-                onChange={(e) => { setManualUid(e.target.value); setManualError(null); }}
-                placeholder="1.2.840.113619.2.55.3…"
-                className="flex-1 px-4 py-2 text-sm font-mono border border-gray-200 dark:border-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
-              />
-              <button
-                type="submit"
-                disabled={manualLoading || !manualUid.trim()}
-                className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-primary-600 rounded-lg hover:bg-primary-700 disabled:opacity-50 transition-colors whitespace-nowrap"
-              >
+      {/* Bulk action bar — appears once studies are selected in the Orthanc browser */}
+      {activeSource === "pacs" && selected.size > 0 && (
+        <div className="sticky bottom-3 z-20 glass-raised rounded-2xl shadow-glow px-4 py-3 flex items-center gap-3 flex-wrap">
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-primary-600 text-white text-sm font-semibold">
+            {selected.size} selected
+          </span>
+          <button
+            onClick={() => setSelected(new Set())}
+            className="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200"
+          >
+            Clear
+          </button>
+          {bulkMessage && (
+            <span className="text-sm text-gray-500 dark:text-gray-400">{bulkMessage}</span>
+          )}
+          <div className="ml-auto flex items-center gap-2">
+            <button
+              onClick={handleBulkIngest}
+              disabled={bulkIngesting || bulkDeleting}
+              className="flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium text-white bg-primary-600 rounded-lg hover:bg-primary-700 disabled:opacity-50 transition-colors whitespace-nowrap"
+            >
+              {bulkIngesting ? (
+                <RefreshCw className="w-4 h-4 animate-spin motion-reduce:animate-none" />
+              ) : (
                 <Upload className="w-4 h-4" />
-                {manualLoading ? "Ingesting…" : "Ingest & Open"}
-              </button>
-            </form>
-            {manualError && (
-              <p className="mt-2 text-sm text-red-600 dark:text-red-400 flex items-start gap-1.5">
-                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                {manualError}
-              </p>
-            )}
+              )}
+              Ingest selected
+            </button>
+            <button
+              onClick={() => setConfirmBulkDelete(true)}
+              disabled={bulkIngesting || bulkDeleting}
+              className="flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium text-red-600 dark:text-red-400 border border-red-200 dark:border-red-800 rounded-lg hover:bg-red-50 dark:hover:bg-red-950 disabled:opacity-50 transition-colors whitespace-nowrap"
+            >
+              <Trash2 className="w-4 h-4" />
+              Delete from Orthanc
+            </button>
           </div>
+        </div>
+      )}
+
+      <ConfirmDialog
+        tier="modal"
+        danger
+        open={confirmBulkDelete}
+        title="Delete Studies from Orthanc"
+        consequence={`${selected.size} stud${selected.size === 1 ? "y" : "ies"} will be permanently deleted from Orthanc PACS. The original DICOM images cannot be recovered unless the scanner resends the study${
+          filtered.some((s) => selected.has(s.orthanc_id) && alreadyInPlatform(s.study_instance_uid))
+            ? ". Any of these already in the platform will keep their AI results, but the viewer will no longer be able to load images."
+            : "."
+        }`}
+        confirmLabel={bulkDeleting ? "Deleting…" : "Delete"}
+        onConfirm={handleBulkDelete}
+        onCancel={() => setConfirmBulkDelete(false)}
+      />
+
+      {/* ── Manual Study UID ─────────────────────────────────────────────── */}
+      {activeSource === "manual" && (
+      <div className="bg-white dark:bg-surface rounded-xl border border-gray-200 dark:border-gray-700 px-5 py-4">
+        <p className="text-sm font-semibold text-gray-700 dark:text-gray-300">Ingest by Study Instance UID</p>
+        <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5 mb-3">
+          Use this if the study doesn't appear in Orthanc PACS (e.g. sent via a worklist or external PACS).
+        </p>
+        <p className="text-xs text-gray-500 dark:text-gray-400 dark:text-gray-500 mb-3">
+          The <strong>Study Instance UID</strong> is a DICOM tag (0020,000D) that uniquely identifies the study. You can find it in the Orthanc web UI at{" "}
+          <code className="text-xs bg-gray-100 dark:bg-gray-800 px-1 rounded">http://103.93.216.37:8042</code> or in the scanner's DICOM worklist.
+        </p>
+        <form onSubmit={handleManualIngest} className="flex gap-3">
+          <input
+            type="text"
+            value={manualUid}
+            onChange={(e) => { setManualUid(e.target.value); setManualError(null); }}
+            placeholder="1.2.840.113619.2.55.3…"
+            className="flex-1 px-4 py-2 text-sm font-mono border border-gray-200 dark:border-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+          />
+          <button
+            type="submit"
+            disabled={manualLoading || !manualUid.trim()}
+            className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-primary-600 rounded-lg hover:bg-primary-700 disabled:opacity-50 transition-colors whitespace-nowrap"
+          >
+            <Upload className="w-4 h-4" />
+            {manualLoading ? "Ingesting…" : "Ingest & Open"}
+          </button>
+        </form>
+        {manualError && (
+          <p className="mt-2 text-sm text-red-600 dark:text-red-400 flex items-start gap-1.5">
+            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+            {manualError}
+          </p>
         )}
       </div>
+      )}
 
     </div>
   );

@@ -112,6 +112,11 @@ class Settings(BaseSettings):
     # the browser (POST /api/studies/upload) instead of the open Orthanc Explorer.
     dicom_upload_enabled: bool = True
 
+    # Lets authenticated users permanently delete a study from Orthanc PACS
+    # (DELETE /api/orthanc/studies/{orthanc_id}) from the Upload page. Irreversible —
+    # the DICOM data is gone unless the scanner resends it.
+    orthanc_delete_enabled: bool = True
+
     # FHIR (F11)
     fhir_enabled: bool = False
     fhir_server_url: str = ""

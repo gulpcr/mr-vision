@@ -218,6 +218,7 @@ AUDIT_ACTION_TO_CRUDE: dict[str, str] = {
     "study_reported": "U",
     "study_signed": "U",
     "study_deleted": "D",
+    "orthanc_study_deleted": "D",
     "mammography_report_saved": "U",
     "role_created": "C",
     "role_updated": "U",

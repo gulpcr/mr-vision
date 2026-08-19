@@ -186,6 +186,16 @@ class OrthancPACSClient(PACSClient):
             })
         return studies
 
+    async def delete_study(self, orthanc_id: str) -> None:
+        """Permanently delete a study (and its DICOM instances) from Orthanc.
+
+        ``orthanc_id`` is Orthanc's internal study ID (as returned by
+        ``list_all_studies``), not the DICOM StudyInstanceUID. Raises
+        ``httpx.HTTPStatusError`` (404) if the study doesn't exist.
+        """
+        response = await self._client.delete(f"/studies/{orthanc_id}")
+        response.raise_for_status()
+
     async def get_orthanc_study_id(self, study_instance_uid: str) -> str:
         response = await self._client.post(
             "/tools/lookup",

@@ -1,12 +1,14 @@
 import asyncio
 from typing import Annotated
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
 from app.config import get_settings
+from app.application.audit_service import AuditService, actor_from_request
 from app.application.study_service import StudyService
 from app.infrastructure.orthanc.client import OrthancPACSClient
 from app.application.job_orchestrator import JobOrchestrator
@@ -17,6 +19,7 @@ from app.interface.api.dependencies import (
     get_routing_service,
     get_session,
 )
+from app.interface.middleware.auth import require_permission
 from app.interface.api.validators import validate_dicom_uid
 from app.interface.schemas.study import (
     OrthancStableStudyNotification,
@@ -224,6 +227,50 @@ async def list_orthanc_studies():
         return await client.list_all_studies()
     finally:
         await client.close()
+
+
+@orthanc_router.delete(
+    "/studies/{orthanc_id}",
+    status_code=204,
+    dependencies=[require_permission("study.delete")],
+)
+async def delete_orthanc_study(
+    orthanc_id: str,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """Permanently delete a study from Orthanc PACS.
+
+    ``orthanc_id`` is Orthanc's internal study ID (from GET /orthanc/studies), not a
+    DICOM UID. This removes the underlying DICOM instances from the on-site PACS —
+    irreversible unless the scanner resends the study. If the study was already
+    ingested into the platform, its record and any AI results are left untouched, but
+    the viewer will no longer be able to load images for it.
+    """
+    if not get_settings().orthanc_delete_enabled:
+        raise HTTPException(status_code=403, detail="Orthanc study deletion is disabled")
+
+    client = OrthancPACSClient()
+    try:
+        await client.delete_study(orthanc_id)
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code if exc.response is not None else 502
+        if status == 404:
+            raise HTTPException(status_code=404, detail=f"Orthanc study {orthanc_id} not found")
+        raise HTTPException(status_code=502, detail=f"Orthanc delete failed: {exc}")
+    finally:
+        await client.close()
+
+    actor_id, actor_display, client_ip = actor_from_request(request)
+    await AuditService(session).record(
+        action="orthanc_study_deleted",
+        entity_type="orthanc_study",
+        entity_id=orthanc_id,
+        actor_id=actor_id,
+        actor_display=actor_display,
+        client_ip=client_ip,
+        commit=True,
+    )
 
 
 def _tat_minutes(start, end) -> float | None:

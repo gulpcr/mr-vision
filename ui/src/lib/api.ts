@@ -665,6 +665,8 @@ export const api = {
   },
   orthanc: {
     listStudies: () => fetchAPI<OrthancStudy[]>("/orthanc/studies"),
+    deleteStudy: (orthancId: string) =>
+      fetchAPI<void>(`/orthanc/studies/${orthancId}`, { method: "DELETE" }),
   },
   auth: {
     login: (username: string, password: string) =>

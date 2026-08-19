@@ -201,6 +201,16 @@ export default function WorklistPage() {
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [cancellingJob, setCancellingJob] = useState<string | null>(null);
 
+  // Bulk selection — operates on the current page only (mirrors per-tab
+  // selection in comparable ops-console worklists). Cleared whenever the
+  // visible page or any filter/sort changes, so a bulk action never silently
+  // targets rows the user can no longer see.
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkRunning, setBulkRunning] = useState(false);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
+  const [bulkMessage, setBulkMessage] = useState<string | null>(null);
+
   // Filters
   const [search, setSearch]                   = useState("");
   const [bodyPartFilter, setBodyPartFilter]   = useState("");
@@ -288,6 +298,12 @@ export default function WorklistPage() {
     setPage(1);
   }, [search, bodyPartFilter, modalityFilter, referrerFilter, priorityFilter, dateFilter, aiStatusFilter, sortField, sortDir, pageSize]);
 
+  // Bulk selection is scoped to the current page/filter view, so clear it
+  // whenever that view changes underneath it.
+  useEffect(() => {
+    setSelected(new Set());
+  }, [page, search, bodyPartFilter, modalityFilter, referrerFilter, priorityFilter, dateFilter, aiStatusFilter, sortField, sortDir, pageSize]);
+
   // ── Actions ───────────────────────────────────────────────────────────────
 
   const handleRunAI = async (studyUid: string, usecaseNames?: string[]) => {
@@ -334,6 +350,67 @@ export default function WorklistPage() {
     } finally {
       setDeletingStudy(null);
     }
+  };
+
+  const toggleSelected = (uid: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(uid)) next.delete(uid);
+      else next.add(uid);
+      return next;
+    });
+  };
+
+  // Bulk Run AI (auto-route each selected study). Sequential rather than
+  // Promise.all so one slow/failing study doesn't tie up a burst of parallel
+  // requests against the job-creation endpoint; each study's own row still
+  // shows its live status once loadStudies() refreshes.
+  const handleBulkRunAI = async () => {
+    const uids = Array.from(selected);
+    if (!uids.length || bulkRunning) return;
+    setBulkRunning(true);
+    setBulkMessage(null);
+    setJobError(null);
+    let ok = 0, fail = 0;
+    for (const uid of uids) {
+      try {
+        await api.jobs.create(uid);
+        ok++;
+      } catch {
+        fail++;
+      }
+    }
+    await loadStudies();
+    setSelected(new Set());
+    setBulkRunning(false);
+    setBulkMessage(
+      fail > 0 ? `Queued ${ok} of ${uids.length} studies — ${fail} failed to start` : `Queued AI pipeline for ${ok} stud${ok === 1 ? "y" : "ies"}`
+    );
+    setTimeout(() => setBulkMessage(null), 5000);
+  };
+
+  const handleBulkDelete = async () => {
+    const uids = Array.from(selected);
+    setConfirmBulkDelete(false);
+    if (!uids.length) return;
+    setBulkDeleting(true);
+    setJobError(null);
+    let ok = 0, fail = 0;
+    for (const uid of uids) {
+      try {
+        await api.studies.delete(uid);
+        ok++;
+      } catch {
+        fail++;
+      }
+    }
+    await loadStudies();
+    setSelected(new Set());
+    setBulkDeleting(false);
+    setBulkMessage(
+      fail > 0 ? `Removed ${ok} of ${uids.length} studies — ${fail} failed` : `Removed ${ok} stud${ok === 1 ? "y" : "ies"}`
+    );
+    setTimeout(() => setBulkMessage(null), 5000);
   };
 
   const toggleSort = (field: SortField) => {
@@ -428,6 +505,16 @@ export default function WorklistPage() {
   const paged       = filtered.slice((currentPage - 1) * pageSize, currentPage * pageSize);
   const startIdx    = filtered.length === 0 ? 0 : (currentPage - 1) * pageSize + 1;
   const endIdx      = Math.min(currentPage * pageSize, filtered.length);
+
+  const allPagedSelected = paged.length > 0 && paged.every((s) => selected.has(s.study_instance_uid));
+  const toggleSelectAll = () => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (allPagedSelected) paged.forEach((s) => next.delete(s.study_instance_uid));
+      else paged.forEach((s) => next.add(s.study_instance_uid));
+      return next;
+    });
+  };
 
   return (
     <div>
@@ -632,6 +719,15 @@ export default function WorklistPage() {
           <Caption>Worklist of studies with AI job status and reading workflow</Caption>
           <thead>
             <tr className="border-b border-border bg-black/5 dark:bg-white/5">
+              <Th className="w-10">
+                <input
+                  type="checkbox"
+                  checked={allPagedSelected}
+                  onChange={toggleSelectAll}
+                  aria-label="Select all studies on this page"
+                  className="accent-primary-600 cursor-pointer"
+                />
+              </Th>
               <SortableTh label={strings.worklist.columnPriority} field="urgency" activeField={sortField} dir={sortDir} onSort={(f) => toggleSort(f as SortField)} />
               <SortableTh label={strings.worklist.columnPatient} field="patient_name" activeField={sortField} dir={sortDir} onSort={(f) => toggleSort(f as SortField)} />
               <Th>{strings.worklist.columnStudy}</Th>
@@ -644,10 +740,10 @@ export default function WorklistPage() {
           </thead>
           <tbody className="divide-y divide-gray-50 dark:divide-gray-800 dark:divide-gray-800">
             {loading && studies.length === 0 ? (
-              <TableSkeleton rows={7} columnWidths={[44, 130, 180, 90, 90, 88, 150, 112]} subtextColumns={[1, 3, 4]} />
+              <TableSkeleton rows={7} columnWidths={[20, 44, 130, 180, 90, 90, 88, 150, 112]} subtextColumns={[2, 4, 5]} />
             ) : filtered.length === 0 ? (
               <tr>
-                <td colSpan={8}>
+                <td colSpan={9}>
                   <EmptyState
                     icon={ClipboardList}
                     title={activeFilters > 0 ? strings.worklist.noStudiesMatch : strings.worklist.noStudiesYet}
@@ -685,12 +781,23 @@ export default function WorklistPage() {
                   const latestJobs   = latestPerUsecase(studyJobs);
                   const completedJob = studyJobs.find((j) => j.status === "completed");
 
+                  const isSelected = selected.has(study.study_instance_uid);
+
                   return (
                     <tr
                       key={study.study_instance_uid}
                       onClick={() => router.push(`/study/${study.study_instance_uid}`)}
-                      className="group cursor-pointer transition-colors hover:bg-accent/5"
+                      className={`group cursor-pointer transition-colors hover:bg-accent/5 ${isSelected ? "bg-accent/5" : ""}`}
                     >
+                      <td className="py-2 px-3" onClick={(e) => e.stopPropagation()}>
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => toggleSelected(study.study_instance_uid)}
+                          aria-label={`Select ${formatPatientName(study.patient_name)}`}
+                          className="accent-primary-600 cursor-pointer"
+                        />
+                      </td>
                       {/* Priority — a left-border accent stripe signals urgency at a
                           glance without washing the whole row in color (the badge +
                           icon below still carry the same signal for anyone who can't
@@ -1018,6 +1125,55 @@ export default function WorklistPage() {
           </div>
         </div>
       </div>
+
+      {/* Bulk action bar — appears once studies are selected on this page */}
+      {selected.size > 0 && (
+        <div className="sticky bottom-3 z-20 mt-4 glass-raised rounded-2xl shadow-glow px-4 py-3 flex items-center gap-3 flex-wrap">
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-primary-600 text-white text-sm font-semibold">
+            {selected.size} selected
+          </span>
+          <button
+            onClick={() => setSelected(new Set())}
+            className="press text-sm text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200"
+          >
+            Clear
+          </button>
+          {bulkMessage && (
+            <span className="text-sm text-gray-500 dark:text-gray-400">{bulkMessage}</span>
+          )}
+          <div className="ml-auto flex items-center gap-2">
+            <button
+              onClick={handleBulkRunAI}
+              disabled={bulkRunning || bulkDeleting}
+              className="press flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium text-white bg-green-600 rounded-lg hover:bg-green-700 disabled:opacity-50 transition-colors whitespace-nowrap"
+            >
+              {bulkRunning
+                ? <RefreshCw className="w-4 h-4 animate-spin motion-reduce:animate-none" />
+                : <PlayCircle className="w-4 h-4" />}
+              Run AI on {selected.size}
+            </button>
+            <button
+              onClick={() => setConfirmBulkDelete(true)}
+              disabled={bulkRunning || bulkDeleting}
+              className="press flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium text-red-600 dark:text-red-400 border border-red-200 dark:border-red-800 rounded-lg hover:bg-red-50 dark:hover:bg-red-950 disabled:opacity-50 transition-colors whitespace-nowrap"
+            >
+              <Trash2 className="w-4 h-4" />
+              Remove
+            </button>
+          </div>
+        </div>
+      )}
+
+      <ConfirmDialog
+        tier="modal"
+        danger
+        open={confirmBulkDelete}
+        title="Remove Studies"
+        consequence={`${selected.size} stud${selected.size === 1 ? "y" : "ies"} will be removed from the platform. This cannot be undone from this screen.`}
+        confirmLabel={bulkDeleting ? "Removing…" : "Remove"}
+        onConfirm={handleBulkDelete}
+        onCancel={() => setConfirmBulkDelete(false)}
+      />
 
       {/* Use-case selection modal */}
       {modalStudyUid && (
