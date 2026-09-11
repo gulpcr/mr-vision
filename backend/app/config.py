@@ -92,6 +92,18 @@ class Settings(BaseSettings):
     # Multi-tenant (F2)
     multi_tenant_enabled: bool = False
     default_tenant_id: str = "default"
+    # Subdomain a request's Host header is matched against to resolve a tenant slug
+    # (e.g. "acme.mr-vision.ai" -> slug "acme"). Only consulted when
+    # multi_tenant_enabled is True; header/query-param resolution works regardless.
+    tenant_root_domain: str = "mr-vision.ai"
+
+    # MFA (TOTP) lockout — shared chokepoint for the login-time verify step and
+    # the /mfa/disable step (see infrastructure/ratelimit/mfa_lockout.py).
+    mfa_max_attempts: int = 5
+    mfa_lockout_minutes: float = 15
+
+    # Self-authenticated DICOM upload via a tenant API key (POST /api/dicom/upload).
+    dicom_upload_rate_limit_per_minute: int = 60
 
     # PHI De-identification (F3)
     phi_deidentify_enabled: bool = False
@@ -347,3 +359,21 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def derive_secret(purpose: str) -> str:
+    """HMAC(jwt_secret_key, purpose) — a domain-separated subkey derived from the
+    platform master secret, used wherever a purpose-specific signing/encryption key
+    is needed: per-tenant JWT signing (``jwt:{tenant_id}``), the audit hash chain
+    (``audit-chain-v1``), TOTP-secret-at-rest encryption (``totp-secret-encryption-v1``).
+
+    Leaking one derived subkey does not reveal the master secret or any other
+    purpose's subkey (HMAC is a PRF) — one compromised use case doesn't cascade.
+    """
+    import hashlib
+    import hmac as _hmac
+
+    settings = get_settings()
+    return _hmac.new(
+        settings.jwt_secret_key.encode("utf-8"), purpose.encode("utf-8"), hashlib.sha256
+    ).hexdigest()

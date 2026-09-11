@@ -128,3 +128,34 @@ export function useCriticalAlertStats() {
     refreshInterval: 30000,
   });
 }
+
+export function useTenants() {
+  return useSWR("tenants", () => api.tenants.list());
+}
+
+export function useTenant(id: string | null) {
+  return useSWR(id ? ["tenant", id] : null, () => api.tenants.get(id!));
+}
+
+export function useTenantApiKeys(tenantId: string | null) {
+  return useSWR(tenantId ? ["tenant-api-keys", tenantId] : null, () =>
+    api.tenantApiKeys.list(tenantId!)
+  );
+}
+
+export function useTenantUsers(tenantId: string | null) {
+  return useSWR(tenantId ? ["tenant-users", tenantId] : null, () =>
+    api.auth.listUsers(tenantId!)
+  );
+}
+
+export function usePlans() {
+  return useSWR("plans", () => api.plans.list());
+}
+
+// The `user` object cached in localStorage at login only has {id, username, role,
+// tenant_id} — platform-admin/operator status and MFA state can change without the
+// user re-logging in, so live data is fetched from /auth/me instead of trusting it.
+export function useCurrentUser() {
+  return useSWR("current-user", () => api.auth.me());
+}

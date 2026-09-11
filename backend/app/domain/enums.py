@@ -80,6 +80,18 @@ class AuditAction(str, enum.Enum):
     ALERT_TRIGGERED = "alert_triggered"
     DATA_PURGED = "data_purged"
     PHI_DEIDENTIFIED = "phi_deidentified"
+    # ── Multi-tenancy / security hardening ────────────────────────────────────
+    DICOM_UPLOADED = "dicom_uploaded"
+    API_KEY_CREATED = "api_key_created"
+    API_KEY_REVOKED = "api_key_revoked"
+    PLATFORM_ADMIN_GRANTED = "platform_admin_granted"
+    PLATFORM_ADMIN_REVOKED = "platform_admin_revoked"
+    PLATFORM_OPERATOR_GRANTED = "platform_operator_granted"
+    PLATFORM_OPERATOR_REVOKED = "platform_operator_revoked"
+    IMPERSONATION_STARTED = "impersonation_started"
+    IMPERSONATION_STOPPED = "impersonation_stopped"
+    MFA_ENABLED = "mfa_enabled"
+    MFA_DISABLED = "mfa_disabled"
 
 
 class ObservationStatus(str, enum.Enum):
@@ -223,6 +235,17 @@ AUDIT_ACTION_TO_CRUDE: dict[str, str] = {
     "role_created": "C",
     "role_updated": "U",
     "role_deleted": "D",
+    "dicom_uploaded": "C",
+    "api_key_created": "C",
+    "api_key_revoked": "D",
+    "platform_admin_granted": "U",
+    "platform_admin_revoked": "U",
+    "platform_operator_granted": "U",
+    "platform_operator_revoked": "U",
+    "impersonation_started": "E",
+    "impersonation_stopped": "E",
+    "mfa_enabled": "U",
+    "mfa_disabled": "U",
 }
 
 

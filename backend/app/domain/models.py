@@ -41,6 +41,7 @@ _utcnow = utcnow
 @dataclass
 class Study:
     study_instance_uid: str
+    tenant_id: str = "default"
     # patient_id is the raw DICOM PatientID (an identifier in the hospital's namespace);
     # patient_record_id is the resolved reference to the local patients row. Read-only
     # here — the link is owned by OnboardingService, not by study ingest.
@@ -79,6 +80,7 @@ class Study:
 class Series:
     series_instance_uid: str
     study_instance_uid: str
+    tenant_id: str = "default"
     series_number: int | None = None
     series_description: str | None = None
     modality: str | None = None
@@ -109,6 +111,7 @@ class UseCase:
 @dataclass
 class JobRun:
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    tenant_id: str = "default"
     study_instance_uid: str = ""
     usecase_name: str = ""
     status: JobStatus = JobStatus.PENDING
@@ -127,6 +130,7 @@ class JobRun:
 @dataclass
 class Result:
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    tenant_id: str = "default"
     study_instance_uid: str = ""
     usecase_name: str = ""
     job_id: str = ""
@@ -194,6 +198,7 @@ class ResultArtifact:
 @dataclass
 class AuditEntry:
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    tenant_id: str = "default"
     action: AuditAction = AuditAction.STUDY_RECEIVED
     entity_type: str = ""
     entity_id: str = ""
@@ -223,6 +228,9 @@ class User:
     role: str = "viewer"
     tenant_id: str = "default"
     is_active: bool = True
+    is_platform_admin: bool = False
+    is_platform_operator: bool = False
+    totp_enabled: bool = False
     created_at: datetime = field(default_factory=_utcnow)
     updated_at: datetime = field(default_factory=_utcnow)
 
@@ -233,6 +241,53 @@ class Tenant:
     name: str = ""
     slug: str = ""
     is_active: bool = True
+    status: str = "active"
+    plan: str = "starter"
+    features: list[str] = field(default_factory=list)
+    created_at: datetime = field(default_factory=_utcnow)
+
+
+@dataclass
+class TenantApiKey:
+    """A DICOM-upload credential scoped to one tenant (see ``PendingStudyTenant`` — the
+    mechanism that attributes an inbound study to the tenant that uploaded it)."""
+
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    tenant_id: str = ""
+    name: str = ""
+    key_hash: str = ""
+    prefix: str = ""
+    scopes: list[str] = field(default_factory=list)
+    expires_at: datetime | None = None
+    is_active: bool = True
+    last_used_at: datetime | None = None
+    revoked_at: datetime | None = None
+    created_at: datetime = field(default_factory=_utcnow)
+
+    def has_scope(self, scope: str) -> bool:
+        return scope in self.scopes
+
+    def is_expired(self) -> bool:
+        if self.expires_at is None:
+            return False
+        now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+        expires_naive = self.expires_at.replace(tzinfo=None)
+        return now_naive >= expires_naive
+
+
+@dataclass
+class PendingStudyTenant:
+    """Attributes an inbound DICOM upload to a tenant before the study row exists.
+
+    A self-authenticated upload (via a ``TenantApiKey``) arrives before ``StudyService``
+    has ingested the study, so there is nowhere yet to stamp ``tenant_id``. This row is the
+    bridge: registered at upload time, consumed once the Orthanc stable-study webhook fires
+    and the real ``StudyRecord`` is created with this tenant_id.
+    """
+
+    study_instance_uid: str = ""
+    tenant_id: str = ""
+    api_key_id: str | None = None
     created_at: datetime = field(default_factory=_utcnow)
 
 

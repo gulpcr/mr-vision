@@ -10,6 +10,7 @@ from app.domain.enums import AuditAction, BodyPart
 from app.domain.interfaces import (
     AuditRepository,
     PACSClient,
+    PendingStudyTenantRepository,
     SeriesRepository,
     StudyRepository,
 )
@@ -76,19 +77,42 @@ class StudyService:
         audit_repo: AuditRepository,
         pacs_client: PACSClient,
         dicomweb_client: DICOMwebClient,
+        pending_tenant_repo: PendingStudyTenantRepository | None = None,
+        unscoped_study_repo: StudyRepository | None = None,
     ):
         self._study_repo = study_repo
         self._series_repo = series_repo
         self._audit_repo = audit_repo
         self._pacs = pacs_client
         self._dw = dicomweb_client
+        # Both optional: only populated for callers that need to resolve a study's
+        # tenant from a prior self-authenticated DICOM upload (see
+        # DicomUploadService / PendingStudyTenant) rather than from request context.
+        self._pending_tenant_repo = pending_tenant_repo
+        self._unscoped_study_repo = unscoped_study_repo or study_repo
 
     async def ingest_study(self, study_instance_uid: str) -> Study:
-        """Fetch study metadata from Orthanc and persist it."""
-        existing = await self._study_repo.get_by_uid(study_instance_uid)
+        """Fetch study metadata from Orthanc and persist it.
+
+        Checked against the unscoped repo, not the (possibly tenant-scoped)
+        ``self._study_repo`` — a study ingested under a different tenant than the
+        caller's own must still be recognised as "already ingested" rather than
+        colliding on a duplicate-key insert below.
+        """
+        existing = await self._unscoped_study_repo.get_by_uid(study_instance_uid)
         if existing:
             logger.info("study_already_ingested", study_uid=study_instance_uid)
             return existing
+
+        # A self-authenticated DICOM upload (POST /api/dicom/upload) registers this
+        # mapping before the study exists — if present, it's the authoritative tenant
+        # for this study, overriding the "default" a webhook/internal caller would
+        # otherwise stamp.
+        pending_tenant_id: str | None = None
+        if self._pending_tenant_repo is not None:
+            pending = await self._pending_tenant_repo.get_by_study_uid(study_instance_uid)
+            if pending is not None:
+                pending_tenant_id = pending.tenant_id
 
         study_meta = await self._pacs.get_study(study_instance_uid)
         ext = DICOMwebClient.extract_tag_value
@@ -140,6 +164,7 @@ class StudyService:
 
         study = Study(
             study_instance_uid=study_instance_uid,
+            tenant_id=pending_tenant_id or "default",
             patient_id=ext(study_meta, "PatientID"),
             patient_name=ext(study_meta, "PatientName"),
             # Normalised at the boundary to the FHIR administrativeGender value set, so
@@ -164,10 +189,12 @@ class StudyService:
         except Exception as exc:
             if "unique" in str(exc).lower() or "duplicate" in str(exc).lower():
                 logger.info("study_already_exists_race", study_uid=study_instance_uid)
-                existing = await self._study_repo.get_by_uid(study_instance_uid)
+                existing = await self._unscoped_study_repo.get_by_uid(study_instance_uid)
                 if existing:
                     return existing
             raise
+        if pending_tenant_id and self._pending_tenant_repo is not None:
+            await self._pending_tenant_repo.consume(study_instance_uid)
         logger.info("study_ingested", study_uid=study_instance_uid)
         try:
             from app.infrastructure.metrics import STUDY_INGESTED_TOTAL
@@ -191,6 +218,7 @@ class StudyService:
             series_obj = Series(
                 series_instance_uid=ext(s, "SeriesInstanceUID") or "",
                 study_instance_uid=study_instance_uid,
+                tenant_id=study.tenant_id,
                 series_number=ext(s, "SeriesNumber"),
                 series_description=ext(s, "SeriesDescription"),
                 modality=ext(s, "Modality"),
@@ -239,6 +267,7 @@ class StudyService:
                 action=AuditAction.STUDY_RECEIVED,
                 entity_type="study",
                 entity_id=study_instance_uid,
+                tenant_id=study.tenant_id,
                 details={
                     "patient_id": study.patient_id,
                     "series_count": len(series_objects),

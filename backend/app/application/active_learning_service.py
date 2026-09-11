@@ -26,6 +26,7 @@ class ActiveLearningService:
         usecase_name: str,
         result_id: str,
         confidence_score: float,
+        tenant_id: str = "default",
     ) -> bool:
         """Check if a result should be flagged for review.
 
@@ -55,6 +56,7 @@ class ActiveLearningService:
             result_id=result_id,
             confidence_score=confidence_score,
             status="pending",
+            tenant_id=tenant_id,
         )
         self._session.add(record)
         await self._session.flush()
@@ -73,6 +75,7 @@ class ActiveLearningService:
         usecase_name: str | None = None,
         offset: int = 0,
         limit: int = 50,
+        tenant_id: str | None = None,
     ) -> list[dict[str, Any]]:
         from app.infrastructure.database.models import ReviewQueueRecord
 
@@ -84,6 +87,8 @@ class ActiveLearningService:
             stmt = stmt.where(ReviewQueueRecord.status == status)
         if usecase_name:
             stmt = stmt.where(ReviewQueueRecord.usecase_name == usecase_name)
+        if tenant_id:
+            stmt = stmt.where(ReviewQueueRecord.tenant_id == tenant_id)
         stmt = stmt.offset(offset).limit(limit)
 
         result = await self._session.execute(stmt)
@@ -103,10 +108,14 @@ class ActiveLearningService:
             for r in result.scalars().all()
         ]
 
-    async def get_review_item(self, review_id: str) -> dict[str, Any] | None:
+    async def get_review_item(
+        self, review_id: str, tenant_id: str | None = None
+    ) -> dict[str, Any] | None:
         from app.infrastructure.database.models import ReviewQueueRecord
 
         stmt = select(ReviewQueueRecord).where(ReviewQueueRecord.id == review_id)
+        if tenant_id:
+            stmt = stmt.where(ReviewQueueRecord.tenant_id == tenant_id)
         result = await self._session.execute(stmt)
         r = result.scalar_one_or_none()
         if not r:
@@ -130,23 +139,28 @@ class ActiveLearningService:
         status: str,
         reviewer: str,
         notes: str = "",
+        tenant_id: str | None = None,
     ) -> dict[str, Any] | None:
         from app.infrastructure.database.models import ReviewQueueRecord
 
         stmt = (
             update(ReviewQueueRecord)
             .where(ReviewQueueRecord.id == review_id)
-            .values(
-                status=status,
-                reviewer=reviewer,
-                review_notes=notes,
-                reviewed_at=utcnow(),
-            )
         )
-        await self._session.execute(stmt)
+        if tenant_id:
+            stmt = stmt.where(ReviewQueueRecord.tenant_id == tenant_id)
+        stmt = stmt.values(
+            status=status,
+            reviewer=reviewer,
+            review_notes=notes,
+            reviewed_at=utcnow(),
+        )
+        result = await self._session.execute(stmt)
         await self._session.flush()
+        if result.rowcount == 0:
+            return None
 
-        return await self.get_review_item(review_id)
+        return await self.get_review_item(review_id, tenant_id=tenant_id)
 
     async def add_to_review_queue(
         self,
@@ -154,6 +168,7 @@ class ActiveLearningService:
         usecase_name: str,
         result_id: str,
         confidence_score: float,
+        tenant_id: str = "default",
     ) -> bool:
         """Unconditionally add a result to the review queue (bypass threshold check)."""
         from app.infrastructure.database.models import ReviewQueueRecord
@@ -170,6 +185,7 @@ class ActiveLearningService:
             result_id=result_id,
             confidence_score=confidence_score,
             status="pending",
+            tenant_id=tenant_id,
         )
         self._session.add(record)
         await self._session.flush()
@@ -181,7 +197,7 @@ class ActiveLearningService:
         )
         return True
 
-    async def get_queue_stats(self) -> dict[str, int]:
+    async def get_queue_stats(self, tenant_id: str | None = None) -> dict[str, int]:
         from app.infrastructure.database.models import ReviewQueueRecord
         from sqlalchemy import func
 
@@ -192,5 +208,7 @@ class ActiveLearningService:
             )
             .group_by(ReviewQueueRecord.status)
         )
+        if tenant_id:
+            stmt = stmt.where(ReviewQueueRecord.tenant_id == tenant_id)
         result = await self._session.execute(stmt)
         return {row[0]: row[1] for row in result.all()}

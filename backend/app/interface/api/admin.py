@@ -6,9 +6,17 @@ from pydantic import BaseModel
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.analytics_service import AnalyticsService
 from app.application.routing_service import RoutingService
 from app.application.usecase_registry import UseCaseRegistry
-from app.interface.api.dependencies import get_registry, get_routing_service, get_session
+from app.interface.api.dependencies import (
+    get_analytics_service,
+    get_registry,
+    get_routing_service,
+    get_session,
+    request_tenant_id,
+)
+from app.interface.middleware.auth import require_platform_admin
 from app.interface.schemas.usecase import (
     RoutingRulesResponse,
     UpdateRoutingRulesRequest,
@@ -116,6 +124,7 @@ async def update_site_config(body: UpdateSiteConfigRequest):
 @router.get("/audit")
 async def list_audit_logs(
     session: Annotated[AsyncSession, Depends(get_session)],
+    tenant_id: Annotated[str, Depends(request_tenant_id)],
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=500),
     action: str | None = None,
@@ -128,6 +137,9 @@ async def list_audit_logs(
 
     stmt = select(AuditLogRecord).order_by(AuditLogRecord.timestamp.desc())
     count_stmt = select(func.count()).select_from(AuditLogRecord)
+
+    stmt = stmt.where(AuditLogRecord.tenant_id == tenant_id)
+    count_stmt = count_stmt.where(AuditLogRecord.tenant_id == tenant_id)
 
     if action:
         stmt = stmt.where(AuditLogRecord.action == action)
@@ -160,21 +172,34 @@ async def list_audit_logs(
     return {"entries": entries, "total": total, "offset": offset, "limit": limit}
 
 
+@router.get("/audit/verify", dependencies=[Depends(require_platform_admin)])
+async def verify_audit_chain(session: Annotated[AsyncSession, Depends(get_session)]):
+    """Walk the audit_log hash chain and confirm no entry was altered, deleted, or
+    reordered since the chain was introduced. Platform-admin only — this spans
+    every tenant's audit history."""
+    from app.application.audit_integrity_service import AuditIntegrityService
+
+    service = AuditIntegrityService(session)
+    return await service.verify_chain()
+
+
 # ── Retention Policies (F15) ───────────────────────────────────
 
 @router.get("/retention")
 async def list_retention_policies(
     session: Annotated[AsyncSession, Depends(get_session)],
+    tenant_id: Annotated[str, Depends(request_tenant_id)],
 ):
     from app.application.retention_service import RetentionService
     service = RetentionService(session)
-    return {"policies": await service.list_policies()}
+    return {"policies": await service.list_policies(tenant_id=tenant_id)}
 
 
 @router.post("/retention", status_code=201)
 async def create_retention_policy(
     body: dict,
     session: Annotated[AsyncSession, Depends(get_session)],
+    tenant_id: Annotated[str, Depends(request_tenant_id)],
 ):
     from app.application.retention_service import RetentionService
     service = RetentionService(session)
@@ -183,6 +208,7 @@ async def create_retention_policy(
         entity_type=body["entity_type"],
         max_age_days=body.get("max_age_days", 365),
         action=body.get("action", "archive"),
+        tenant_id=tenant_id,
     )
     return policy
 
@@ -191,10 +217,11 @@ async def create_retention_policy(
 async def delete_retention_policy(
     policy_id: str,
     session: Annotated[AsyncSession, Depends(get_session)],
+    tenant_id: Annotated[str, Depends(request_tenant_id)],
 ):
     from app.application.retention_service import RetentionService
     service = RetentionService(session)
-    deleted = await service.delete_policy(policy_id)
+    deleted = await service.delete_policy(policy_id, tenant_id=tenant_id)
     if not deleted:
         raise HTTPException(404, "Policy not found")
     return {"status": "ok"}
@@ -265,16 +292,18 @@ async def stop_experiment(
 @router.get("/alerts")
 async def list_alert_rules(
     session: Annotated[AsyncSession, Depends(get_session)],
+    tenant_id: Annotated[str, Depends(request_tenant_id)],
 ):
     from app.application.alerting_service import AlertingService
     service = AlertingService(session)
-    return {"rules": await service.list_rules()}
+    return {"rules": await service.list_rules(tenant_id=tenant_id)}
 
 
 @router.post("/alerts", status_code=201)
 async def create_alert_rule(
     body: dict,
     session: Annotated[AsyncSession, Depends(get_session)],
+    tenant_id: Annotated[str, Depends(request_tenant_id)],
 ):
     from app.application.alerting_service import AlertingService
     service = AlertingService(session)
@@ -283,6 +312,7 @@ async def create_alert_rule(
         event_type=body["event_type"],
         webhook_url=body["webhook_url"],
         condition=body.get("condition"),
+        tenant_id=tenant_id,
     )
     return rule
 
@@ -291,10 +321,11 @@ async def create_alert_rule(
 async def delete_alert_rule(
     rule_id: str,
     session: Annotated[AsyncSession, Depends(get_session)],
+    tenant_id: Annotated[str, Depends(request_tenant_id)],
 ):
     from app.application.alerting_service import AlertingService
     service = AlertingService(session)
-    deleted = await service.delete_rule(rule_id)
+    deleted = await service.delete_rule(rule_id, tenant_id=tenant_id)
     if not deleted:
         raise HTTPException(404, "Alert rule not found")
     return {"status": "ok"}
@@ -303,12 +334,13 @@ async def delete_alert_rule(
 @router.get("/alerts/history")
 async def list_alert_history(
     session: Annotated[AsyncSession, Depends(get_session)],
+    tenant_id: Annotated[str, Depends(request_tenant_id)],
     rule_id: str | None = None,
     limit: int = Query(100, ge=1, le=500),
 ):
     from app.application.alerting_service import AlertingService
     service = AlertingService(session)
-    return {"history": await service.get_history(rule_id, limit)}
+    return {"history": await service.get_history(rule_id, limit, tenant_id=tenant_id)}
 
 
 # ── Model Registry (F7) ───────────────────────────────────────
@@ -373,6 +405,7 @@ async def get_active_model_version(
 @router.get("/review")
 async def list_review_queue(
     session: Annotated[AsyncSession, Depends(get_session)],
+    tenant_id: Annotated[str, Depends(request_tenant_id)],
     status: str | None = None,
     usecase_name: str | None = None,
     offset: int = Query(0, ge=0),
@@ -380,28 +413,30 @@ async def list_review_queue(
 ):
     from app.application.active_learning_service import ActiveLearningService
     service = ActiveLearningService(session)
-    items = await service.list_review_queue(status, usecase_name, offset, limit)
-    stats = await service.get_queue_stats()
+    items = await service.list_review_queue(status, usecase_name, offset, limit, tenant_id=tenant_id)
+    stats = await service.get_queue_stats(tenant_id=tenant_id)
     return {"items": items, "stats": stats, "offset": offset, "limit": limit}
 
 
 @router.get("/review/stats")
 async def get_review_stats(
     session: Annotated[AsyncSession, Depends(get_session)],
+    tenant_id: Annotated[str, Depends(request_tenant_id)],
 ):
     from app.application.active_learning_service import ActiveLearningService
     service = ActiveLearningService(session)
-    return await service.get_queue_stats()
+    return await service.get_queue_stats(tenant_id=tenant_id)
 
 
 @router.get("/review/{review_id}")
 async def get_review_item(
     review_id: str,
     session: Annotated[AsyncSession, Depends(get_session)],
+    tenant_id: Annotated[str, Depends(request_tenant_id)],
 ):
     from app.application.active_learning_service import ActiveLearningService
     service = ActiveLearningService(session)
-    item = await service.get_review_item(review_id)
+    item = await service.get_review_item(review_id, tenant_id=tenant_id)
     if not item:
         raise HTTPException(404, "Review item not found")
     return item
@@ -412,6 +447,7 @@ async def submit_review(
     review_id: str,
     body: dict,
     session: Annotated[AsyncSession, Depends(get_session)],
+    tenant_id: Annotated[str, Depends(request_tenant_id)],
     request: Request,
 ):
     from app.application.active_learning_service import ActiveLearningService
@@ -422,6 +458,7 @@ async def submit_review(
         status=body["status"],
         reviewer=reviewer,
         notes=body.get("notes", ""),
+        tenant_id=tenant_id,
     )
     if not item:
         raise HTTPException(404, "Review item not found")
@@ -433,16 +470,18 @@ async def submit_review(
 @router.get("/batches")
 async def list_batches(
     session: Annotated[AsyncSession, Depends(get_session)],
+    tenant_id: Annotated[str, Depends(request_tenant_id)],
 ):
     from app.application.batch_service import BatchUploadService
     service = BatchUploadService(session)
-    return {"batches": await service.list_batches()}
+    return {"batches": await service.list_batches(tenant_id=tenant_id)}
 
 
 @router.post("/batches", status_code=201)
 async def create_batch(
     body: dict,
     session: Annotated[AsyncSession, Depends(get_session)],
+    tenant_id: Annotated[str, Depends(request_tenant_id)],
     request: Request,
 ):
     from app.application.batch_service import BatchUploadService
@@ -452,6 +491,7 @@ async def create_batch(
         name=body["name"],
         study_uids=body["study_uids"],
         created_by=creator,
+        tenant_id=tenant_id,
     )
     return batch
 
@@ -460,10 +500,11 @@ async def create_batch(
 async def get_batch(
     batch_id: str,
     session: Annotated[AsyncSession, Depends(get_session)],
+    tenant_id: Annotated[str, Depends(request_tenant_id)],
 ):
     from app.application.batch_service import BatchUploadService
     service = BatchUploadService(session)
-    batch = await service.get_batch(batch_id)
+    batch = await service.get_batch(batch_id, tenant_id=tenant_id)
     if not batch:
         raise HTTPException(404, "Batch not found")
     return batch
@@ -473,14 +514,11 @@ async def get_batch(
 
 @router.get("/metrics")
 async def get_qa_metrics(
-    session: Annotated[AsyncSession, Depends(get_session)],
+    service: Annotated[AnalyticsService, Depends(get_analytics_service)],
     days: int = Query(30, ge=1, le=365),
     usecase_name: str | None = None,
 ):
     """QA and audit metrics: TAT, agreement rates, QA flag rates."""
-    from app.application.analytics_service import AnalyticsService
-
-    service = AnalyticsService(session)
     return await service.get_qa_metrics(days=days, usecase_name=usecase_name)
 
 
@@ -488,13 +526,10 @@ async def get_qa_metrics(
 
 @router.get("/capacity")
 async def get_capacity_metrics(
-    session: Annotated[AsyncSession, Depends(get_session)],
+    service: Annotated[AnalyticsService, Depends(get_analytics_service)],
     days: int = Query(30, ge=1, le=365),
 ):
     """Scanner utilization analytics and 7-day demand forecast."""
-    from app.application.analytics_service import AnalyticsService
-
-    service = AnalyticsService(session)
     return await service.get_capacity_metrics(days=days)
 
 
@@ -504,12 +539,9 @@ async def get_capacity_metrics(
 async def get_patient_trend(
     patient_id: str,
     usecase_name: str,
-    session: Annotated[AsyncSession, Depends(get_session)],
+    service: Annotated[AnalyticsService, Depends(get_analytics_service)],
 ):
     """Return all result timepoints for longitudinal trend chart."""
-    from app.application.analytics_service import AnalyticsService
-
-    service = AnalyticsService(session)
     return await service.get_patient_trend(patient_id=patient_id, usecase_name=usecase_name)
 
 
@@ -519,6 +551,7 @@ async def get_patient_trend(
 async def check_protocol(
     study_uid: str,
     session: Annotated[AsyncSession, Depends(get_session)],
+    tenant_id: Annotated[str, Depends(request_tenant_id)],
 ):
     """Validate study series against registered use-case protocol requirements."""
     from app.interface.api.dependencies import get_registry
@@ -526,7 +559,10 @@ async def check_protocol(
     from app.infrastructure.database.models import SeriesRecord
     from sqlalchemy import select
 
-    stmt = select(SeriesRecord).where(SeriesRecord.study_instance_uid == study_uid)
+    stmt = select(SeriesRecord).where(
+        SeriesRecord.study_instance_uid == study_uid,
+        SeriesRecord.tenant_id == tenant_id,
+    )
     result = await session.execute(stmt)
     series = result.scalars().all()
 
@@ -594,13 +630,17 @@ async def get_prior_comparison(
     study_uid: str,
     usecase_name: str,
     session: Annotated[AsyncSession, Depends(get_session)],
+    tenant_id: Annotated[str, Depends(request_tenant_id)],
 ):
     """Find the most recent prior result for the same patient+usecase and compare."""
     from app.infrastructure.database.models import ResultRecord, StudyRecord
     from sqlalchemy import select
 
     # Get current study to find patient_id
-    study_stmt = select(StudyRecord).where(StudyRecord.study_instance_uid == study_uid)
+    study_stmt = select(StudyRecord).where(
+        StudyRecord.study_instance_uid == study_uid,
+        StudyRecord.tenant_id == tenant_id,
+    )
     study_res = await session.execute(study_stmt)
     study = study_res.scalar_one_or_none()
     if not study:
@@ -613,20 +653,26 @@ async def get_prior_comparison(
         ResultRecord.study_instance_uid == study_uid,
         ResultRecord.usecase_name == usecase_name,
         ResultRecord.is_latest == True,
+        ResultRecord.tenant_id == tenant_id,
     )
     cur_res = await session.execute(cur_stmt)
     current_result = cur_res.scalar_one_or_none()
     if not current_result:
         return {"status": "no_current_result", "comparison": None}
 
-    # Find most recent prior result for same patient + usecase
+    # Find most recent prior result for same patient + usecase. patient_id is only
+    # unique within a tenant, so the tenant_id filter here is load-bearing, not
+    # cosmetic — without it, two different tenants' patients sharing an MRN would
+    # leak each other's prior results.
     prior_stmt = (
         select(ResultRecord)
         .join(StudyRecord, ResultRecord.study_instance_uid == StudyRecord.study_instance_uid)
         .where(
             StudyRecord.patient_id == study.patient_id,
+            StudyRecord.tenant_id == tenant_id,
             ResultRecord.usecase_name == usecase_name,
             ResultRecord.is_latest == True,
+            ResultRecord.tenant_id == tenant_id,
             ResultRecord.id != current_result.id,
         )
         .order_by(ResultRecord.created_at.desc())
@@ -643,7 +689,7 @@ async def get_prior_comparison(
     from app.infrastructure.database.repositories import PgResultRepository
 
     result_service = ResultService(
-        result_repo=PgResultRepository(session),
+        result_repo=PgResultRepository(session, tenant_id=tenant_id),
         artifact_store=get_artifact_store(),
     )
     data = await result_service.compare_results(prior_result.id, current_result.id)
@@ -673,16 +719,13 @@ async def get_prior_comparison(
 @router.post("/urgency-scores")
 async def compute_urgency_scores(
     body: dict,
-    session: Annotated[AsyncSession, Depends(get_session)],
+    service: Annotated[AnalyticsService, Depends(get_analytics_service)],
 ):
     """Compute AI-based urgency scores for a list of study UIDs."""
     study_uids = body.get("study_uids", [])
     if not study_uids:
         return {"scores": []}
 
-    from app.application.analytics_service import AnalyticsService
-
-    service = AnalyticsService(session)
     scores = await service.compute_urgency_scores(study_uids)
     return {"scores": scores}
 
@@ -692,14 +735,22 @@ async def compute_urgency_scores(
 @router.post("/reset")
 async def reset_all_data(
     session: Annotated[AsyncSession, Depends(get_session)],
+    tenant_id: Annotated[str, Depends(request_tenant_id)],
+    request: Request,
     confirm: bool = False,
+    all_tenants: bool = False,
 ):
-    """DESTRUCTIVE — wipe all clinical data and return to a clean state.
+    """DESTRUCTIVE — wipe clinical data and return to a clean state.
+
+    Scoped to the CALLER's own tenant by default. Pass ?all_tenants=true for the
+    old global-wipe behavior, which now requires platform-admin — this used to wipe
+    every tenant's data unconditionally regardless of who called it, which is a
+    cross-tenant data-loss bug in a multi-tenant deployment.
 
     Clears:
       - studies, series (cascade: job_runs, results_index)
       - critical_alerts, review_queue, audit_log, share_links
-      - All MinIO artifacts
+      - MinIO artifacts for the affected studies (or the whole bucket, if all_tenants)
 
     Preserved (not touched):
       - users, tenants, routing rules, alert rules, retention policies,
@@ -712,9 +763,17 @@ async def reset_all_data(
             400,
             "Safety check: add ?confirm=true to execute this destructive operation.",
         )
+    if all_tenants and not getattr(request.state, "is_platform_admin", False):
+        raise HTTPException(
+            403,
+            "Wiping all tenants requires platform admin access — omit all_tenants "
+            "to reset your own tenant only.",
+        )
 
     import structlog as _structlog
     logger = _structlog.get_logger(__name__)
+
+    from sqlalchemy import select
 
     from app.infrastructure.database.models import (
         AuditLogRecord,
@@ -724,28 +783,52 @@ async def reset_all_data(
         StudyRecord,
     )
 
+    scope_tenant_id: str | None = None if all_tenants else tenant_id
     totals: dict[str, int] = {}
 
+    # Gather the affected studies' UIDs up front (needed to scope the MinIO cleanup
+    # below to just this tenant's artifacts when not wiping everything).
+    study_uid_stmt = select(StudyRecord.study_instance_uid)
+    if scope_tenant_id:
+        study_uid_stmt = study_uid_stmt.where(StudyRecord.tenant_id == scope_tenant_id)
+    affected_study_uids = [row[0] for row in (await session.execute(study_uid_stmt)).all()]
+
     # ── 1. Tables with no FK dependency on studies ──────────────────
-    r = await session.execute(delete(CriticalAlertRecord))
+    stmt = delete(CriticalAlertRecord)
+    if scope_tenant_id:
+        stmt = stmt.where(CriticalAlertRecord.tenant_id == scope_tenant_id)
+    r = await session.execute(stmt)
     totals["critical_alerts"] = r.rowcount
 
-    r = await session.execute(delete(ReviewQueueRecord))
+    stmt = delete(ReviewQueueRecord)
+    if scope_tenant_id:
+        stmt = stmt.where(ReviewQueueRecord.tenant_id == scope_tenant_id)
+    r = await session.execute(stmt)
     totals["review_queue"] = r.rowcount
 
-    r = await session.execute(delete(AuditLogRecord))
+    stmt = delete(AuditLogRecord)
+    if scope_tenant_id:
+        stmt = stmt.where(AuditLogRecord.tenant_id == scope_tenant_id)
+    r = await session.execute(stmt)
     totals["audit_log"] = r.rowcount
 
-    r = await session.execute(delete(ShareLinkRecord))
+    stmt = delete(ShareLinkRecord)
+    if scope_tenant_id:
+        stmt = stmt.where(ShareLinkRecord.tenant_id == scope_tenant_id)
+    r = await session.execute(stmt)
     totals["share_links"] = r.rowcount
 
     # ── 2. Studies — cascades to series, job_runs, results_index ────
-    r = await session.execute(delete(StudyRecord))
+    stmt = delete(StudyRecord)
+    if scope_tenant_id:
+        stmt = stmt.where(StudyRecord.tenant_id == scope_tenant_id)
+    r = await session.execute(stmt)
     totals["studies"] = r.rowcount
 
     await session.commit()
 
-    # ── 3. MinIO — remove every object in the artifact bucket ───────
+    # ── 3. MinIO — remove artifacts for the affected studies only (or the whole
+    # bucket when wiping every tenant) ───────────────────────────────
     totals["artifacts_deleted"] = 0
     totals["artifact_errors"] = 0
     try:
@@ -756,7 +839,14 @@ async def reset_all_data(
         def _bulk_delete() -> tuple[int, int]:
             from minio.deleteobjects import DeleteObject
 
-            objects = list(store._client.list_objects(store._bucket, recursive=True))
+            if scope_tenant_id:
+                objects = []
+                for uid in affected_study_uids:
+                    objects.extend(
+                        store._client.list_objects(store._bucket, prefix=f"{uid}/", recursive=True)
+                    )
+            else:
+                objects = list(store._client.list_objects(store._bucket, recursive=True))
             if not objects:
                 return 0, 0
             delete_gen = (DeleteObject(o.object_name) for o in objects)
@@ -770,5 +860,5 @@ async def reset_all_data(
         logger.warning("minio_reset_failed", error=str(exc))
         totals["artifact_errors"] = -1  # sentinel: MinIO itself unreachable
 
-    logger.info("data_reset_completed", totals=totals)
+    logger.info("data_reset_completed", totals=totals, tenant_id=scope_tenant_id or "ALL")
     return {"status": "ok", "cleared": totals}

@@ -21,12 +21,22 @@ export const ALL_PERMISSIONS = [
   "config.manage",
   "audit.view",
   "data.purge",
+  // Cross-tenant capability — NOT granted through any role in
+  // SYSTEM_ROLE_PERMISSIONS below. Gated on is_platform_admin instead (see
+  // lib/auth.tsx's can()), since platform-admin is orthogonal to a user's
+  // per-tenant role.
+  "tenant.manage",
 ] as const;
 
 export type Permission = (typeof ALL_PERMISSIONS)[number];
 
+// Excludes "tenant.manage" — role="admin" is a per-tenant role and must NOT imply
+// platform-admin; can() special-cases that one permission against is_platform_admin
+// instead of this table (see lib/auth.tsx).
+const TENANT_ROLE_PERMISSIONS = ALL_PERMISSIONS.filter((p) => p !== "tenant.manage");
+
 export const SYSTEM_ROLE_PERMISSIONS: Record<string, Permission[]> = {
-  admin: [...ALL_PERMISSIONS],
+  admin: [...TENANT_ROLE_PERMISSIONS],
   receptionist: ["patient.onboard", "study.view"],
   technician: ["job.manage", "job.run", "study.escalate", "study.upload", "study.view"],
   radiologist: [

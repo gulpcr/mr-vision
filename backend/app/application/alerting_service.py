@@ -70,11 +70,13 @@ class AlertingService:
             for r in result.scalars().all()
         ]
 
-    async def delete_rule(self, rule_id: str) -> bool:
+    async def delete_rule(self, rule_id: str, tenant_id: str | None = None) -> bool:
         from app.infrastructure.database.models import AlertRuleRecord
         from sqlalchemy import delete
 
         stmt = delete(AlertRuleRecord).where(AlertRuleRecord.id == rule_id)
+        if tenant_id:
+            stmt = stmt.where(AlertRuleRecord.tenant_id == tenant_id)
         result = await self._session.execute(stmt)
         await self._session.flush()
         return result.rowcount > 0
@@ -115,15 +117,20 @@ class AlertingService:
         return sent_count
 
     async def get_history(
-        self, rule_id: str | None = None, limit: int = 100
+        self, rule_id: str | None = None, limit: int = 100, tenant_id: str | None = None
     ) -> list[dict[str, Any]]:
-        from app.infrastructure.database.models import AlertHistoryRecord
+        from app.infrastructure.database.models import AlertHistoryRecord, AlertRuleRecord
 
         stmt = select(AlertHistoryRecord).order_by(
             AlertHistoryRecord.created_at.desc()
         ).limit(limit)
         if rule_id:
             stmt = stmt.where(AlertHistoryRecord.rule_id == rule_id)
+        if tenant_id:
+            # AlertHistoryRecord has no tenant_id of its own — scoped via its rule.
+            stmt = stmt.join(AlertRuleRecord, AlertHistoryRecord.rule_id == AlertRuleRecord.id).where(
+                AlertRuleRecord.tenant_id == tenant_id
+            )
         result = await self._session.execute(stmt)
         return [
             {
@@ -218,6 +225,7 @@ class AlertingService:
         summary: dict[str, Any],
         qa_flags: list[str],
         patient_id: str | None = None,
+        tenant_id: str | None = None,
     ) -> int:
         """Check webhook rules and critical finding rules against a pipeline result."""
         flat_measurements: dict[str, Any] = {}
@@ -244,6 +252,7 @@ class AlertingService:
                 result_id=result_id,
                 patient_id=patient_id,
                 findings=findings,
+                tenant_id=tenant_id,
             )
 
         return webhook_count + len(findings)
@@ -370,6 +379,7 @@ class AlertingService:
         result_id: str,
         patient_id: str | None,
         findings: list[dict[str, Any]],
+        tenant_id: str | None = None,
     ) -> None:
         from app.infrastructure.database.models import CriticalAlertRecord
 
@@ -389,6 +399,7 @@ class AlertingService:
                 details=finding.get("details", {}),
                 status="pending",
                 notification_channels=["websocket"],
+                tenant_id=tenant_id or "default",
             )
             self._session.add(record)
             new_alerts.append((alert_id, finding))
@@ -422,6 +433,7 @@ class AlertingService:
         patient_id: str | None = None,
         limit: int = 100,
         offset: int = 0,
+        tenant_id: str | None = None,
     ) -> list[dict[str, Any]]:
         from app.infrastructure.database.models import CriticalAlertRecord
         from sqlalchemy import desc
@@ -435,26 +447,34 @@ class AlertingService:
             stmt = stmt.where(CriticalAlertRecord.usecase_name == usecase_name)
         if patient_id:
             stmt = stmt.where(CriticalAlertRecord.patient_id == patient_id)
+        if tenant_id:
+            stmt = stmt.where(CriticalAlertRecord.tenant_id == tenant_id)
         stmt = stmt.offset(offset).limit(limit)
 
         result = await self._session.execute(stmt)
         return [self._alert_to_dict(r) for r in result.scalars().all()]
 
-    async def get_critical_alert(self, alert_id: str) -> dict[str, Any] | None:
+    async def get_critical_alert(
+        self, alert_id: str, tenant_id: str | None = None
+    ) -> dict[str, Any] | None:
         from app.infrastructure.database.models import CriticalAlertRecord
 
         stmt = select(CriticalAlertRecord).where(CriticalAlertRecord.id == alert_id)
+        if tenant_id:
+            stmt = stmt.where(CriticalAlertRecord.tenant_id == tenant_id)
         result = await self._session.execute(stmt)
         record = result.scalar_one_or_none()
         return self._alert_to_dict(record) if record else None
 
     async def acknowledge_critical_alert(
-        self, alert_id: str, acknowledged_by: str
+        self, alert_id: str, acknowledged_by: str, tenant_id: str | None = None
     ) -> dict[str, Any] | None:
         from app.infrastructure.database.models import CriticalAlertRecord
         from app.domain.models import utcnow
 
         stmt = select(CriticalAlertRecord).where(CriticalAlertRecord.id == alert_id)
+        if tenant_id:
+            stmt = stmt.where(CriticalAlertRecord.tenant_id == tenant_id)
         result = await self._session.execute(stmt)
         record = result.scalar_one_or_none()
         if not record:
@@ -474,6 +494,8 @@ class AlertingService:
             CriticalAlertRecord.severity,
             sqlfunc.count().label("cnt"),
         ).group_by(CriticalAlertRecord.status, CriticalAlertRecord.severity)
+        if tenant_id:
+            stmt = stmt.where(CriticalAlertRecord.tenant_id == tenant_id)
         result = await self._session.execute(stmt)
         rows = result.all()
 

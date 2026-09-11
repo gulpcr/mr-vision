@@ -18,6 +18,7 @@ import {
   Wrench,
   UserPlus,
   Radio,
+  Building2,
   type LucideIcon,
 } from "lucide-react";
 import type { Permission } from "@/lib/permissions";
@@ -56,4 +57,5 @@ export const NAV_ITEMS: NavItem[] = [
   { href: "/settings", label: "Settings", icon: Settings },
   { href: "/admin/users", label: "Users", icon: Users, requiredPermission: "user.manage" },
   { href: "/admin/tools", label: "Admin Tools", icon: Wrench, requiredPermission: "data.purge" },
+  { href: "/admin/tenants", label: "Tenants", icon: Building2, requiredPermission: "tenant.manage" },
 ];

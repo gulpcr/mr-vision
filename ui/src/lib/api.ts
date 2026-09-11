@@ -341,6 +341,56 @@ export interface UserResponse {
   role: string;
   tenant_id: string;
   is_active: boolean;
+  is_platform_admin?: boolean;
+  is_platform_operator?: boolean;
+  totp_enabled?: boolean;
+  created_at: string | null;
+}
+
+export interface Tenant {
+  id: string;
+  name: string;
+  slug: string;
+  is_active: boolean;
+  status: string;
+  plan: string;
+  features: string[];
+  created_at: string | null;
+}
+
+export interface CreatedTenant extends Tenant {
+  admin_username: string;
+  admin_temp_password: string;
+}
+
+export interface TenantApiKey {
+  id: string;
+  tenant_id: string;
+  name: string;
+  prefix: string;
+  scopes: string[];
+  expires_at: string | null;
+  is_active: boolean;
+  last_used_at: string | null;
+  revoked_at: string | null;
+  created_at: string | null;
+}
+
+export interface CreatedTenantApiKey extends TenantApiKey {
+  key: string;
+}
+
+export interface TenantUser {
+  id: string;
+  username: string;
+  email: string;
+  full_name: string;
+  role: string;
+  tenant_id: string;
+  is_active: boolean;
+  is_platform_admin: boolean;
+  is_platform_operator: boolean;
+  totp_enabled: boolean;
   created_at: string | null;
 }
 
@@ -670,22 +720,122 @@ export const api = {
   },
   auth: {
     login: (username: string, password: string) =>
-      fetchAPI<{ access_token: string; token_type: string; user_id: string; username: string; role: string; tenant_id: string }>(
-        "/auth/login",
-        { method: "POST", body: JSON.stringify({ username, password }) }
-      ),
+      fetchAPI<{
+        mfa_required: boolean;
+        mfa_token: string | null;
+        access_token: string | null;
+        token_type: string;
+        user_id: string | null;
+        username: string | null;
+        role: string | null;
+        tenant_id: string | null;
+      }>("/auth/login", { method: "POST", body: JSON.stringify({ username, password }) }),
+    me: () => fetchAPI<UserResponse & { tenant_slug?: string }>("/auth/me"),
     register: (data: { username: string; email: string; password: string; full_name?: string }) =>
       fetchAPI<UserResponse>("/auth/register", {
         method: "POST",
         body: JSON.stringify(data),
       }),
-    listUsers: () => fetchAPI<UserResponse[]>("/auth/users"),
+    listUsers: (tenantId?: string) => {
+      const qs = tenantId ? `?${new URLSearchParams({ tenant_id: tenantId }).toString()}` : "";
+      return fetchAPI<TenantUser[]>(`/auth/users${qs}`);
+    },
     updateUserRole: (userId: string, role: string) =>
       fetchAPI(`/auth/users/${userId}/role?${new URLSearchParams({ role }).toString()}`, {
         method: "PUT",
       }),
     deactivateUser: (userId: string) =>
       fetchAPI(`/auth/users/${userId}`, { method: "DELETE" }),
+    updatePlatformAdmin: (userId: string, isPlatformAdmin: boolean) =>
+      fetchAPI(`/auth/users/${userId}/platform-admin`, {
+        method: "PUT",
+        body: JSON.stringify({ is_platform_admin: isPlatformAdmin }),
+      }),
+    updatePlatformOperator: (userId: string, isPlatformOperator: boolean) =>
+      fetchAPI(`/auth/users/${userId}/platform-operator`, {
+        method: "PUT",
+        body: JSON.stringify({ is_platform_operator: isPlatformOperator }),
+      }),
+    impersonate: (userId: string) =>
+      fetchAPI<{
+        access_token: string;
+        token_type: string;
+        user_id: string;
+        username: string;
+        role: string;
+        tenant_id: string;
+        expires_in_minutes: number;
+      }>(`/auth/users/${userId}/impersonate`, { method: "POST" }),
+    stopImpersonation: () => fetchAPI<{ status: string }>("/auth/impersonate/stop", { method: "POST" }),
+    mfaVerify: (mfaToken: string, code: string) =>
+      fetchAPI<{
+        mfa_required: boolean;
+        access_token: string | null;
+        token_type: string;
+        user_id: string | null;
+        username: string | null;
+        role: string | null;
+        tenant_id: string | null;
+      }>("/auth/mfa/verify", {
+        method: "POST",
+        body: JSON.stringify({ mfa_token: mfaToken, code }),
+      }),
+    mfaEnroll: () =>
+      fetchAPI<{ secret: string; otpauth_uri: string; qr_code_data_uri: string }>("/auth/mfa/enroll", {
+        method: "POST",
+      }),
+    mfaConfirm: (code: string) =>
+      fetchAPI<{ recovery_codes: string[] }>("/auth/mfa/confirm", {
+        method: "POST",
+        body: JSON.stringify({ code }),
+      }),
+    mfaDisable: (code: string) =>
+      fetchAPI<{ status: string }>("/auth/mfa/disable", {
+        method: "POST",
+        body: JSON.stringify({ code }),
+      }),
+  },
+  tenants: {
+    list: () => fetchAPI<Tenant[]>("/admin/tenants"),
+    get: (id: string) => fetchAPI<Tenant>(`/admin/tenants/${id}`),
+    create: (data: {
+      name: string;
+      slug: string;
+      plan?: string;
+      features?: string[];
+      admin_username: string;
+      admin_email: string;
+      admin_full_name?: string;
+    }) => fetchAPI<CreatedTenant>("/admin/tenants", { method: "POST", body: JSON.stringify(data) }),
+    updatePlan: (id: string, plan: string) =>
+      fetchAPI<Tenant>(`/admin/tenants/${id}/plan`, { method: "PUT", body: JSON.stringify({ plan }) }),
+    updateFeatures: (id: string, features: string[]) =>
+      fetchAPI<Tenant>(`/admin/tenants/${id}/features`, {
+        method: "PUT",
+        body: JSON.stringify({ features }),
+      }),
+    updateStatus: (id: string, status: string) =>
+      fetchAPI<Tenant>(`/admin/tenants/${id}/status`, { method: "PUT", body: JSON.stringify({ status }) }),
+  },
+  tenantApiKeys: {
+    list: (tenantId: string) => fetchAPI<TenantApiKey[]>(`/admin/tenants/${tenantId}/api-keys`),
+    create: (tenantId: string, data: { name: string; scopes: string[]; expires_at?: string }) =>
+      fetchAPI<CreatedTenantApiKey>(`/admin/tenants/${tenantId}/api-keys`, {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    revoke: (tenantId: string, keyId: string) =>
+      fetchAPI<TenantApiKey>(`/admin/tenants/${tenantId}/api-keys/${keyId}`, { method: "DELETE" }),
+  },
+  plans: {
+    list: () => fetchAPI<Record<string, string[]>>("/admin/plans"),
+    getFeatures: (planName: string) =>
+      fetchAPI<{ plan_name: string; features: string[] }>(`/admin/plans/${planName}/features`),
+    setFeatures: (planName: string, features: string[]) =>
+      fetchAPI<{ plan_name: string; features: string[] }>(`/admin/plans/${planName}/features`, {
+        method: "PUT",
+        body: JSON.stringify({ features }),
+      }),
   },
   audit: {
     list: (params?: Record<string, string>) => {

@@ -7,10 +7,13 @@ from app.domain.hl7_models import ParsedMessage, ProcessResult
 from app.domain.models import (
     AuditEntry,
     JobRun,
+    PendingStudyTenant,
     Result,
     RoutingRule,
     Series,
     Study,
+    Tenant,
+    TenantApiKey,
     UseCase,
 )
 
@@ -115,6 +118,62 @@ class AuditRepository(abc.ABC):
     async def list_by_entity(
         self, entity_type: str, entity_id: str, limit: int = 100
     ) -> list[AuditEntry]: ...
+
+
+class TenantRepository(abc.ABC):
+    @abc.abstractmethod
+    async def save(self, tenant: Tenant) -> Tenant: ...
+
+    @abc.abstractmethod
+    async def get_by_id(self, tenant_id: str) -> Tenant | None: ...
+
+    @abc.abstractmethod
+    async def get_by_slug(self, slug: str) -> Tenant | None: ...
+
+    @abc.abstractmethod
+    async def list_all(self) -> list[Tenant]: ...
+
+    @abc.abstractmethod
+    async def update(self, tenant: Tenant) -> Tenant: ...
+
+
+class TenantApiKeyRepository(abc.ABC):
+    @abc.abstractmethod
+    async def save(self, key: TenantApiKey) -> TenantApiKey: ...
+
+    @abc.abstractmethod
+    async def get_by_id(self, key_id: str) -> TenantApiKey | None: ...
+
+    @abc.abstractmethod
+    async def get_by_hash(self, key_hash: str) -> TenantApiKey | None: ...
+
+    @abc.abstractmethod
+    async def list_by_tenant(self, tenant_id: str) -> list[TenantApiKey]: ...
+
+    @abc.abstractmethod
+    async def update(self, key: TenantApiKey) -> TenantApiKey: ...
+
+
+class PendingStudyTenantRepository(abc.ABC):
+    @abc.abstractmethod
+    async def get_by_study_uid(self, study_instance_uid: str) -> PendingStudyTenant | None: ...
+
+    @abc.abstractmethod
+    async def register(self, mapping: PendingStudyTenant) -> PendingStudyTenant: ...
+
+    @abc.abstractmethod
+    async def consume(self, study_instance_uid: str) -> None: ...
+
+
+class PlanFeatureRepository(abc.ABC):
+    @abc.abstractmethod
+    async def list_by_plan(self, plan_name: str) -> list[str]: ...
+
+    @abc.abstractmethod
+    async def set_plan_features(self, plan_name: str, feature_keys: list[str]) -> None: ...
+
+    @abc.abstractmethod
+    async def list_all_plans(self) -> dict[str, list[str]]: ...
 
 
 class ArtifactStore(abc.ABC):

@@ -25,6 +25,7 @@ from app.application.ct_report_regions import CT_REPORT_USECASES as _CT_REPORT_U
 from app.infrastructure.orthanc.client import OrthancPACSClient
 from app.infrastructure.queue.celery_app import celery_app
 from app.infrastructure.storage.client import MinIOArtifactStore
+from app.infrastructure.tenant.context import TenantContext, TenantContextService
 
 logger = structlog.get_logger(__name__)
 
@@ -178,17 +179,17 @@ def _report_context_for_study(session: Session, study_uid: str) -> dict[str, Any
     return ctx
 
 
-def _save_result(session: Session, result_data: dict[str, Any]):
-    # Mark previous latest as not-latest
-    existing = (
-        session.query(ResultRecord)
-        .filter(
-            ResultRecord.study_instance_uid == result_data["study_instance_uid"],
-            ResultRecord.usecase_name == result_data["usecase_name"],
-            ResultRecord.is_latest == True,
-        )
-        .first()
+def _save_result(session: Session, result_data: dict[str, Any], tenant_id: str | None = None):
+    # Mark previous latest as not-latest (scoped, so this can never flip another
+    # tenant's "latest" result for the same study/usecase pair).
+    existing_stmt = session.query(ResultRecord).filter(
+        ResultRecord.study_instance_uid == result_data["study_instance_uid"],
+        ResultRecord.usecase_name == result_data["usecase_name"],
+        ResultRecord.is_latest == True,
     )
+    if tenant_id:
+        existing_stmt = existing_stmt.filter(ResultRecord.tenant_id == tenant_id)
+    existing = existing_stmt.first()
     next_version = 1
     if existing:
         next_version = existing.version + 1
@@ -197,6 +198,7 @@ def _save_result(session: Session, result_data: dict[str, Any]):
     record = ResultRecord(
         id=result_data["id"],
         study_instance_uid=result_data["study_instance_uid"],
+        tenant_id=tenant_id or "default",
         usecase_name=result_data["usecase_name"],
         job_id=result_data["job_id"],
         summary=result_data["summary"],
@@ -213,8 +215,43 @@ def _save_result(session: Session, result_data: dict[str, Any]):
     session.commit()
 
 
-def _write_audit(session: Session, action: str, entity_type: str, entity_id: str, details: dict):
+def _write_audit(
+    session: Session,
+    action: str,
+    entity_type: str,
+    entity_id: str,
+    details: dict,
+    tenant_id: str | None = None,
+):
     import uuid
+
+    from app.config import derive_secret
+    from app.domain.audit_chain import compute_audit_row_hash
+
+    resolved_tenant_id = tenant_id or "default"
+    secret = derive_secret("audit-chain-v1")
+
+    tail = (
+        session.query(AuditLogRecord.seq, AuditLogRecord.row_hash)
+        .filter(AuditLogRecord.seq.isnot(None))
+        .order_by(AuditLogRecord.seq.desc())
+        .with_for_update()
+        .first()
+    )
+    next_seq = (tail.seq + 1) if tail else 1
+    prev_hash = tail.row_hash if tail else None
+
+    row_hash = compute_audit_row_hash(
+        secret=secret,
+        seq=next_seq,
+        action=action,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        actor="celery_worker",
+        details=details,
+        tenant_id=resolved_tenant_id,
+        prev_hash=prev_hash,
+    )
 
     record = AuditLogRecord(
         id=str(uuid.uuid4()),
@@ -223,6 +260,10 @@ def _write_audit(session: Session, action: str, entity_type: str, entity_id: str
         entity_id=entity_id,
         actor="celery_worker",
         details=details,
+        tenant_id=resolved_tenant_id,
+        seq=next_seq,
+        prev_hash=prev_hash,
+        row_hash=row_hash,
     )
     session.add(record)
     session.commit()
@@ -256,6 +297,7 @@ def _run_post_result_hooks(
                         summary=result_data.get("summary", {}),
                         qa_flags=result_data.get("qa_flags", []),
                         patient_id=study.patient_id,
+                        tenant_id=study.tenant_id,
                     )
                 except Exception as e:
                     logger.warning("alert_hook_failed", error=str(e))
@@ -272,6 +314,7 @@ def _run_post_result_hooks(
                             usecase_name=usecase_name,
                             result_id=result_id,
                             confidence_score=confidence,
+                            tenant_id=study.tenant_id,
                         )
                     except Exception as e:
                         logger.warning("review_queue_hook_failed", error=str(e))
@@ -281,14 +324,18 @@ def _run_post_result_hooks(
                     try:
                         from app.infrastructure.database.models import ResultRecord, StudyRecord
                         from sqlalchemy import select as _select
-                        # Find prior results for same patient + usecase
+                        # Find prior results for same patient + usecase. patient_id is
+                        # only unique within a tenant, so the tenant_id filter here is
+                        # load-bearing, not cosmetic.
                         prior_stmt = (
                             _select(ResultRecord)
                             .join(StudyRecord, ResultRecord.study_instance_uid == StudyRecord.study_instance_uid)
                             .where(
                                 StudyRecord.patient_id == study.patient_id,
+                                StudyRecord.tenant_id == study.tenant_id,
                                 ResultRecord.usecase_name == usecase_name,
                                 ResultRecord.is_latest == True,
+                                ResultRecord.tenant_id == study.tenant_id,
                                 ResultRecord.id != result_id,
                             )
                             .order_by(ResultRecord.created_at.desc())
@@ -306,6 +353,7 @@ def _run_post_result_hooks(
                                 entity_type="result",
                                 entity_id=result_id,
                                 actor="celery_worker",
+                                tenant_id=study.tenant_id,
                                 details={
                                     "prior_result_id": prior_result.id,
                                     "patient_id": study.patient_id,
@@ -373,15 +421,16 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
 
     session = _get_sync_session()
     worker_id = self.request.hostname or "unknown"
+    tenant_token = None
 
     try:
         # Guard: study must still exist (handles post-reset orphaned queue entries)
-        study_exists = (
+        study_record = (
             session.query(StudyRecord)
             .filter(StudyRecord.study_instance_uid == study_instance_uid)
             .first()
-        ) is not None
-        if not study_exists:
+        )
+        if study_record is None:
             logger.warning(
                 "study_not_found_aborting_job",
                 job_id=job_id,
@@ -393,6 +442,16 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
                 error="StudyNotFound",
             )
             return {"job_id": job_id, "status": "failed", "reason": "study_not_found"}
+
+        # Bind the study's tenant to this worker fiber before preprocessing so the
+        # before_flush containment hook (infrastructure/database/session.py) stamps
+        # every record this task writes with the correct tenant_id. The plan/features
+        # fields are irrelevant here (this is a Celery task, not an HTTP request with a
+        # subdomain to resolve) — only tenant_id is read by the flush hook.
+        tenant_id = study_record.tenant_id or get_settings().default_tenant_id
+        tenant_token = TenantContextService.set_context(
+            TenantContext(tenant_id=tenant_id, slug=tenant_id, plan="", features=[])
+        )
 
         # Check if cancelled before starting
         if _is_job_cancelled(session, job_id):
@@ -469,6 +528,7 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
         ext = DICOMwebClient.extract_tag_value
         study_domain = Study(
             study_instance_uid=study_instance_uid,
+            tenant_id=tenant_id,
             patient_id=ext(study_metadata, "PatientID"),
             patient_name=ext(study_metadata, "PatientName"),
             study_description=ext(study_metadata, "StudyDescription"),
@@ -610,7 +670,9 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
                     from app.infrastructure.database.models import StudyRecord as _StudyRecord
                     from app.infrastructure.llm.gemini_client import GeminiClient
 
-                    # Fetch prior results for same patient + usecase via sync session
+                    # Fetch prior results for same patient + usecase via sync session.
+                    # patient_id is only unique within a tenant, so the tenant_id filter
+                    # here is load-bearing, not cosmetic.
                     prior_records = (
                         session.query(ResultRecord)
                         .join(
@@ -619,8 +681,10 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
                         )
                         .filter(
                             _StudyRecord.patient_id == study_domain.patient_id,
+                            _StudyRecord.tenant_id == tenant_id,
                             ResultRecord.usecase_name == usecase_name,
                             ResultRecord.is_latest == True,  # noqa: E712
+                            ResultRecord.tenant_id == tenant_id,
                             ResultRecord.study_instance_uid != study_instance_uid,
                         )
                         .order_by(ResultRecord.created_at.asc())
@@ -1355,7 +1419,7 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
                 "artifacts": artifact_records,
             }
 
-            _save_result(session, result_data)
+            _save_result(session, result_data, tenant_id=tenant_id)
 
             # ── DICOM SR/Seg Export (Phase 7) ─────────────────────────────────
             if settings.dicom_sr_enabled or settings.dicom_seg_enabled:
@@ -1405,6 +1469,7 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
         _write_audit(
             session, AuditAction.JOB_COMPLETED.value, "job", job_id,
             {"study_uid": study_instance_uid, "usecase": usecase_name, "result_id": result_id},
+            tenant_id=tenant_id,
         )
 
         # Prometheus metrics
@@ -1492,6 +1557,7 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
             _write_audit(
                 session, AuditAction.JOB_FAILED.value, "job", job_id,
                 {"study_uid": study_instance_uid, "usecase": usecase_name, "error": str(exc)[:1000]},
+                tenant_id=locals().get("tenant_id"),
             )
 
             # Prometheus metrics
@@ -1513,6 +1579,8 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
         except Exception:
             pass
         session.close()
+        if tenant_token is not None:
+            TenantContextService.reset_context(tenant_token)
 
 
 @celery_app.task(
@@ -1590,6 +1658,7 @@ def process_batch_item(
         from app.application.study_service import StudyService
         from app.infrastructure.database.repositories import (
             PgAuditRepository,
+            PgPendingStudyTenantRepository,
             PgSeriesRepository,
             PgStudyRepository,
         )
@@ -1605,6 +1674,8 @@ def process_batch_item(
                     audit_repo=PgAuditRepository(session),
                     pacs_client=OrthancPACSClient(),
                     dicomweb_client=DICOMwebClient(),
+                    pending_tenant_repo=PgPendingStudyTenantRepository(session),
+                    unscoped_study_repo=PgStudyRepository(session, tenant_id=None),
                 )
 
                 await study_service.ingest_study(study_instance_uid)

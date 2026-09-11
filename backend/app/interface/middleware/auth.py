@@ -16,7 +16,11 @@ PUBLIC_PATHS = frozenset(
 # Internal paths called by Orthanc (within Docker network)
 INTERNAL_PATHS = frozenset({"/api/orthanc/notify-stable-study"})
 # Auth paths that must be public
-AUTH_PATHS = frozenset({"/api/auth/login", "/api/auth/register"})
+AUTH_PATHS = frozenset({"/api/auth/login", "/api/auth/register", "/api/auth/mfa/verify"})
+# Routes that authenticate themselves (a per-tenant API key, not a platform JWT or the
+# global admin api_key) — they must bypass this middleware's own auth entirely rather
+# than have it reject/misinterpret their bearer token.
+SELF_AUTHENTICATING_PATHS = frozenset({"/api/dicom/upload"})
 
 
 class RBACMiddleware(BaseHTTPMiddleware):
@@ -39,6 +43,7 @@ class RBACMiddleware(BaseHTTPMiddleware):
             path in PUBLIC_PATHS
             or path in INTERNAL_PATHS
             or path in AUTH_PATHS
+            or path in SELF_AUTHENTICATING_PATHS
             or path.startswith("/api/dicomweb/")
             or request.method == "OPTIONS"
         ):
@@ -46,6 +51,9 @@ class RBACMiddleware(BaseHTTPMiddleware):
             request.state.user_id = ""
             request.state.roles = ["viewer"]
             request.state.tenant_id = "default"
+            request.state.is_platform_admin = False
+            request.state.is_platform_operator = False
+            request.state.impersonated_by = None
             if path in INTERNAL_PATHS:
                 request.state.user = "orthanc_internal"
                 request.state.roles = ["system"]
@@ -60,6 +68,9 @@ class RBACMiddleware(BaseHTTPMiddleware):
             request.state.user_id = ""
             request.state.roles = ["admin"]
             request.state.tenant_id = "default"
+            request.state.is_platform_admin = True
+            request.state.is_platform_operator = True
+            request.state.impersonated_by = None
             return await call_next(request)
 
         if auth_mode == "jwt":
@@ -87,10 +98,38 @@ class RBACMiddleware(BaseHTTPMiddleware):
                 content={"detail": "Invalid or expired token"},
             )
 
+        if payload.get("purpose") == "mfa_pending":
+            # A validly-signed token, but scoped to nothing except completing login at
+            # POST /auth/mfa/verify (which reads it from the request BODY, never this
+            # header) — it carries no role/username claims, so without this check it
+            # would silently authenticate as a default-fallback "viewer" for up to its
+            # 5-minute lifetime, letting a leaked pre-MFA token make real API calls.
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "MFA verification required before this token can be used"},
+            )
+
+        impersonated_by = payload.get("impersonated_by")
+        if impersonated_by:
+            # Only impersonation tokens pay the Redis round-trip — the hot path for
+            # ordinary tokens stays a pure in-memory JWT verify.
+            from app.infrastructure.ratelimit.impersonation_blocklist import is_blocked
+            jti = payload.get("jti", "")
+            if jti and await is_blocked(jti):
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "This impersonation session has been ended"},
+                )
+
         request.state.user = payload.get("username", "unknown")
         request.state.user_id = payload.get("sub", "")
         request.state.roles = [payload.get("role", "viewer")]
         request.state.tenant_id = payload.get("tenant_id", "default")
+        request.state.is_platform_admin = bool(payload.get("is_platform_admin", False))
+        request.state.is_platform_operator = bool(payload.get("is_platform_operator", False))
+        request.state.impersonated_by = impersonated_by
+        request.state.jti = payload.get("jti")
+        request.state.token_exp = payload.get("exp")
 
         # Check role-based access for admin paths
         if request.url.path.startswith("/api/admin"):
@@ -120,12 +159,18 @@ class RBACMiddleware(BaseHTTPMiddleware):
             request.state.user_id = ""
             request.state.roles = ["admin"]
             request.state.tenant_id = "default"
+            request.state.is_platform_admin = True
+            request.state.is_platform_operator = True
+            request.state.impersonated_by = None
         else:
             # No API key configured — development mode, grant full access
             request.state.user = "system"
             request.state.user_id = ""
             request.state.roles = ["admin"]
             request.state.tenant_id = "default"
+            request.state.is_platform_admin = True
+            request.state.is_platform_operator = True
+            request.state.impersonated_by = None
 
         return await call_next(request)
 
@@ -161,6 +206,36 @@ def require_role(*allowed_roles: str):
         return request.state.user
 
     return Depends(check_role)
+
+
+async def require_platform_admin(request: Request) -> str:
+    """Cross-tenant admin surfaces (tenant lifecycle, tenant API keys, plan features)
+    require this — the ordinary "role=='admin'" check RBACMiddleware already applies
+    to /api/admin/* is per-tenant, so any tenant's own admin user would otherwise
+    satisfy it for every OTHER tenant too. This is a distinct claim, granted only by
+    an explicit platform-admin flag (see AuthService.set_platform_admin), not any
+    tenant role.
+    """
+    from fastapi import HTTPException
+
+    if not getattr(request.state, "is_platform_admin", False):
+        raise HTTPException(status_code=403, detail="Platform admin access required")
+    return getattr(request.state, "user", "unknown")
+
+
+async def require_platform_operator(request: Request) -> str:
+    """Gates impersonation — a platform admin is implicitly also an operator (full
+    access includes the more limited operator capability), but a plain operator
+    cannot manage tenant lifecycle, promote/demote admins, or wipe all-tenant data.
+    """
+    from fastapi import HTTPException
+
+    if not (
+        getattr(request.state, "is_platform_admin", False)
+        or getattr(request.state, "is_platform_operator", False)
+    ):
+        raise HTTPException(status_code=403, detail="Platform operator access required")
+    return getattr(request.state, "user", "unknown")
 
 
 def require_permission(permission: str):

@@ -7,7 +7,7 @@ from fastapi.responses import StreamingResponse
 
 from app.application.job_orchestrator import JobOrchestrator
 from app.infrastructure.database.repositories import PgJobRepository
-from app.interface.api.dependencies import get_job_orchestrator, get_job_repo
+from app.interface.api.dependencies import get_job_orchestrator, get_job_repo, tenant_has_usecase_access
 from app.interface.schemas.job import CreateJobRequest, JobListResponse, JobResponse
 
 router = APIRouter(tags=["jobs"])
@@ -19,6 +19,16 @@ async def create_jobs(
     body: CreateJobRequest,
     orchestrator: Annotated[JobOrchestrator, Depends(get_job_orchestrator)],
 ):
+    # Only gates an explicit usecase_names selection — auto-routing (usecase_names
+    # omitted) is left to the routing engine's own candidate list. No-ops entirely
+    # when multi_tenant_enabled is off (tenant_has_usecase_access always True then).
+    if body.usecase_names:
+        locked = [n for n in body.usecase_names if not tenant_has_usecase_access(n)]
+        if locked:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Feature package disabled under your subscription layout: {', '.join(locked)}",
+            )
     try:
         jobs = await orchestrator.create_jobs_for_study(
             study_instance_uid=study_uid,

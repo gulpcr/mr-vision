@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.interface.api.dependencies import get_session as get_async_session
+from app.interface.api.dependencies import get_session as get_async_session, request_tenant_id
 
 logger = structlog.get_logger(__name__)
 
@@ -20,6 +20,7 @@ class AcknowledgeRequest(BaseModel):
 
 @router.get("")
 async def list_critical_alerts(
+    tenant_id: Annotated[str, Depends(request_tenant_id)],
     status: str | None = Query(None, description="pending|acknowledged|escalated|resolved"),
     severity: str | None = Query(None, description="CRITICAL|WARNING"),
     usecase_name: str | None = Query(None),
@@ -38,29 +39,32 @@ async def list_critical_alerts(
         patient_id=patient_id,
         limit=limit,
         offset=offset,
+        tenant_id=tenant_id,
     )
     return {"alerts": alerts, "count": len(alerts)}
 
 
 @router.get("/stats")
 async def get_critical_alert_stats(
+    tenant_id: Annotated[str, Depends(request_tenant_id)],
     session: AsyncSession = Depends(get_async_session),
 ) -> dict[str, Any]:
     from app.application.alerting_service import AlertingService
 
     svc = AlertingService(session)
-    return await svc.get_critical_alert_stats()
+    return await svc.get_critical_alert_stats(tenant_id=tenant_id)
 
 
 @router.get("/{alert_id}")
 async def get_critical_alert(
     alert_id: str,
+    tenant_id: Annotated[str, Depends(request_tenant_id)],
     session: AsyncSession = Depends(get_async_session),
 ) -> dict[str, Any]:
     from app.application.alerting_service import AlertingService
 
     svc = AlertingService(session)
-    alert = await svc.get_critical_alert(alert_id)
+    alert = await svc.get_critical_alert(alert_id, tenant_id=tenant_id)
     if not alert:
         raise HTTPException(status_code=404, detail="Alert not found")
     return alert
@@ -70,12 +74,13 @@ async def get_critical_alert(
 async def acknowledge_critical_alert(
     alert_id: str,
     body: AcknowledgeRequest,
+    tenant_id: Annotated[str, Depends(request_tenant_id)],
     session: AsyncSession = Depends(get_async_session),
 ) -> dict[str, Any]:
     from app.application.alerting_service import AlertingService
 
     svc = AlertingService(session)
-    alert = await svc.acknowledge_critical_alert(alert_id, body.acknowledged_by)
+    alert = await svc.acknowledge_critical_alert(alert_id, body.acknowledged_by, tenant_id=tenant_id)
     if not alert:
         raise HTTPException(status_code=404, detail="Alert not found")
     await session.commit()

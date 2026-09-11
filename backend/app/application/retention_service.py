@@ -70,10 +70,12 @@ class RetentionService:
             for r in result.scalars().all()
         ]
 
-    async def delete_policy(self, policy_id: str) -> bool:
+    async def delete_policy(self, policy_id: str, tenant_id: str | None = None) -> bool:
         from app.infrastructure.database.models import RetentionPolicyRecord
 
         stmt = delete(RetentionPolicyRecord).where(RetentionPolicyRecord.id == policy_id)
+        if tenant_id:
+            stmt = stmt.where(RetentionPolicyRecord.tenant_id == tenant_id)
         result = await self._session.execute(stmt)
         await self._session.flush()
         return result.rowcount > 0
