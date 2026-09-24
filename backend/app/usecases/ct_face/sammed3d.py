@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""SAM-Med3D promptable segmentation → tumour dimensions (mm), for abdomen_ct.
+"""SAM-Med3D promptable segmentation → tumour dimensions (mm), for ct_face.
 
 Thin per-use-case shim: the actual model (a lazy singleton, kept resident on the GPU
 for the life of the worker process) and inference code live in

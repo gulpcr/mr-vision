@@ -17,7 +17,7 @@ They are used two ways by the Celery hook:
 
 Age-aware where norms differ (paediatric vs adult); measurements are always surfaced,
 flags are conservative and labelled AI-estimated. Reuses the same cached TotalSeg mask
-as ``measurement.py`` (``working_dir/abdomen_measure_seg/organs.nii.gz``). Non-blocking:
+as ``measurement.py`` (``working_dir/totalseg_cache/organs.nii.gz``). Non-blocking:
 returns None on any failure so the report simply omits the measurements.
 """
 
@@ -49,9 +49,12 @@ def _label_index_map() -> dict[str, int]:
 
 
 def _run_totalseg_ml(volume_path: str, working_dir: str) -> str | None:
-    """Path to the multilabel TotalSeg mask (shared cache with measurement.py)."""
-    import subprocess
+    """Path to the multilabel TotalSeg mask (shared cache with measurement.py).
 
+    Delegates to the shared, persistent predictor in ``infrastructure.ml.totalseg_engine``
+    instead of shelling out to the CLI — the model loads once per worker process and is
+    reused here.
+    """
     try:
         import torch
 
@@ -59,26 +62,12 @@ def _run_totalseg_ml(volume_path: str, working_dir: str) -> str | None:
     except Exception:
         device = "cpu"
 
-    out_dir = os.path.join(working_dir, "abdomen_measure_seg")
+    from app.infrastructure.ml.totalseg_engine import ensure_segmentation
+
+    out_dir = os.path.join(working_dir, "totalseg_cache")
     os.makedirs(out_dir, exist_ok=True)
     out = os.path.join(out_dir, "organs.nii.gz")
-    if not os.path.exists(out):  # cache: TotalSeg is the slow step; measurement reuses it
-        cmd = [
-            "TotalSegmentator", "-i", str(volume_path), "-o", out,
-            "-ta", "total", "--ml", "--fast", "-d", device,
-        ]
-        try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
-        except Exception as exc:
-            logger.warning("organ_grounding_totalseg_failed", error=str(exc))
-            return None
-        if proc.returncode != 0 or not os.path.exists(out):
-            logger.warning(
-                "organ_grounding_totalseg_rc", rc=proc.returncode,
-                stderr=(proc.stderr or "")[-300:],
-            )
-            return None
-    return out
+    return ensure_segmentation(volume_path, out, device=device)
 
 
 def analyze_organs(

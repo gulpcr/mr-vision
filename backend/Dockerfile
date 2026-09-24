@@ -90,4 +90,4 @@ FROM gpu-base AS worker
 RUN chmod +x docker/select-healthy-gpu.sh
 ENTRYPOINT ["docker/select-healthy-gpu.sh"]
 CMD ["celery", "-A", "app.infrastructure.queue.celery_app:celery_app", "worker", \
-     "--loglevel=info", "--concurrency=2", "-Q", "mri_inference"]
+     "--loglevel=info", "--pool=threads", "--concurrency=4", "-Q", "mri_inference"]

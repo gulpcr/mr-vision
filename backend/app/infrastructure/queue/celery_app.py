@@ -1,8 +1,25 @@
 from __future__ import annotations
 
+import multiprocessing
+
 from celery import Celery
 
 from app.config import get_settings
+
+# The worker pool is --pool=threads (see backend/Dockerfile): every task runs as a
+# thread inside ONE OS process, so CUDA gets initialized once and is then live across
+# every thread. Any library a task calls that spawns its own multiprocessing.Pool with
+# the platform default context — fork() on Linux — forks a process that already holds
+# a CUDA context, which reliably crashes/hangs the child and has been observed to take
+# the whole Celery MainProcess down with it (TotalSegmentator's internal saving pool via
+# a bare `from multiprocessing import Pool`). Forcing "spawn" as the ambient default
+# start method here, before any task or CUDA use, makes every such bare Pool()/Process()
+# call spawn a clean interpreter instead of forking — safe with an active CUDA context.
+# Must run before any CUDA initialization; harmless if already set (e.g. re-import).
+try:
+    multiprocessing.set_start_method("spawn", force=True)
+except RuntimeError:
+    pass
 
 settings = get_settings()
 

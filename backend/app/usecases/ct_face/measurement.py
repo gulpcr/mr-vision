@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Prototype tumour-measurement for abdomen_ct.
+"""Prototype tumour-measurement for ct_face (generic HU-threshold + TotalSegmentator organ-exclusion; shared with abdomen_ct via infrastructure.ml.totalseg_engine).
 
 The report can only state a size in mm if we have a real 3-D extent — a VLM cannot
 measure. This module derives it geometrically: it isolates the dominant soft-tissue
@@ -53,11 +53,11 @@ def measure_dominant_mass(
     try:
         from scipy import ndimage
     except Exception:
-        logger.warning("abdomen_ct_measure_no_scipy")
+        logger.warning("ct_face_measure_no_scipy")
         return None
 
     if not os.path.exists(volume_path):
-        logger.warning("abdomen_ct_measure_no_volume", path=volume_path)
+        logger.warning("ct_face_measure_no_volume", path=volume_path)
         return None
 
     img = nib.load(volume_path)
@@ -110,7 +110,7 @@ def measure_dominant_mass(
         region = ndimage.binary_opening(region, iterations=int(cfg.get("open_iters", 0)))
     lbl, n = ndimage.label(region)
     if n == 0:
-        logger.info("abdomen_ct_measure_no_component")
+        logger.info("ct_face_measure_no_component")
         return None
     seed = np.zeros(arr.shape, dtype=bool)
     seed[:, :, z0:z1 + 1] = True
@@ -142,7 +142,7 @@ def measure_dominant_mass(
         "method": "totalseg_residual_cc_v1",
         "estimate": True,
     }
-    logger.info("abdomen_ct_measure_done", **{k: result[k] for k in ("ts_mm", "ap_mm", "cc_mm", "volume_ml", "organ_exclusion")})
+    logger.info("ct_face_measure_done", **{k: result[k] for k in ("ts_mm", "ap_mm", "cc_mm", "volume_ml", "organ_exclusion")})
     return result
 
 
@@ -279,7 +279,7 @@ def mass_localization(
         organ_path = os.path.join(working_dir, "mass_organ.nii.gz")
         nib.save(nib.Nifti1Image(organ.astype(np.uint8), img.affine, img.header), organ_path)
 
-    logger.info("abdomen_ct_localize", seed=seed, core_voxels=int(core.sum()), organ=organ is not None)
+    logger.info("ct_face_localize", seed=seed, core_voxels=int(core.sum()), organ=organ is not None)
     return {"seed_xyz": seed, "core_path": core_path, "organ_path": organ_path}
 
 
@@ -392,7 +392,7 @@ def verify_mass(
         "method": "totalseg_residual_verify_v1",
     }
     logger.info(
-        "abdomen_ct_verify_mass", verdict=result["verdict"],
+        "ct_face_verify_mass", verdict=result["verdict"],
         core_volume_ml=result["core_volume_ml"], coherence=result["coherence"],
     )
     return result

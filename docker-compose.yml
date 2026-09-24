@@ -140,7 +140,7 @@ services:
       - model_cache:/model_cache
     command: >
       celery -A app.infrastructure.queue.celery_app:celery_app worker
-      --loglevel=info --concurrency=1 -Q mri_inference
+      --loglevel=info --pool=threads --concurrency=4 -Q mri_inference
     deploy:
       resources:
         reservations:
