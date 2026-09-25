@@ -59,3 +59,44 @@ class CompareResponse(BaseModel):
     result_a: ResultResponse
     result_b: ResultResponse
     delta: DeltaResponse
+
+
+class SliceWindow(BaseModel):
+    name: str
+    level: float
+    width: float
+
+
+class SliceLinkTile(BaseModel):
+    artifact_name: str
+    z: int
+    window: SliceWindow | None = None
+    sop_instance_uid: str
+    instance_number: int | None = None
+    stack_position: int | None = None
+    reported: bool = False  # got the detailed (Pass-2) read; appears in the report
+    overview: bool = False  # evenly-spread preview tile, stored flagged or not
+    screen_flagged: bool = False  # flagged by the Pass-1 screening scan
+    finding: str | None = None
+
+
+class FlaggedImage(BaseModel):
+    z: int
+    sop_instance_uid: str
+    instance_number: int | None = None
+    stack_position: int | None = None
+    finding: str | None = None
+    reported: bool = False  # False → screening-only flag (not in the detailed read)
+
+
+class FlaggedSlicesResponse(BaseModel):
+    """CT-report slice tiles resolved to the exact DICOM images the viewer shows."""
+
+    supported: bool
+    resolved: bool
+    reason: str | None = None
+    series_instance_uid: str | None = None
+    series_description: str | None = None
+    spacing_irregular: bool = False
+    tiles: list[SliceLinkTile] = []
+    flagged_images: list[FlaggedImage] = []

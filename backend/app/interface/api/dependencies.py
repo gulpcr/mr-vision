@@ -8,6 +8,7 @@ from app.application.analytics_service import AnalyticsService
 from app.application.auth_service import AuthService
 from app.application.cds_service import ClinicalDecisionService
 from app.application.dicom_upload_service import DicomUploadService
+from app.application.flagged_slice_service import FlaggedSliceService
 from app.application.job_orchestrator import JobOrchestrator
 from app.application.llm_report_service import LLMReportService
 from app.application.longitudinal_service import LongitudinalAnalysisService
@@ -143,6 +144,16 @@ def get_result_service(
         result_repo=PgResultRepository(session, tenant_id=tenant_id),
         artifact_store=get_artifact_store(),
     )
+
+
+async def get_flagged_slice_service(
+    result_service: Annotated[ResultService, Depends(get_result_service)],
+) -> AsyncGenerator[FlaggedSliceService, None]:
+    pacs = OrthancPACSClient()
+    try:
+        yield FlaggedSliceService(result_service=result_service, pacs=pacs)
+    finally:
+        await pacs.close()
 
 
 def get_job_repo(

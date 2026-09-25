@@ -2,7 +2,7 @@
 
 import { useRef, useState } from "react";
 import Link from "next/link";
-import { Study, Result, getPreviewUrl, getArtifactUrl, getFusedUrl } from "@/lib/api";
+import { Study, Result, FlaggedSlices, SliceLinkTile, getPreviewUrl, getArtifactUrl, getFusedUrl } from "@/lib/api";
 import { isCtReportUsecase } from "@/lib/ctReport";
 import { QAPanel } from "./QAPanel";
 import { FusedViewer } from "./FusedViewer";
@@ -37,12 +37,16 @@ interface ReportViewProps {
   compact?: boolean;
   /** Link to the full dedicated report (shown as a CTA in compact mode). */
   reportHref?: string;
+  /** CT-report tiles resolved to their DICOM image; enables click-to-view. */
+  sliceLinks?: FlaggedSlices | null;
+  /** Called with the tile's resolved DICOM image when a linked tile is clicked. */
+  onSliceClick?: (tile: SliceLinkTile) => void;
 }
 
 const VIEWS = ["axial", "coronal", "sagittal"] as const;
 const PET_USECASES = ["pet_ct", "pet_ct_brain"];
 
-export function ReportView({ study, result, uiSchema, compact = false, reportHref }: ReportViewProps) {
+export function ReportView({ study, result, uiSchema, compact = false, reportHref, sliceLinks, onSliceClick }: ReportViewProps) {
   const summarySection = uiSchema?.sections?.find((s: any) => s.id === "summary");
   const tumorDetected = result.summary?.tumor_detected;
   const [zoomedView, setZoomedView] = useState<string | null>(null);
@@ -269,42 +273,162 @@ export function ReportView({ study, result, uiSchema, compact = false, reportHre
               (a) => a.artifact_type === `${result.usecase_name}_slice_png`
             );
             if (slices.length === 0) return null;
+            const linkByName = new Map<string, SliceLinkTile>(
+              sliceLinks?.resolved ? sliceLinks.tiles.map((l) => [l.artifact_name, l]) : [],
+            );
+            const linkable = !!onSliceClick && linkByName.size > 0;
+            const unlinkedReason =
+              sliceLinks && sliceLinks.supported && !sliceLinks.resolved ? sliceLinks.reason : null;
+
+            const renderTile = (artifact: (typeof slices)[number], small = false) => {
+              const link = linkByName.get(artifact.name);
+              const clickable = !!link && !!onSliceClick;
+              const label = link
+                ? `Image ${link.instance_number ?? "?"}${link.window ? ` · ${link.window.name}` : ""}`
+                : artifact.name.replace(/\.[^.]+$/, "").replace(/_/g, " ");
+              const reportedFlag = !!link?.reported && link.screen_flagged;
+              const screeningOnly = !!link && !link.reported && link.screen_flagged;
+              const tileClass =
+                "group relative block w-full aspect-square bg-black rounded-xl overflow-hidden ring-1 transition-all " +
+                (reportedFlag
+                  ? "ring-red-500/70 hover:ring-red-400 "
+                  : "ring-gray-200 dark:ring-white/10 hover:ring-primary-400 dark:hover:ring-primary-500 ") +
+                (clickable
+                  ? "cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+                  : "");
+              const body = (
+                <>
+                  <AuthImg
+                    src={getArtifactUrl(study.study_instance_uid, result.usecase_name, artifact.name)}
+                    alt={artifact.name}
+                    className="w-full h-full object-contain transition-transform duration-300 group-hover:scale-105"
+                    loadingClassName="w-full h-full bg-gray-900 animate-pulse motion-reduce:animate-none"
+                    errorClassName="w-full h-full flex items-center justify-center text-gray-500 dark:text-gray-400 text-xs bg-black"
+                    fallback="Slice not available"
+                  />
+                  {reportedFlag && (
+                    <span className="absolute top-2 left-2 text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded bg-red-600 text-white">
+                      Flagged
+                    </span>
+                  )}
+                  {screeningOnly && (
+                    <span
+                      className="absolute top-2 left-2 text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-amber-600/85 text-white"
+                      title="Flagged by the fast screening pass; not covered by the detailed read"
+                    >
+                      Screened
+                    </span>
+                  )}
+                  <div className={`absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/40 to-transparent ${small ? "px-2 pt-4 pb-1" : "px-2.5 pt-6 pb-1.5"} text-left`}>
+                    <span className={`block ${small ? "text-[10px]" : "text-[11px]"} font-medium text-white/90 capitalize truncate`}>
+                      {label}
+                    </span>
+                  </div>
+                </>
+              );
+              if (clickable && link) {
+                const wl = link.window ? ` (W ${link.window.width} / L ${link.window.level})` : "";
+                return (
+                  <button
+                    key={artifact.name}
+                    type="button"
+                    onClick={() => onSliceClick?.(link)}
+                    title={`Show image ${link.instance_number ?? ""} in the viewer${wl}${link.finding ? ` — ${link.finding}` : ""}`}
+                    aria-label={`Show ${label} in the viewer`}
+                    className={tileClass}
+                  >
+                    {body}
+                  </button>
+                );
+              }
+              return (
+                <div key={artifact.name} className={tileClass} title={unlinkedReason ?? undefined}>
+                  {body}
+                </div>
+              );
+            };
+
+            const countBadge = (n: number) => (
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-primary-50 dark:bg-primary-950 text-primary-700 dark:text-primary-300">
+                {n}
+              </span>
+            );
+
+            // Linked CT-report results: split what the report was written from (Pass-2
+            // levels) from the evenly-spaced overview previews, which are NOT findings.
+            if (linkable) {
+              const reported = slices.filter((a) => linkByName.get(a.name)?.reported);
+              const overview = slices.filter((a) => !linkByName.get(a.name)?.reported);
+              const anyFlagged = reported.some((a) => linkByName.get(a.name)?.screen_flagged);
+              const screeningOnly = (sliceLinks?.flagged_images ?? []).filter((f) => !f.reported).length;
+              return (
+                <div className="report-section">
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <h2 className="report-section-title !mb-0">
+                      {anyFlagged ? "Reported Slices" : "Report Slices"}
+                    </h2>
+                    {countBadge(reported.length)}
+                  </div>
+                  <p className="text-xs text-gray-400 dark:text-gray-500 mb-1.5">
+                    {anyFlagged
+                      ? "Levels MedGemma flagged and then reviewed in detail (superior→inferior) — the report was written from these."
+                      : "Nothing was flagged by the screening pass; the report was written from this representative sample (superior→inferior)."}
+                  </p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mb-3.5">
+                    Click a slice to open it in the viewer above
+                    {sliceLinks?.series_description ? ` (series “${sliceLinks.series_description}”)` : ""}.
+                    {screeningOnly > 0 &&
+                      ` While scrolling, reported levels are outlined in red; ${screeningOnly} further level${screeningOnly === 1 ? "" : "s"} flagged only by the fast screening pass ${screeningOnly === 1 ? "is" : "are"} outlined in dashed amber.`}
+                    {sliceLinks?.spacing_irregular &&
+                      " This series has missing images or uneven spacing, so image numbers may skip."}
+                  </p>
+                  {reported.length > 0 && (
+                    <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-3">
+                      {reported.map((a) => renderTile(a))}
+                    </div>
+                  )}
+
+                  {overview.length > 0 && (
+                    <>
+                      <div className="flex items-center gap-2 mt-6 mb-1.5">
+                        <h3 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                          Overview Slices
+                        </h3>
+                        {countBadge(overview.length)}
+                      </div>
+                      <p className="text-xs text-gray-400 dark:text-gray-500 mb-3">
+                        Evenly spaced across the scan for orientation — not AI findings. “Screened” marks a
+                        level the fast screening pass flagged but the detailed read did not cover.
+                      </p>
+                      <div className="grid grid-cols-3 md:grid-cols-4 xl:grid-cols-6 gap-2.5">
+                        {overview.map((a) => renderTile(a, true))}
+                      </div>
+                    </>
+                  )}
+                </div>
+              );
+            }
+
             return (
               <div className="report-section">
                 <div className="flex items-center gap-2 mb-1.5">
                   <h2 className="report-section-title !mb-0">
                     {isAbdomenScan ? "Flagged Slices" : "Sampled Slices"}
                   </h2>
-                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-primary-50 dark:bg-primary-950 text-primary-700 dark:text-primary-300">
-                    {slices.length}
-                  </span>
+                  {countBadge(slices.length)}
                 </div>
                 <p className="text-xs text-gray-400 dark:text-gray-500 mb-3.5">
                   {isAbdomenScan
                     ? "MedGemma scanned every slice of the volume and flagged these axial levels as potentially abnormal (superior→inferior) — the report was written from these findings."
                     : "Axial levels sampled evenly across the volume (superior→inferior), each in multiple HU windows (soft-tissue / liver / bone) — the exact images the AI report was written from."}
                 </p>
+                {unlinkedReason && (
+                  <p className="text-xs text-amber-700 dark:text-amber-300 -mt-2 mb-3.5">
+                    Viewer links unavailable: {unlinkedReason}
+                  </p>
+                )}
                 <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-3">
-                  {slices.map((artifact) => (
-                    <div
-                      key={artifact.name}
-                      className="group relative aspect-square bg-black rounded-xl overflow-hidden ring-1 ring-gray-200 dark:ring-white/10 hover:ring-primary-400 dark:hover:ring-primary-500 transition-all"
-                    >
-                      <AuthImg
-                        src={getArtifactUrl(study.study_instance_uid, result.usecase_name, artifact.name)}
-                        alt={artifact.name}
-                        className="w-full h-full object-contain transition-transform duration-300 group-hover:scale-105"
-                        loadingClassName="w-full h-full bg-gray-900 animate-pulse motion-reduce:animate-none"
-                        errorClassName="w-full h-full flex items-center justify-center text-gray-500 dark:text-gray-400 text-xs bg-black"
-                        fallback="Slice not available"
-                      />
-                      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/40 to-transparent px-2.5 pt-6 pb-1.5">
-                        <span className="block text-[11px] font-medium text-white/90 capitalize truncate">
-                          {artifact.name.replace(/\.[^.]+$/, "").replace(/_/g, " ")}
-                        </span>
-                      </div>
-                    </div>
-                  ))}
+                  {slices.map((a) => renderTile(a))}
                 </div>
               </div>
             );

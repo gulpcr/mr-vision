@@ -76,6 +76,10 @@ class Settings(BaseSettings):
         r"3[\s-]?plane|\bsurvey\b|calibration|field\s*map|fieldmap|b0\s*map|"
         r"b1\s*map|map\(|aascout|aahead|smartbrain|pre[\s_-]?scan)"
     )
+    # Viewer: link CT-report flagged-slice tiles to their exact DICOM image
+    # (GET /api/results/{uid}/{usecase}/flagged-slices) so the study page can jump
+    # the embedded OHIF viewer there and highlight flagged images while scrolling.
+    flagged_slice_viewer_link_enabled: bool = True
 
     # Auth
     api_key: str = ""
