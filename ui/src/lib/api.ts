@@ -234,6 +234,80 @@ export interface OrderOut {
   created_at: string | null;
 }
 
+export type ReviewPriority = "critical" | "abnormal" | "normal";
+
+export interface PriorityInfo {
+  priority: ReviewPriority;
+  computed_priority: ReviewPriority;
+  priority_reasons: string[];
+  priority_overridden: boolean;
+  priority_override_by: string | null;
+  priority_override_at: string | null;
+}
+
+export interface ReviewQueueItem extends PriorityInfo {
+  study_instance_uid: string;
+  patient_name: string | null;
+  patient_id: string | null;
+  modality: string | null;
+  body_part_examined: string | null;
+  study_description: string | null;
+  study_date: string | null;
+  received_at: string | null;
+  reading_status: string;
+  assigned_to_username: string | null;
+  signed_at: string | null;
+  signed_by: string | null;
+  usecases: string[];
+}
+
+export interface ReviewQueueResponse {
+  status: "unsigned" | "signed";
+  counts: Record<ReviewPriority, number>;
+  items: ReviewQueueItem[];
+}
+
+export interface ReportSignature {
+  id: string;
+  signer_user_id: string | null;
+  signer_username: string;
+  signer_full_name: string;
+  signer_role: string | null;
+  statement_version: string;
+  statement_text: string;
+  comment: string;
+  content_hash: string;
+  priority_at_signing: ReviewPriority | null;
+  signed_at: string;
+}
+
+export interface ReportComment {
+  id: string;
+  author_username: string;
+  author_full_name: string | null;
+  author_role: string | null;
+  body: string;
+  created_at: string;
+}
+
+export interface SignoffState extends PriorityInfo {
+  study_instance_uid: string;
+  reading_status: string;
+  assigned_to: string | null;
+  assigned_to_username: string | null;
+  signed_at: string | null;
+  has_results: boolean;
+  signatures: ReportSignature[];
+  integrity: "valid" | "changed" | null;
+  statement: {
+    version: string;
+    template: string;
+    signer_full_name: string;
+    text: string | null;
+  };
+  comments: ReportComment[];
+}
+
 export interface ReadingState {
   study_instance_uid: string;
   reading_status: string;
@@ -901,8 +975,32 @@ export const api = {
       fetchAPI<ReadingState>(`/studies/${uid}/unclaim`, { method: "POST" }),
     report: (uid: string) =>
       fetchAPI<ReadingState>(`/studies/${uid}/report`, { method: "POST" }),
-    sign: (uid: string) =>
-      fetchAPI<ReadingState>(`/studies/${uid}/sign`, { method: "POST" }),
+  },
+  // Priority review queue + electronic signatures + report comments.
+  signoff: {
+    queue: (params: { status?: "unsigned" | "signed"; priority?: ReviewPriority } = {}) => {
+      const q = new URLSearchParams();
+      if (params.status) q.set("status", params.status);
+      if (params.priority) q.set("priority", params.priority);
+      const qs = q.toString();
+      return fetchAPI<ReviewQueueResponse>(`/review-queue${qs ? `?${qs}` : ""}`);
+    },
+    get: (uid: string) => fetchAPI<SignoffState>(`/studies/${uid}/signoff`),
+    setPriority: (uid: string, priority: ReviewPriority | null) =>
+      fetchAPI<SignoffState>(`/studies/${uid}/priority`, {
+        method: "PUT",
+        body: JSON.stringify({ priority }),
+      }),
+    sign: (uid: string, body: { statement_version: string; agreed: boolean; comment: string; full_name?: string }) =>
+      fetchAPI<SignoffState>(`/studies/${uid}/signature`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    addComment: (uid: string, body: string) =>
+      fetchAPI<ReportComment>(`/studies/${uid}/comments`, {
+        method: "POST",
+        body: JSON.stringify({ body }),
+      }),
   },
   jobs: {
     create: (studyUid: string, usecases?: string[]) =>

@@ -419,9 +419,13 @@ def _reading_status_line(patient_info: dict[str, Any]) -> tuple[str, bool]:
     rs = patient_info.get("reading_status") or "unread"
     by = patient_info.get("assigned_to_username")
     signed_at = patient_info.get("signed_at")
+    esig = patient_info.get("e_signature")
     if rs == "signed":
+        if esig:
+            by = esig.get("signer_full_name") or by
+        label = "ELECTRONICALLY SIGNED" if esig else "SIGNED OFF"
         return (
-            f"SIGNED OFF{(' — ' + by) if by else ''}{(' · ' + signed_at) if signed_at else ''}",
+            f"{label}{(' — ' + by) if by else ''}{(' · ' + signed_at) if signed_at else ''}",
             True,
         )
     label = {
@@ -430,6 +434,71 @@ def _reading_status_line(patient_info: dict[str, Any]) -> tuple[str, bool]:
         "reported": f"Reported{(' — ' + by) if by else ''}",
     }.get(rs, rs)
     return (f"PRELIMINARY · {label}", False)
+
+
+def _esc(text: Any) -> str:
+    return (str(text or "")).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _esignature_flowables(patient_info: dict[str, Any] | None) -> list:
+    """Boxed electronic-signature block (signer, time, comment, attestation, content
+    hash) for a signed report; empty when the report has no e-signature."""
+    esig = (patient_info or {}).get("e_signature")
+    if not esig:
+        return []
+    from datetime import datetime
+
+    from reportlab.lib import colors
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.units import cm
+    from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
+
+    signed_at = esig.get("signed_at") or ""
+    try:
+        signed_at = datetime.fromisoformat(signed_at).strftime("%d/%m/%Y %H:%M UTC")
+    except ValueError:
+        pass
+    role = (esig.get("signer_role") or "").replace("_", " ").title()
+    base = ParagraphStyle("esig", fontName="Helvetica", fontSize=8.5, leading=11)
+    head = ParagraphStyle("esig_h", parent=base, fontName="Helvetica-Bold", fontSize=9.5,
+                          textColor=colors.HexColor("#067647"))
+    small = ParagraphStyle("esig_s", parent=base, fontSize=7.5, leading=9.5,
+                           textColor=colors.HexColor("#475467"))
+    rows = [
+        [Paragraph("ELECTRONICALLY SIGNED", head)],
+        [Paragraph(
+            f"<b>{_esc(esig.get('signer_full_name'))}</b>{(' (' + _esc(role) + ')') if role else ''}"
+            f" &nbsp;·&nbsp; {_esc(signed_at)}", base)],
+        [Paragraph(f"<b>Comment:</b> {_esc(esig.get('comment'))}", base)],
+        [Paragraph(f"<i>{_esc(esig.get('statement_text'))}</i>", small)],
+        [Paragraph(
+            f"Signature ID {_esc(esig.get('id'))} &nbsp;·&nbsp; content SHA-256 "
+            f"{_esc((esig.get('content_hash') or '')[:16])}…", small)],
+    ]
+    if esig.get("integrity") == "changed":
+        rows.append([Paragraph(
+            "<b>WARNING:</b> the AI results or report changed after this signature. "
+            "The signature does not cover the content shown in this document.",
+            ParagraphStyle("esig_w", parent=base, textColor=colors.HexColor("#b42318")),
+        )])
+    box = Table(rows, colWidths=[17 * cm])
+    box.setStyle(TableStyle([
+        ("BOX", (0, 0), (-1, -1), 0.8, colors.HexColor("#067647")),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#ecfdf3")),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+    ]))
+    return [Spacer(1, 0.5 * cm), box]
+
+
+_NOT_SIGNED_NOTE = "Note: This is a computer generated document and does not require any signature."
+_ESIGNED_NOTE = "Note: This report has been electronically signed; the signature above is legally binding."
+
+
+def _footer_note(patient_info: dict[str, Any] | None) -> str:
+    return _ESIGNED_NOTE if (patient_info or {}).get("e_signature") else _NOT_SIGNED_NOTE
 
 
 _report_profile: ContextVar[dict[str, str] | None] = ContextVar("report_profile", default=None)
@@ -655,6 +724,8 @@ class PDFReportGenerator:
         if birads_lines:
             story.append(Paragraph(" ".join(birads_lines), body))
 
+        story.extend(_esignature_flowables(patient_info))
+
         # Signatories
         story.append(Spacer(1, 30))
         sig = ParagraphStyle("sig", parent=styles["Normal"], fontSize=9.5,
@@ -806,6 +877,8 @@ class PDFReportGenerator:
             story.append(Paragraph("<u>AI-GENERATED IMPRESSION:</u>", sec_head))
             story.append(Paragraph(narrative, body))
 
+        story.extend(_esignature_flowables(patient_info))
+
         # ── Signatory ───────────────────────────────────────────────────────────
         story.append(Spacer(1, 1.6 * cm))
         story.append(Paragraph("_______________________________", cell))
@@ -816,10 +889,7 @@ class PDFReportGenerator:
             story.append(Paragraph(doctor_quals, sig))
 
         story.append(Spacer(1, 1.0 * cm))
-        story.append(Paragraph(
-            "Note: This is a computer generated document and does not require any signature.",
-            footer_note,
-        ))
+        story.append(Paragraph(_footer_note(patient_info), footer_note))
 
         doc.build(story)
         buf.seek(0)
@@ -942,6 +1012,7 @@ class PDFReportGenerator:
         story.extend(section("CLINICAL FEATURES", [clinical_features]))
         story.extend(section("FINDINGS", findings_lines))
         story.extend(section("CONCLUSIONS", [conclusions]))
+        story.extend(_esignature_flowables(patient_info))
 
         story.append(Spacer(1, 1.6 * cm))
         story.append(Paragraph("_______________________________", cell))
@@ -952,10 +1023,7 @@ class PDFReportGenerator:
             story.append(Paragraph(_rs("mri_report_signatory_qualifications"), sig))
 
         story.append(Spacer(1, 1.0 * cm))
-        story.append(Paragraph(
-            "Note: This is a computer generated document and does not require any signature.",
-            footer_note,
-        ))
+        story.append(Paragraph(_footer_note(patient_info), footer_note))
 
         doc.build(story)
         buf.seek(0)
@@ -1241,6 +1309,8 @@ class PDFReportGenerator:
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
             ]))
             story.append(appx_table)
+
+        story.extend(_esignature_flowables(patient_info))
 
         # ── Signatures ───────────────────────────────────────────────────────────
         story.append(Spacer(1, 1.4 * cm))
@@ -1661,6 +1731,8 @@ class PDFReportGenerator:
         elements.append(Paragraph(
             f"<b>Checksum:</b> {result.get('model_checksum', 'N/A')[:32]}...", body_style
         ))
+
+        elements.extend(_esignature_flowables(patient_info))
 
         # Footer note
         elements.append(Spacer(1, 24))

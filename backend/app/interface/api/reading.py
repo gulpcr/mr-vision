@@ -7,7 +7,7 @@ POST /studies/{uid}/auto-assign  require(study.escalate)  load-balance to least-
                                                            to technician as well as radiologist/admin
 POST /studies/{uid}/unclaim      require(study.claim)     release → unread (assignee/admin)
 POST /studies/{uid}/report       require(result.approve) in_progress → reported (assignee/admin)
-POST /studies/{uid}/sign         require(result.approve) reported → signed (assignee/admin)
+POST /studies/{uid}/sign         retired (410) — use POST /studies/{uid}/signature (e-signature)
 """
 from __future__ import annotations
 
@@ -160,19 +160,10 @@ async def report_study(
 
 
 @router.post("/{study_uid}/sign", dependencies=[require_permission("result.approve")])
-async def sign_study(
-    study_uid: str,
-    request: Request,
-    session: Annotated[AsyncSession, Depends(get_session)],
-):
+async def sign_study(study_uid: str):
+    """Retired: a bare sign-off carried no attestation. Reports are signed with an
+    electronic signature — POST /studies/{uid}/signature (review_signoff.py)."""
     validate_dicom_uid(study_uid)
-    uid, actor, is_admin, _tenant = _actor(request)
-    try:
-        result = await ReadingService(session, tenant_id=_tenant_of(request)).sign(study_uid, uid, actor, is_admin)
-    except Exception as exc:
-        mapped = _map_errors(exc)
-        if mapped:
-            raise mapped
-        raise
-    await session.commit()
-    return result
+    raise HTTPException(
+        410, "Sign-off now requires an electronic signature: POST /api/studies/{uid}/signature"
+    )

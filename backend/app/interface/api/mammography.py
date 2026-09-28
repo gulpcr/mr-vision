@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.mammography_service import (
     MammographyService,
+    ReportLockedError,
     ReportValidationError,
     StudyNotFoundError,
 )
@@ -112,6 +113,8 @@ async def upsert_report(
         raise HTTPException(404, f"Study {study_uid} not found")
     except ReportValidationError as e:
         raise HTTPException(422, str(e))
+    except ReportLockedError as e:
+        raise HTTPException(409, str(e))
 
 
 @router.get(
@@ -187,6 +190,15 @@ async def download_report_pdf(
     from app.reports.pdf_generator import report_profile
 
     patient_info = build_petct_patient_info(study_rec)
+    patient_info["reading_status"] = study_rec.reading_status or "unread"
+    patient_info["assigned_to_username"] = study_rec.assigned_to_username
+    patient_info["signed_at"] = study_rec.signed_at.strftime("%d/%m/%Y") if study_rec.signed_at else ""
+    if study_rec.reading_status == "signed":
+        from app.application.review_signoff_service import ReviewSignoffService
+
+        patient_info["e_signature"] = await ReviewSignoffService(
+            session, tenant_id=_tenant(request)
+        ).signature_for_report(study_uid)
     with report_profile(await TenantSettingsService(session).report_profile(_tenant(request))):
         pdf_bytes = PDFReportGenerator().generate(
             study_uid=study_uid,

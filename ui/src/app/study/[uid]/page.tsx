@@ -5,7 +5,8 @@ import { useParams } from "next/navigation";
 import { api, Study, Job, Result, CptSuggestion, ProtocolCheckResult, ComparisonData, ClinicalForStudy, FlaggedSlices, SliceLinkTile } from "@/lib/api";
 import { attachFlagHighlight, jumpToImage, waitForOhif, type FlagInfo } from "@/lib/ohifBridge";
 import { StatusBadge } from "@/components/ui/StatusBadge";
-import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { ReportSignoffPanel } from "@/components/reports/ReportSignoffPanel";
+import { SignReportDialog } from "@/components/reports/SignReportDialog";
 import { useAuth } from "@/lib/auth";
 import { ReportView } from "@/components/ReportView";
 import { FusedViewer } from "@/components/FusedViewer";
@@ -83,7 +84,7 @@ function getSeqBadge(desc: string | null, protocol: string | null): SeqBadge | n
 export default function StudyPage() {
   const params = useParams();
   const uid = params.uid as string;
-  const { user: currentUser } = useAuth();
+  const { user: currentUser, can } = useAuth();
 
   const [study, setStudy] = useState<Study | null>(null);
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -142,6 +143,7 @@ export default function StudyPage() {
   const [readingBusy, setReadingBusy] = useState(false);
   const [readingError, setReadingError] = useState<string | null>(null);
   const [pendingSign, setPendingSign] = useState(false);
+  const [signoffKey, setSignoffKey] = useState(0);
   const runReading = async (fn: () => Promise<unknown>) => {
     setReadingBusy(true);
     setReadingError(null);
@@ -478,13 +480,13 @@ export default function StudyPage() {
                         className={`${btn} text-gray-600 dark:text-gray-400 hover:bg-black/5 dark:hover:bg-white/5`}>Release</button>
                     </>
                   )}
-                  {rs === "reported" && (
+                  {rs !== "signed" && can("result.approve") && (
                     <button disabled={readingBusy} onClick={() => setPendingSign(true)}
-                      className={`${btn} text-white bg-green-600 hover:bg-green-700`}>Sign Off</button>
+                      className={`${btn} text-white bg-green-600 hover:bg-green-700`}>Sign Report</button>
                   )}
                   {rs === "signed" && (
                     <span className="px-3 py-1.5 text-xs text-green-600 dark:text-green-400 flex items-center gap-1">
-                      <CheckCircle className="w-4 h-4" /> Signed
+                      <CheckCircle className="w-4 h-4" /> Electronically signed
                     </span>
                   )}
                 </div>
@@ -523,17 +525,14 @@ export default function StudyPage() {
             </div>
 
             {readingError && <p className="px-6 pb-3 text-xs text-red-600 dark:text-red-400">{readingError}</p>}
-            <ConfirmDialog
-              tier="modal"
+            <SignReportDialog
+              studyUid={uid}
               open={pendingSign}
-              title="Sign Off Report"
-              consequence="Signing off finalizes this study's reading status as complete and is recorded against your account. This action cannot be undone from this screen."
-              confirmLabel="Sign Off"
-              onConfirm={async () => {
-                await runReading(() => api.reading.sign(uid));
-                setPendingSign(false);
+              onClose={() => setPendingSign(false)}
+              onSigned={() => {
+                setSignoffKey((k) => k + 1);
+                runReading(async () => {});
               }}
-              onCancel={() => setPendingSign(false)}
             />
           </div>
         );
@@ -543,6 +542,14 @@ export default function StudyPage() {
       <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_340px] gap-5 items-start">
         {/* Metadata sidebar — placed on the right via order, sticky on scroll */}
         <aside className="space-y-4 lg:order-2 lg:sticky lg:top-4">
+          <div className="glass rounded-2xl p-4">
+            <h2 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3">Report sign-off</h2>
+            <ReportSignoffPanel
+              studyUid={uid}
+              refreshKey={signoffKey}
+              onChanged={() => runReading(async () => {})}
+            />
+          </div>
           <div className="glass rounded-2xl p-4">
             <h2 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3">Series</h2>
           <div className="space-y-2 max-h-64 overflow-y-auto">

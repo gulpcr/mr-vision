@@ -4,10 +4,11 @@ Lifecycle:  unread → in_progress → reported → signed
   - claim / assign / auto_assign : * → in_progress  (sets assignee)
   - unclaim                      : in_progress → unread (clears assignee)
   - report                       : in_progress → reported
-  - sign                         : reported → signed
+  - sign                         : * → signed, only via the electronic signature
+                                   (application/review_signoff_service.py)
 
 Authority (enforced here, in addition to the endpoint permission):
-  - report / sign require the actor to be the assigned radiologist OR an admin.
+  - report requires the actor to be the assigned radiologist OR an admin.
 Application layer — no FastAPI imports; the router maps exceptions to HTTP codes.
 """
 from __future__ import annotations
@@ -179,17 +180,6 @@ class ReadingService:
         rec.reading_status = REPORTED
         rec.reported_at = _now()
         await self._audit(actor, "study_reported", rec.study_instance_uid, {})
-        await self._session.flush()
-        return self.reading_dict(rec)
-
-    async def sign(self, study_uid: str, actor_id: str, actor: str, is_admin: bool) -> dict[str, Any]:
-        rec = await self._get(study_uid)
-        if rec.reading_status != REPORTED:
-            raise InvalidTransitionError(f"Cannot sign a '{rec.reading_status}' study (must be reported)")
-        self._require_assignee_or_admin(rec, actor_id, is_admin)
-        rec.reading_status = SIGNED
-        rec.signed_at = _now()
-        await self._audit(actor, "study_signed", rec.study_instance_uid, {})
         await self._session.flush()
         return self.reading_dict(rec)
 

@@ -1,6 +1,6 @@
 # Multi-Tenancy, RBAC & Dashboards — Implementation and Rollout
 
-Branch `feat/multitenancy` · migrations **044–047** · companion to
+Branch `feat/multitenancy` · migrations **044–049** · companion to
 `MULTITENANCY_HIPAA_GAP_ANALYSIS.md`.
 
 Each hospital or clinic is a **workspace** (tenant). Workspaces are isolated from each other
@@ -156,6 +156,41 @@ dependencies.
 - Invitation and reset links expire after `INVITATION_TTL_HOURS` (default 3).
 - The AI Models registry is superadmin-only.
 
+### Review queue and electronic signatures (migration 049)
+
+**Review queue** (`/review`). Every study with an AI result that is not yet signed, most
+urgent first, then longest waiting. Clicking a row opens the study page.
+
+| Priority | Triggered by |
+|---|---|
+| Critical | a CRITICAL finding alert; BI-RADS 5–6; Deauville 5; CAD-RADS 4B–5; lesion volume ≥ 100 ml |
+| Abnormal | a WARNING finding alert (quality alerts excluded); AI-flagged anomalies or lesions; BI-RADS 0, 3, 4; Deauville 4; CAD-RADS 3–4A; amyloid positive |
+| Normal | none of the above |
+
+- Rules live in `domain/report_priority.py`; each study shows the reasons behind its priority.
+- A radiologist can override the priority (audited); "Automatic" restores the computed one.
+- Doctors see the queue for their referred patients only. The old low-confidence AI queue
+  moved to `/review/ai`.
+
+**Electronic signature** (`POST /api/studies/{uid}/signature`, `result.approve`).
+- The signer affirms the versioned attestation statement (`comprehensive-v1`, in
+  `domain/signature_statements.py`) with their full name in it, and adds a **mandatory
+  comment**. No password re-entry.
+- A study can be signed from any unsigned state. A study assigned to another radiologist can
+  only be signed by that radiologist or a workspace admin.
+- The signature row (`report_signatures`) keeps the signer's name and role at signing time, the
+  exact statement text, the comment, the client IP and a SHA-256 over the signed content (latest
+  AI results + the mammography report). If that content changes later, the study page and PDF
+  show "changed since signing".
+- Signatures are append-only: the app role has no UPDATE or DELETE on the table, and every
+  signature is in the hash-chained audit log.
+- A signed mammography report can no longer be edited (409).
+- PDFs show an "Electronically signed" block with signer, time, comment, statement and hash.
+- The old bare `POST /studies/{uid}/sign` now returns 410.
+
+**Comments** (`report.comment`, granted to radiologist and doctor). Doctors can comment on
+their referred patients' reports; comments show beside the report.
+
 ### Operator console (Phase 6)
 
 - `/admin/platform`: usage per workspace (users, studies, jobs, storage), a cross-tenant audit
@@ -212,8 +247,10 @@ dependencies.
 | `tests/rls/test_tenant_isolation.py` | Row-level security against real Postgres; cross-tenant reads and writes blocked |
 | `tests/rls/test_shared_pacs_isolation.py` | DICOMweb authorization, viewer cookie, AE titles, WebSocket |
 | `tests/rls/test_rbac_provisioning_dashboards.py` | Provisioning, invitations, per-workspace logins, live RBAC, revocation, doctor scope, dashboards, settings, operator console, route coverage |
+| `tests/rls/test_plans.py` | Plans, permission ceiling, use-case entitlements, invite expiry |
+| `tests/rls/test_review_signoff.py` | Priority queue order and scope, override, e-signature rules, append-only signatures, integrity check, doctor comments, PDF block |
 
-- **Result:** 37 of 37 pass, both with `MULTI_TENANT_ENABLED` off and on.
+- **Result:** 54 of 54 pass, both with `MULTI_TENANT_ENABLED` off and on.
 - **How to run:** point `RLS_TEST_OWNER_DATABASE_URL` at a migrated database and connect the app
   as the RLS role (see the docstring of `test_tenant_isolation.py`).
 - **Manual end-to-end check** (`tests/rls/e2e_cstore.py`): real C-STORE to Orthanc produces

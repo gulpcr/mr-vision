@@ -437,6 +437,16 @@ async def generate_pdf_report(
         patient_info["assigned_to_username"] = getattr(study_rec, "assigned_to_username", None)
         _signed = getattr(study_rec, "signed_at", None)
         patient_info["signed_at"] = _signed.strftime("%d/%m/%Y") if _signed else ""
+        if patient_info["reading_status"] == "signed":
+            try:
+                from app.application.review_signoff_service import ReviewSignoffService
+
+                patient_info["e_signature"] = await ReviewSignoffService(
+                    service._result_repo._session,
+                    tenant_id=service._result_repo._tenant_id or "default",
+                ).signature_for_report(study_uid)
+            except Exception as exc:
+                logger.warning("report_esignature_lookup_failed", study_uid=study_uid, error=str(exc))
 
     # Merge clinical intake (patient onboarding) so it appears in the report.
     # `clinical` was already fetched above (reused for the AI-report fallback).

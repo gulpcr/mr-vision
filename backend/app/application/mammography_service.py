@@ -82,6 +82,10 @@ class ReportValidationError(Exception):
     """Raised when a submitted field is invalid (e.g. bad BI-RADS)."""
 
 
+class ReportLockedError(Exception):
+    """Raised when the study's report is already electronically signed (read-only)."""
+
+
 class MammographyService:
     """Get / upsert the radiologist-authored mammography report for a study."""
 
@@ -108,6 +112,10 @@ class MammographyService:
         study = await self._get_scoped(StudyRecord, study_uid)
         if study is None:
             raise StudyNotFoundError(study_uid)
+        if study.reading_status == "signed":
+            # The signature's content hash covers this report — editing it would
+            # silently change what the physician attested to.
+            raise ReportLockedError("This report is electronically signed and can no longer be edited")
 
         for key in ("birads_right", "birads_left"):
             val = payload.get(key)

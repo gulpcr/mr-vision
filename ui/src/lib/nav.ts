@@ -23,6 +23,7 @@ import {
   Palette,
   Globe,
   Layers,
+  PenLine,
   type LucideIcon,
 } from "lucide-react";
 import { STUDY_READ, type Permission } from "@/lib/permissions";
@@ -52,7 +53,9 @@ export const NAV_ITEMS: NavItem[] = [
   { href: "/admin/routing", label: "Routing Rules", icon: GitBranch, requiredPermission: "config.manage" },
   { href: "/reports", label: "Reports", labelKey: "reports", icon: FileText, requiredPermission: "result.export" },
   { href: "/compare", label: "Compare", icon: ArrowLeftRight, requiredPermission: STUDY_READ },
-  { href: "/review", label: "Review Queue", icon: Eye, requiredPermission: "result.approve" },
+  // Priority queue of unsigned reports (radiologists sign, referring doctors comment).
+  { href: "/review", label: "Review Queue", icon: PenLine, requiredPermission: "result.approve||report.comment" },
+  { href: "/review/ai", label: "AI Confidence Review", icon: Eye, requiredPermission: "result.approve" },
   { href: "/admin/metrics", label: "QA Dashboard", icon: BarChart3, requiredPermission: "audit.view" },
   { href: "/admin/capacity", label: "Capacity", icon: BarChart2, requiredPermission: "audit.view" },
   { href: "/admin/audit", label: "Audit Log", icon: Shield, requiredPermission: "audit.view" },

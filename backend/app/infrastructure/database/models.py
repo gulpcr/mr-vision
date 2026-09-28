@@ -78,6 +78,11 @@ class StudyRecord(Base):
     assigned_at = Column(DateTime(timezone=True), nullable=True)
     reported_at = Column(DateTime(timezone=True), nullable=True)
     signed_at = Column(DateTime(timezone=True), nullable=True)
+    # Radiologist's manual override of the computed review-queue priority
+    # (critical | abnormal | normal; alembic 049). NULL = use the computed priority.
+    priority_override = Column(String(16), nullable=True)
+    priority_override_by = Column(String(128), nullable=True)
+    priority_override_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
@@ -1106,3 +1111,51 @@ class PlanRecord(Base):
     updated_at = Column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
+
+
+class ReportSignatureRecord(Base):
+    """An electronic signature on a study's report (alembic 049). Append-only: the app
+    role has no UPDATE/DELETE grant. ``content_hash`` is SHA-256 over
+    ``content_snapshot`` (the latest AI results + editable report at signing time)."""
+
+    __tablename__ = "report_signatures"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = Column(String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    study_instance_uid = Column(
+        String(128), ForeignKey("studies.study_instance_uid", ondelete="CASCADE"), nullable=False
+    )
+    signer_user_id = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    signer_username = Column(String(128), nullable=False)
+    signer_full_name = Column(String(256), nullable=False)
+    signer_role = Column(String(64), nullable=True)
+    statement_version = Column(String(32), nullable=False)
+    statement_text = Column(Text, nullable=False)
+    comment = Column(Text, nullable=False)
+    content_hash = Column(String(64), nullable=False)
+    content_snapshot = Column(JSON, nullable=False)
+    priority_at_signing = Column(String(16), nullable=True)
+    client_ip = Column(String(64), nullable=True)
+    signed_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (Index("ix_report_signatures_study", "study_instance_uid", "signed_at"),)
+
+
+class ReportCommentRecord(Base):
+    """A comment on a study's report by a radiologist or referring doctor (alembic 049)."""
+
+    __tablename__ = "report_comments"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = Column(String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    study_instance_uid = Column(
+        String(128), ForeignKey("studies.study_instance_uid", ondelete="CASCADE"), nullable=False
+    )
+    author_user_id = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    author_username = Column(String(128), nullable=False)
+    author_full_name = Column(String(256), nullable=True)
+    author_role = Column(String(64), nullable=True)
+    body = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (Index("ix_report_comments_study", "study_instance_uid", "created_at"),)

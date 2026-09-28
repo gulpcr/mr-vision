@@ -1,10 +1,7 @@
 "use client";
 
 import type { Study } from "@/lib/api";
-import { useAuth } from "@/lib/auth";
-import { useLocale } from "@/lib/i18n";
-import { Lock } from "lucide-react";
-import { SignOffAction } from "./SignOffAction";
+import { ReportSignoffPanel } from "./ReportSignoffPanel";
 
 interface ReportShellProps {
   study: Study;
@@ -43,10 +40,7 @@ export function ReportShell({
   onSignedOff,
   children,
 }: ReportShellProps) {
-  const readingStatus = study.reading_status || "unread";
-  const { can } = useAuth();
-  const canSignOff = can("result.approve");
-  const { strings } = useLocale();
+  const signed = (study.reading_status || "unread") === "signed";
 
   return (
     <div className="mx-auto max-w-3xl bg-white dark:bg-surface text-gray-900 dark:text-gray-100">
@@ -63,21 +57,18 @@ export function ReportShell({
 
         {showComputerGeneratedNote && (
           <p className="text-center text-[11px] italic font-bold text-gray-500 dark:text-gray-400 mt-10 pt-3 border-t border-gray-100 dark:border-gray-700">
-            Note: This is a computer generated document and does not require any signature.
+            {signed
+              ? "Note: This report has been electronically signed; the signature below is legally binding."
+              : "Note: This is a computer generated document and does not require any signature."}
           </p>
         )}
 
-        {readingStatus === "reported" && (
-          <div className="no-print mt-8 text-center">
-            {canSignOff ? (
-              <SignOffAction studyUid={study.study_instance_uid} onSigned={onSignedOff} />
-            ) : (
-              <p className="inline-flex items-center gap-1.5 text-xs text-gray-400 dark:text-gray-500">
-                <Lock className="w-3.5 h-3.5" /> {strings.reportShell.radiologistOnly}
-              </p>
-            )}
-          </div>
-        )}
+        {/* Priority, electronic signature (or the Sign button) and comments. */}
+        <ReportSignoffPanel
+          studyUid={study.study_instance_uid}
+          onChanged={onSignedOff}
+          className="mt-8 pt-4 border-t border-gray-100 dark:border-gray-700"
+        />
       </div>
     </div>
   );

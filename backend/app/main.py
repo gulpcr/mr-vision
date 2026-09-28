@@ -25,6 +25,7 @@ from app.interface.api.dicom_upload import router as dicom_upload_router
 from app.interface.api.dicomweb import router as dicomweb_router
 from app.interface.api.roles import router as roles_router
 from app.interface.api.reading import router as reading_router
+from app.interface.api.review_signoff import router as review_signoff_router
 from app.interface.api.clinical import router as clinical_router
 from app.interface.api.onboarding import router as onboarding_router
 from app.interface.api.plan_features import router as plan_features_router
@@ -146,6 +147,7 @@ def create_app() -> FastAPI:
     app.include_router(critical_alerts_router, prefix="/api")
     app.include_router(roles_router, prefix="/api")
     app.include_router(reading_router, prefix="/api")
+    app.include_router(review_signoff_router, prefix="/api")
     app.include_router(onboarding_router, prefix="/api")
     app.include_router(clinical_router, prefix="/api")
     app.include_router(practitioners_router, prefix="/api")

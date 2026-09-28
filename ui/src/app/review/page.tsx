@@ -1,95 +1,186 @@
 "use client";
 
-import { useState } from "react";
-import { useReviewQueue } from "@/lib/hooks";
+import { useCallback, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { Eye, AlertTriangle } from "lucide-react";
+import { api, type ReviewPriority, type ReviewQueueResponse } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
+import { formatDateTime, formatPatientName } from "@/lib/format";
+import { PriorityBadge, PRIORITY_META } from "@/components/reports/PriorityBadge";
+import { ErrorBanner } from "@/components/ui/ErrorBanner";
+import { PenLine, RefreshCw } from "lucide-react";
 
-export default function ReviewPage() {
-  const [statusFilter, setStatusFilter] = useState("pending");
-  const params: Record<string, string> = {};
-  if (statusFilter) params.status = statusFilter;
+type Tab = ReviewPriority | "all";
+const TABS: Tab[] = ["all", "critical", "abnormal", "normal"];
 
-  const { data, isLoading } = useReviewQueue(params);
+function waiting(iso: string | null): string {
+  if (!iso) return "—";
+  const mins = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
+  if (mins < 60) return `${mins} min`;
+  const hours = Math.round(mins / 60);
+  return hours < 48 ? `${hours} h` : `${Math.round(hours / 24)} d`;
+}
 
-  const getConfidenceColor = (score: number) => {
-    if (score < 0.3) return "text-red-600 bg-red-50";
-    if (score < 0.5) return "text-amber-600 bg-amber-50";
-    return "text-yellow-600 bg-yellow-50";
-  };
+export default function ReviewQueuePage() {
+  const router = useRouter();
+  const { can } = useAuth();
+  const [status, setStatus] = useState<"unsigned" | "signed">("unsigned");
+  const [tab, setTab] = useState<Tab>("all");
+  const [data, setData] = useState<ReviewQueueResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      setData(await api.signoff.queue({ status }));
+      setError(null);
+    } catch (e: any) {
+      setError(e.message || "Failed to load the review queue");
+    } finally {
+      setLoading(false);
+    }
+  }, [status]);
+
+  useEffect(() => {
+    load();
+    const id = setInterval(load, 60_000);
+    return () => clearInterval(id);
+  }, [load]);
+
+  const items = (data?.items ?? []).filter((i) => tab === "all" || i.priority === tab);
+  const total = data ? data.counts.critical + data.counts.abnormal + data.counts.normal : 0;
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Review Queue</h1>
-          {data?.stats && (
-            <div className="flex gap-3 mt-2 text-sm">
-              <span className="text-amber-600">Pending: {data.stats.pending || 0}</span>
-              <span className="text-green-600 dark:text-green-400">Approved: {data.stats.approved || 0}</span>
-              <span className="text-red-600 dark:text-red-400">Rejected: {data.stats.rejected || 0}</span>
-            </div>
-          )}
+      <div className="flex flex-wrap items-start justify-between gap-3 mb-5">
+        <div className="flex items-center gap-3">
+          <PenLine className="w-7 h-7 text-primary-600" />
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Review Queue</h1>
+            <p className="text-sm text-gray-500 dark:text-gray-400">
+              {status === "unsigned"
+                ? "Reports awaiting electronic signature — most urgent first, then longest waiting."
+                : "Recently signed reports."}
+            </p>
+          </div>
         </div>
-        <select
-          value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value)}
-          className="text-sm border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2"
-        >
-          <option value="">All</option>
-          <option value="pending">Pending</option>
-          <option value="approved">Approved</option>
-          <option value="rejected">Rejected</option>
-        </select>
+        <div className="flex items-center gap-2">
+          {can("result.approve") && (
+            <Link href="/review/ai" className="text-xs text-primary-600 hover:text-primary-700 font-medium px-2">
+              AI confidence review →
+            </Link>
+          )}
+          <div className="inline-flex rounded-lg border border-gray-200 dark:border-gray-700 p-0.5 text-sm">
+            {(["unsigned", "signed"] as const).map((s) => (
+              <button
+                key={s}
+                onClick={() => setStatus(s)}
+                className={`px-3 py-1 rounded-md ${status === s
+                  ? "bg-primary-600 text-white"
+                  : "text-gray-600 dark:text-gray-300 hover:bg-black/5 dark:hover:bg-white/5"}`}
+              >
+                {s === "unsigned" ? "Unsigned" : "Signed"}
+              </button>
+            ))}
+          </div>
+          <button onClick={load} aria-label="Refresh" className="p-2 rounded-lg text-gray-500 hover:bg-black/5 dark:hover:bg-white/5">
+            <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
+          </button>
+        </div>
       </div>
 
-      <div className="bg-white dark:bg-surface rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
-        {isLoading ? <div className="p-12 text-center text-gray-400 dark:text-gray-500">Loading...</div> : (
-          <table className="w-full text-sm">
-            <thead><tr className="border-b border-gray-100 dark:border-gray-800">
-              <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase">Study</th>
-              <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase">Use Case</th>
-              <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase">Confidence</th>
-              <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase">Status</th>
-              <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase">Reviewer</th>
-              <th className="py-3 px-4"></th>
-            </tr></thead>
-            <tbody className="divide-y divide-gray-50 dark:divide-gray-800">
-              {(data?.items || []).map((item) => (
-                <tr key={item.id} className="hover:bg-gray-50 dark:hover:bg-surface-raised">
-                  <td className="py-2.5 px-4">
-                    <div className="flex items-center gap-2">
-                      <AlertTriangle className="w-4 h-4 text-amber-500" />
-                      <span className="text-gray-700 dark:text-gray-300 font-mono text-xs">{item.study_instance_uid.slice(0, 20)}...</span>
-                    </div>
-                  </td>
-                  <td className="py-2.5 px-4 text-gray-600 dark:text-gray-400 dark:text-gray-500">{item.usecase_name.replace(/_/g, " ")}</td>
-                  <td className="py-2.5 px-4">
-                    <span className={`px-2 py-0.5 text-xs rounded-full font-medium ${getConfidenceColor(item.confidence_score)}`}>
-                      {(item.confidence_score * 100).toFixed(1)}%
+      {error && <ErrorBanner message={error} onDismiss={() => setError(null)} className="mb-4" />}
+
+      <div className="flex flex-wrap gap-2 mb-4" role="tablist">
+        {TABS.map((t) => {
+          const count = t === "all" ? total : data?.counts[t] ?? 0;
+          const active = tab === t;
+          const color = t === "all" ? "" : PRIORITY_META[t].cls;
+          return (
+            <button
+              key={t}
+              role="tab"
+              aria-selected={active}
+              onClick={() => setTab(t)}
+              className={`px-3 py-1.5 text-sm font-medium rounded-full border transition ${
+                active
+                  ? t === "all" ? "bg-gray-900 text-white border-gray-900 dark:bg-gray-100 dark:text-gray-900" : `${color} ring-2 ring-offset-1 ring-current`
+                  : "border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-black/5 dark:hover:bg-white/5"
+              }`}
+            >
+              {t === "all" ? "All" : PRIORITY_META[t].label}
+              <span className="ml-1.5 text-xs opacity-70">{count}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="bg-white dark:bg-surface rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-gray-100 dark:border-gray-800 text-left text-xs font-semibold uppercase text-gray-500 dark:text-gray-400">
+              <th className="py-3 px-4">Priority</th>
+              <th className="py-3 px-4">Patient</th>
+              <th className="py-3 px-4">Study</th>
+              <th className="py-3 px-4">Why</th>
+              <th className="py-3 px-4">{status === "unsigned" ? "Waiting" : "Signed"}</th>
+              <th className="py-3 px-4">{status === "unsigned" ? "Reading" : "Signed by"}</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-50 dark:divide-gray-800">
+            {items.map((i) => (
+              <tr
+                key={i.study_instance_uid}
+                onClick={() => router.push(`/study/${i.study_instance_uid}`)}
+                onKeyDown={(e) => { if (e.key === "Enter") router.push(`/study/${i.study_instance_uid}`); }}
+                tabIndex={0}
+                className="cursor-pointer hover:bg-gray-50 dark:hover:bg-surface-raised focus:outline-none focus:bg-gray-50 dark:focus:bg-surface-raised"
+              >
+                <td className="py-2.5 px-4 whitespace-nowrap">
+                  <PriorityBadge priority={i.priority} overridden={i.priority_overridden} />
+                </td>
+                <td className="py-2.5 px-4">
+                  <p className="font-medium text-gray-900 dark:text-gray-100">{formatPatientName(i.patient_name) || "—"}</p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 font-mono">{i.patient_id || ""}</p>
+                </td>
+                <td className="py-2.5 px-4">
+                  <p className="text-gray-800 dark:text-gray-200">
+                    {[i.modality, i.body_part_examined].filter(Boolean).join(" · ") || "—"}
+                  </p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 truncate max-w-[16rem]" title={i.study_description || ""}>
+                    {i.study_description || i.usecases.map((u) => u.replace(/_/g, " ")).join(", ")}
+                  </p>
+                </td>
+                <td className="py-2.5 px-4 text-xs text-gray-600 dark:text-gray-300 max-w-[22rem]">
+                  {i.priority_reasons.length ? (
+                    <span title={i.priority_reasons.join("\n")}>
+                      {i.priority_reasons[0]}
+                      {i.priority_reasons.length > 1 && <span className="text-gray-400"> +{i.priority_reasons.length - 1} more</span>}
                     </span>
-                  </td>
-                  <td className="py-2.5 px-4">
-                    <span className={`px-2 py-0.5 text-xs rounded-full font-medium ${
-                      item.status === "approved" ? "bg-green-50 dark:bg-green-950 text-green-700 dark:text-green-300" :
-                      item.status === "rejected" ? "bg-red-50 dark:bg-red-950 text-red-700 dark:text-red-300" :
-                      "bg-amber-50 dark:bg-amber-950 text-amber-700 dark:text-amber-300"
-                    }`}>{item.status}</span>
-                  </td>
-                  <td className="py-2.5 px-4 text-gray-500 dark:text-gray-400 dark:text-gray-500">{item.reviewer || "-"}</td>
-                  <td className="py-2.5 px-4">
-                    <Link href={`/review/${item.id}`} className="flex items-center gap-1 text-primary-600 hover:text-primary-700 text-xs font-medium">
-                      <Eye className="w-3.5 h-3.5" /> Review
-                    </Link>
-                  </td>
-                </tr>
-              ))}
-              {(!data?.items || data.items.length === 0) && (
-                <tr><td colSpan={6} className="py-12 text-center text-gray-400 dark:text-gray-500">No items in review queue</td></tr>
-              )}
-            </tbody>
-          </table>
-        )}
+                  ) : (
+                    <span className="text-gray-400">No abnormal AI findings</span>
+                  )}
+                </td>
+                <td className="py-2.5 px-4 whitespace-nowrap text-gray-600 dark:text-gray-300">
+                  {status === "unsigned" ? waiting(i.received_at) : formatDateTime(i.signed_at)}
+                </td>
+                <td className="py-2.5 px-4 whitespace-nowrap text-xs text-gray-600 dark:text-gray-300">
+                  {status === "unsigned"
+                    ? (i.assigned_to_username ? `${i.reading_status.replace("_", " ")} · ${i.assigned_to_username}` : "Unassigned")
+                    : i.signed_by || "—"}
+                </td>
+              </tr>
+            ))}
+            {!loading && items.length === 0 && (
+              <tr>
+                <td colSpan={6} className="py-12 text-center text-gray-400 dark:text-gray-500">
+                  {status === "unsigned" ? "Nothing awaiting signature." : "No signed reports yet."}
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
       </div>
     </div>
   );

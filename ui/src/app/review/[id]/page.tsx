@@ -28,7 +28,7 @@ export default function ReviewDetailPage() {
     setSubmitting(true);
     try {
       await api.review.submit(reviewId, { status, notes });
-      router.push("/review");
+      router.push("/review/ai");
     } catch (e: any) {
       alert(e.message);
     } finally {
@@ -41,7 +41,7 @@ export default function ReviewDetailPage() {
 
   return (
     <div>
-      <Link href="/review" className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 mb-4">
+      <Link href="/review/ai" className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 mb-4">
         <ArrowLeft className="w-4 h-4" /> Back to Review Queue
       </Link>
 
