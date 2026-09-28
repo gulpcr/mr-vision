@@ -31,7 +31,11 @@ class SeatLimitError(ValueError):
 
 
 PLATFORM_TENANT_ID = "default"
-INVITATION_TTL = timedelta(hours=72)
+
+
+def _invitation_ttl() -> timedelta:
+    """How long an invitation / password-reset link stays valid (INVITATION_TTL_HOURS)."""
+    return timedelta(hours=max(1, get_settings().invitation_ttl_hours))
 
 
 def _hash_token(token: str) -> str:
@@ -268,7 +272,7 @@ class AuthService:
         invited_by: str = "system",
     ) -> tuple[User, str]:
         """Create an ``invited`` account in ``tenant_id`` and return it with the one-time
-        cleartext invitation token (only its SHA-256 is stored; valid 72 hours). The
+        cleartext invitation token (only its SHA-256 is stored; valid INVITATION_TTL_HOURS, default 3). The
         account cannot log in until the invitation is accepted and a password is set."""
         import secrets
 
@@ -324,7 +328,7 @@ class AuthService:
         token = secrets.token_urlsafe(32)
         values: dict[str, Any] = {
             "invitation_token_hash": _hash_token(token),
-            "invitation_expires_at": datetime.now(timezone.utc) + INVITATION_TTL,
+            "invitation_expires_at": datetime.now(timezone.utc) + _invitation_ttl(),
         }
         if status:
             values["status"] = status

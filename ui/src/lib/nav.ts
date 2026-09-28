@@ -22,6 +22,7 @@ import {
   KeyRound,
   Palette,
   Globe,
+  Layers,
   type LucideIcon,
 } from "lucide-react";
 import { STUDY_READ, type Permission } from "@/lib/permissions";
@@ -46,7 +47,8 @@ export const NAV_ITEMS: NavItem[] = [
   { href: "/remote", label: "Remote Reading", labelKey: "remoteReading", icon: Radio, requiredPermission: "study.view" },
   { href: "/onboarding", label: "Patient Intake", icon: UserPlus, requiredPermission: "patient.onboard" },
   { href: "/upload", label: "Upload DICOM", labelKey: "uploadDicom", icon: Upload, requiredPermission: "study.upload" },
-  { href: "/admin/usecases", label: "AI Models", icon: Brain, requiredPermission: "config.manage" },
+  // The AI model registry is platform-wide — superadmin only, hidden from tenants.
+  { href: "/admin/usecases", label: "AI Models", icon: Brain, requiredPermission: "tenant.manage" },
   { href: "/admin/routing", label: "Routing Rules", icon: GitBranch, requiredPermission: "config.manage" },
   { href: "/reports", label: "Reports", labelKey: "reports", icon: FileText, requiredPermission: "result.export" },
   { href: "/compare", label: "Compare", icon: ArrowLeftRight, requiredPermission: STUDY_READ },
@@ -64,4 +66,5 @@ export const NAV_ITEMS: NavItem[] = [
   { href: "/admin/tools", label: "Admin Tools", icon: Wrench, requiredPermission: "data.purge" },
   { href: "/admin/platform", label: "Platform", icon: Globe, requiredPermission: "tenant.manage" },
   { href: "/admin/tenants", label: "Tenants", icon: Building2, requiredPermission: "tenant.manage" },
+  { href: "/admin/plans", label: "Plans", icon: Layers, requiredPermission: "tenant.manage" },
 ];

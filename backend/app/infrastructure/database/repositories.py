@@ -833,6 +833,7 @@ class PgTenantRepository(TenantRepository):
             status=getattr(record, "status", None) or ("active" if record.is_active else "suspended"),
             plan=getattr(record, "plan", None) or "starter",
             features=list(getattr(record, "features", None) or []),
+            max_users=getattr(record, "max_users", None),
             created_at=record.created_at,
         )
 

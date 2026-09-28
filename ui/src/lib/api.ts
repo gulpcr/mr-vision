@@ -447,6 +447,7 @@ export interface RoleDef {
 
 export interface InviteResult extends UserResponse {
   invite_link: string;
+  expires_in_hours?: number;
 }
 
 export interface WidgetPosition { x: number; y: number; w: number; h: number }
@@ -570,6 +571,20 @@ export interface DicomEndpoint {
   created_at: string | null;
 }
 
+export interface Plan {
+  name: string;
+  display_name: string;
+  description: string | null;
+  default_max_users: number | null;
+  /** null = every registered AI use case. */
+  usecases: string[] | null;
+  /** Permission ceiling; ["*"] = no ceiling. */
+  permissions: string[];
+  is_active: boolean;
+  tenant_count: number;
+  updated_at: string | null;
+}
+
 export interface Tenant {
   id: string;
   name: string;
@@ -578,6 +593,7 @@ export interface Tenant {
   status: string;
   plan: string;
   features: string[];
+  max_users?: number | null;
   created_at: string | null;
 }
 
@@ -585,6 +601,7 @@ export interface CreatedTenant extends Tenant {
   admin_username: string;
   admin_temp_password: string | null;
   admin_invite_link: string | null;
+  invite_expires_in_hours?: number | null;
   called_aet: string | null;
 }
 
@@ -967,7 +984,7 @@ export const api = {
     inviteUser: (data: { username: string; email: string; role: string; full_name?: string }) =>
       fetchAPI<InviteResult>("/auth/users/invite", { method: "POST", body: JSON.stringify(data) }),
     reinviteUser: (userId: string) =>
-      fetchAPI<{ invite_link: string }>(`/auth/users/${userId}/reinvite`, { method: "POST" }),
+      fetchAPI<{ invite_link: string; expires_in_hours?: number }>(`/auth/users/${userId}/reinvite`, { method: "POST" }),
     revokeUserSessions: (userId: string) =>
       fetchAPI<{ status: string }>(`/auth/users/${userId}/revoke-sessions`, { method: "POST" }),
     acceptInvitation: (token: string, password: string) =>
@@ -1088,7 +1105,8 @@ export const api = {
   },
   roles: {
     list: () => fetchAPI<RoleDef[]>("/roles"),
-    catalog: () => fetchAPI<{ permissions: { key: string; description: string }[] }>("/roles/permissions"),
+    catalog: () =>
+      fetchAPI<{ permissions: { key: string; description: string; in_plan?: boolean }[] }>("/roles/permissions"),
     create: (data: { name: string; permissions: string[] }) =>
       fetchAPI<RoleDef>("/roles", { method: "POST", body: JSON.stringify(data) }),
     update: (id: string, data: { name?: string; permissions?: string[] }) =>
@@ -1130,7 +1148,7 @@ export const api = {
     revokeSessions: (userId: string) =>
       fetchAPI<{ status: string }>(`/admin/platform/users/${userId}/revoke-sessions`, { method: "POST" }),
     resetLink: (userId: string) =>
-      fetchAPI<{ reset_link: string }>(`/admin/platform/users/${userId}/reset-link`, { method: "POST" }),
+      fetchAPI<{ reset_link: string; expires_in_hours?: number }>(`/admin/platform/users/${userId}/reset-link`, { method: "POST" }),
     updateLimits: (tenantId: string, maxUsers: number | null) =>
       fetchAPI<{ tenant_id: string; max_users: number | null }>(`/admin/platform/tenants/${tenantId}/limits`, {
         method: "PUT",
@@ -1153,14 +1171,14 @@ export const api = {
       fetchAPI<TenantApiKey>(`/admin/tenants/${tenantId}/api-keys/${keyId}`, { method: "DELETE" }),
   },
   plans: {
-    list: () => fetchAPI<Record<string, string[]>>("/admin/plans"),
-    getFeatures: (planName: string) =>
-      fetchAPI<{ plan_name: string; features: string[] }>(`/admin/plans/${planName}/features`),
-    setFeatures: (planName: string, features: string[]) =>
-      fetchAPI<{ plan_name: string; features: string[] }>(`/admin/plans/${planName}/features`, {
-        method: "PUT",
-        body: JSON.stringify({ features }),
-      }),
+    list: () => fetchAPI<Plan[]>("/admin/plans"),
+    catalog: () =>
+      fetchAPI<{ usecases: string[]; permissions: { key: string; description: string }[] }>("/admin/plans/catalog"),
+    create: (data: Partial<Plan> & { name: string; display_name: string }) =>
+      fetchAPI<Plan>("/admin/plans", { method: "POST", body: JSON.stringify(data) }),
+    update: (name: string, data: Partial<Plan>) =>
+      fetchAPI<Plan>(`/admin/plans/${encodeURIComponent(name)}`, { method: "PUT", body: JSON.stringify(data) }),
+    remove: (name: string) => fetchAPI<void>(`/admin/plans/${encodeURIComponent(name)}`, { method: "DELETE" }),
   },
   audit: {
     list: (params?: Record<string, string>) => {

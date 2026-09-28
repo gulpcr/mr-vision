@@ -268,6 +268,12 @@ async def my_permissions(request: Request):
     }
 
 
+def _ttl_hours() -> int:
+    from app.config import get_settings
+
+    return max(1, get_settings().invitation_ttl_hours)
+
+
 async def _invite_link(request: Request, token: str, tenant_id: str) -> str:
     from app.infrastructure.tenant.repository import get_tenant_by_id
 
@@ -288,7 +294,7 @@ async def invite_user(
     session: Annotated[AsyncSession, Depends(get_session)],
 ):
     """Invite a user into the caller's own workspace with a role defined there. Returns a
-    one-time link (valid 72h) for the admin to send — the platform has no mail relay."""
+    one-time link (valid INVITATION_TTL_HOURS, default 3h) for the admin to send — the platform has no mail relay."""
     tenant_id = getattr(request.state, "tenant_id", "default") or "default"
     if body.role == "admin" and "admin" not in (getattr(request.state, "roles", None) or []):
         raise HTTPException(status_code=403, detail="Only an admin can invite another admin")
@@ -303,7 +309,8 @@ async def invite_user(
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
     return {**_to_user_response(user).model_dump(), "status": "invited",
-            "invite_link": await _invite_link(request, token, tenant_id)}
+            "invite_link": await _invite_link(request, token, tenant_id),
+            "expires_in_hours": _ttl_hours()}
 
 
 @router.post("/users/{user_id}/reinvite", dependencies=[require_permission("user.manage")])
@@ -320,7 +327,8 @@ async def reinvite_user(
         )
     except ValueError:
         raise HTTPException(status_code=404, detail="User not found")
-    return {"invite_link": await _invite_link(request, token, tenant_id)}
+    return {"invite_link": await _invite_link(request, token, tenant_id),
+            "expires_in_hours": _ttl_hours()}
 
 
 @router.post("/users/{user_id}/revoke-sessions", dependencies=[require_permission("user.manage")])

@@ -15,7 +15,9 @@ from sqlalchemy import select
 
 from app.infrastructure.database.models import RoleRecord, UserRecord
 from app.infrastructure.database.session import async_session_factory
+from app.domain.permissions import apply_ceiling
 from app.infrastructure.tenant.db_scope import tenant_scope
+from app.infrastructure.tenant.entitlements import get_tenant_entitlements
 
 # The seeded Admin tenant (renamed from "default" in alembic 043). Platform-admin and
 # platform-operator flags are honoured only for accounts in this tenant, so no tenant's
@@ -37,6 +39,8 @@ class Principal:
     token_version: int
     is_platform_admin: bool
     is_platform_operator: bool
+    # AI use cases the tenant's plan includes (None = all).
+    allowed_usecases: frozenset[str] | None = None
 
 
 def invalidate_principal(user_id: str) -> None:
@@ -78,16 +82,27 @@ async def load_principal(user_id: str, tenant_id: str) -> Principal | None:
                     )
                 ).scalar_one_or_none()
                 in_platform_tenant = tenant_id == PLATFORM_TENANT_ID
+                role_permissions = frozenset((role.permissions or []) if role else [])
                 principal = Principal(
                     user_id=user.id,
                     username=user.username,
                     tenant_id=tenant_id,
                     role=user.role,
-                    permissions=frozenset((role.permissions or []) if role else []),
+                    permissions=role_permissions,
                     token_version=user.token_version or 0,
                     is_platform_admin=bool(user.is_platform_admin) and in_platform_tenant,
                     is_platform_operator=bool(user.is_platform_operator) and in_platform_tenant,
                 )
+
+    if principal is not None:
+        # The tenant's plan caps what any of its roles may do, and which AI use cases
+        # it can run (plans, alembic 048).
+        entitlements = await get_tenant_entitlements(tenant_id)
+        principal = Principal(
+            **{**principal.__dict__,
+               "permissions": apply_ceiling(principal.permissions, entitlements.permissions),
+               "allowed_usecases": entitlements.usecases},
+        )
 
     if len(_cache) >= _CACHE_MAX:
         _cache.clear()

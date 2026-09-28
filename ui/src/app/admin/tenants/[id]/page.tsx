@@ -5,7 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { mutate } from "swr";
 import { useTenant, useTenantApiKeys, useTenantUsers } from "@/lib/hooks";
-import { api, TenantUser, type DicomEndpoint } from "@/lib/api";
+import { api, TenantUser, type DicomEndpoint, type Plan } from "@/lib/api";
 import { startImpersonation } from "@/lib/impersonation";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { ErrorBanner } from "@/components/ui/ErrorBanner";
@@ -33,6 +33,10 @@ function StatusBadge({ status }: { status: string }) {
 function PlanAndFeaturesCard({ tenantId }: { tenantId: string }) {
   const { data: tenant } = useTenant(tenantId);
   const [plan, setPlan] = useState("");
+  const [plans, setPlans] = useState<Plan[]>([]);
+  useEffect(() => {
+    api.plans.list().then(setPlans).catch(() => setPlans([]));
+  }, []);
   const [newFeature, setNewFeature] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pendingStatus, setPendingStatus] = useState<string | null>(null);
@@ -97,11 +101,16 @@ function PlanAndFeaturesCard({ tenantId }: { tenantId: string }) {
 
         <div className="flex items-center gap-2">
           <label className="text-sm text-gray-600 dark:text-gray-400 font-medium w-20">Plan</label>
-          <input
-            defaultValue={tenant.plan}
+          <select
+            value={currentPlan}
             onChange={(e) => setPlan(e.target.value)}
-            className="text-sm border border-gray-200 dark:border-gray-700 dark:bg-surface-raised rounded-lg px-3 py-1.5 w-40"
-          />
+            className="text-sm border border-gray-200 dark:border-gray-700 dark:bg-surface-raised rounded-lg px-3 py-1.5 w-56"
+          >
+            {!plans.some((p) => p.name === currentPlan) && <option value={currentPlan}>{currentPlan}</option>}
+            {plans.filter((p) => p.is_active || p.name === currentPlan).map((p) => (
+              <option key={p.name} value={p.name}>{p.display_name}</option>
+            ))}
+          </select>
           <button
             onClick={savePlan}
             className="px-3 py-1.5 text-sm font-medium text-white bg-primary-600 rounded-lg hover:bg-primary-700 transition-colors"
@@ -110,8 +119,23 @@ function PlanAndFeaturesCard({ tenantId }: { tenantId: string }) {
           </button>
         </div>
 
+        {(() => {
+          const p = plans.find((x) => x.name === currentPlan);
+          if (!p) return null;
+          return (
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              {p.usecases === null ? "All AI use cases" : `${p.usecases.length} AI use case(s)`}
+              {" · "}
+              {p.permissions.includes("*") ? "no permission ceiling" : `${p.permissions.length} permission(s) allowed`}
+              {p.default_max_users ? ` · default ${p.default_max_users} seats` : ""}
+            </p>
+          );
+        })()}
+
         <div>
-          <label className="text-sm text-gray-600 dark:text-gray-400 font-medium block mb-2">Features</label>
+          <label className="text-sm text-gray-600 dark:text-gray-400 font-medium block mb-2">
+            Extra use cases <span className="font-normal text-gray-400">(added on top of the plan)</span>
+          </label>
           <div className="flex flex-wrap gap-2 mb-2">
             {tenant.features.length === 0 && <span className="text-sm text-gray-400 dark:text-gray-500">None</span>}
             {tenant.features.map((f) => (
@@ -586,8 +610,9 @@ function DicomEndpointsCard({ tenantId }: { tenantId: string }) {
   );
 }
 
-function LimitsAndPurgeCard({ tenantId, slug }: { tenantId: string; slug: string }) {
-  const [maxUsers, setMaxUsers] = useState("");
+function LimitsAndPurgeCard({ tenantId, slug, maxUsersNow }: { tenantId: string; slug: string; maxUsersNow: number | null }) {
+  const [maxUsers, setMaxUsers] = useState(maxUsersNow ? String(maxUsersNow) : "");
+  useEffect(() => setMaxUsers(maxUsersNow ? String(maxUsersNow) : ""), [maxUsersNow]);
   const [confirm, setConfirm] = useState("");
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -610,6 +635,7 @@ function LimitsAndPurgeCard({ tenantId, slug }: { tenantId: string; slug: string
             try {
               const r = await api.platform.updateLimits(tenantId, maxUsers ? Number(maxUsers) : null);
               setMsg(`Seat limit: ${r.max_users ?? "unlimited"}`);
+              mutate(["tenant", tenantId]);
             } catch (e: any) { setErr(e.message); }
           }}
           className="px-3 py-1.5 text-sm rounded-lg bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700">
@@ -669,7 +695,7 @@ export default function TenantDetailPage() {
       <DicomEndpointsCard tenantId={tenantId} />
       <ApiKeysCard tenantId={tenantId} />
       <UsersCard tenantId={tenantId} />
-      {tenant && <LimitsAndPurgeCard tenantId={tenantId} slug={tenant.slug} />}
+      {tenant && <LimitsAndPurgeCard tenantId={tenantId} slug={tenant.slug} maxUsersNow={tenant.max_users ?? null} />}
     </div>
   );
 }

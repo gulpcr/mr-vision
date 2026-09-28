@@ -4,7 +4,7 @@ GET  /admin/platform/overview                   usage per tenant (studies, users
 GET  /admin/platform/audit                      audit log across tenants (filterable)
 GET  /admin/platform/users                      cross-tenant user search (metadata only)
 POST /admin/platform/users/{id}/revoke-sessions sign a user out everywhere
-POST /admin/platform/users/{id}/reset-link      one-time password-set link (72h)
+POST /admin/platform/users/{id}/reset-link      one-time password-set link (INVITATION_TTL_HOURS)
 PUT  /admin/platform/tenants/{id}/limits        seat limit
 POST /admin/platform/tenants/{id}/purge         irreversibly delete a tenant's data
 
@@ -180,7 +180,10 @@ async def reset_link(
 
     user = await _user_or_404(session, user_id)
     token = await AuthService(session).issue_password_reset(user.id, user.tenant_id, actor=f"platform:{actor}")
-    return {"reset_link": await _invite_link(request, token, user.tenant_id)}
+    from app.interface.api.auth import _ttl_hours
+
+    return {"reset_link": await _invite_link(request, token, user.tenant_id),
+            "expires_in_hours": _ttl_hours()}
 
 
 @router.put("/tenants/{tenant_id}/limits")

@@ -8,7 +8,7 @@ import { ErrorBanner } from "@/components/ui/ErrorBanner";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { KeyRound, Plus, Save, Trash2, Lock, Copy } from "lucide-react";
 
-type CatalogEntry = { key: string; description: string };
+type CatalogEntry = { key: string; description: string; in_plan?: boolean };
 
 const RESOURCE_LABELS: Record<string, string> = {
   study: "Studies & worklist",
@@ -222,6 +222,9 @@ export default function RolesPage() {
                         />
                         <span>
                           <span className="font-mono text-xs text-gray-700 dark:text-gray-300">{entry.key}</span>
+                          {entry.in_plan === false && (
+                            <span className="ml-1.5 text-[10px] uppercase tracking-wider text-amber-600">not in your plan</span>
+                          )}
                           <span className="block text-xs text-gray-500 dark:text-gray-400">{entry.description}</span>
                         </span>
                       </label>

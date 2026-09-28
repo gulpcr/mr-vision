@@ -25,6 +25,7 @@ class TenantResponse(BaseModel):
     status: str
     plan: str
     features: list[str]
+    max_users: int | None = None
     created_at: str | None = None
 
 
@@ -33,8 +34,9 @@ class CreatedTenantResponse(TenantResponse):
     # Deprecated: provisioning no longer generates passwords (always None).
     admin_temp_password: str | None = None
     admin_invite_link: str | None = Field(
-        default=None, description="One-time link (72h) for the first admin to set a password"
+        default=None, description="One-time link for the first admin to set a password"
     )
+    invite_expires_in_hours: int | None = None
     called_aet: str | None = None
 
 
@@ -72,6 +74,7 @@ def _to_response(tenant) -> TenantResponse:
         status=tenant.status,
         plan=tenant.plan,
         features=tenant.features,
+        max_users=tenant.max_users,
         created_at=tenant.created_at.isoformat() if tenant.created_at else None,
     )
 
@@ -113,13 +116,14 @@ async def create_tenant(
         status_code = 409 if "already exists" in str(e) else 400
         raise HTTPException(status_code=status_code, detail=str(e))
 
-    from app.interface.api.auth import _invite_link
+    from app.interface.api.auth import _invite_link, _ttl_hours
 
     return CreatedTenantResponse(
         **_to_response(result.tenant).model_dump(),
         admin_username=result.admin_user.username,
         admin_temp_password=None,
         admin_invite_link=await _invite_link(request, result.invite_token, result.tenant.id),
+        invite_expires_in_hours=_ttl_hours(),
         called_aet=(result.dicom_endpoint or {}).get("called_aet"),
     )
 
@@ -139,12 +143,27 @@ async def get_tenant(
 async def update_tenant_plan(
     tenant_id: str,
     body: UpdatePlanRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
     service: Annotated[TenantService, Depends(get_tenant_service)],
 ):
+    """Move a tenant to another (existing, active) plan. Its use cases and permission
+    ceiling change immediately; its seat limit is left as is."""
+    from app.application.plan_service import PlanNotFound, PlanService
+    from app.infrastructure.auth.principal import invalidate_all_principals
+    from app.infrastructure.tenant.entitlements import invalidate_entitlements
+
+    try:
+        plan = await PlanService(session).get_plan(body.plan)
+    except PlanNotFound as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    if not plan.is_active:
+        raise HTTPException(status_code=422, detail=f"Plan '{body.plan}' is inactive")
     try:
         tenant = await service.update_plan(tenant_id, body.plan)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    invalidate_entitlements()
+    invalidate_all_principals()
     return _to_response(tenant)
 
 
@@ -158,6 +177,11 @@ async def update_tenant_features(
         tenant = await service.update_features(tenant_id, body.features)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    from app.infrastructure.auth.principal import invalidate_all_principals
+    from app.infrastructure.tenant.entitlements import invalidate_entitlements
+
+    invalidate_entitlements()
+    invalidate_all_principals()
     return _to_response(tenant)
 
 

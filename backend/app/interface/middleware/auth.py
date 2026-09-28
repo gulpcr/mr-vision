@@ -53,6 +53,7 @@ def _set_anonymous(request: Request) -> None:
     request.state.is_platform_operator = False
     request.state.impersonated_by = None
     request.state.referral_scoped = False
+    request.state.allowed_usecases = None
 
 
 def _set_superuser(request: Request, user: str) -> None:
@@ -66,6 +67,7 @@ def _set_superuser(request: Request, user: str) -> None:
     request.state.is_platform_operator = True
     request.state.impersonated_by = None
     request.state.referral_scoped = False
+    request.state.allowed_usecases = None
 
 
 class RBACMiddleware(BaseHTTPMiddleware):
@@ -200,6 +202,7 @@ class RBACMiddleware(BaseHTTPMiddleware):
         request.state.is_platform_operator = principal.is_platform_operator and not impersonated_by
         request.state.impersonated_by = impersonated_by
         request.state.referral_scoped = is_referral_scoped(principal.permissions)
+        request.state.allowed_usecases = principal.allowed_usecases
         request.state.jti = payload.get("jti")
         request.state.token_exp = payload.get("exp")
 

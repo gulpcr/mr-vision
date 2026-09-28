@@ -11,6 +11,7 @@ import { ErrorBanner } from "@/components/ui/ErrorBanner";
 import { Table, Caption, Th } from "@/components/ui/Table";
 import { TableSkeleton } from "@/components/ui/TableSkeleton";
 import { Users, Plus, UserX, ShieldAlert, Link2, LogOut, Copy, Check } from "lucide-react";
+import { copyToClipboard } from "@/lib/clipboard";
 
 function roleBadgeClass(role: string): string {
   switch (role) {
@@ -38,12 +39,13 @@ function statusBadge(u: { is_active: boolean; status?: string }) {
     : { label: "Deactivated", cls: "bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400" };
 }
 
-function CopyLink({ link }: { link: string }) {
-  const [copied, setCopied] = useState(false);
+function CopyLink({ link, hours }: { link: string; hours?: number }) {
+  const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
   return (
     <div className="space-y-2">
       <p className="text-xs text-gray-500 dark:text-gray-400">
-        Send this one-time link to the user (valid for 72 hours). It lets them set their own password.
+        Send this one-time link to the user (valid for {hours ?? 3} hour{(hours ?? 3) === 1 ? "" : "s"}).
+        It lets them set their own password. Each new link replaces the previous one.
       </p>
       <div className="flex gap-2">
         <input
@@ -54,16 +56,19 @@ function CopyLink({ link }: { link: string }) {
         />
         <button
           type="button"
-          onClick={async () => {
-            await navigator.clipboard.writeText(link).catch(() => {});
-            setCopied(true);
-          }}
+          onClick={async () => setState((await copyToClipboard(link)) ? "copied" : "failed")}
           className="px-3 py-2 text-xs font-medium rounded-lg bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700"
           aria-label="Copy link"
         >
-          {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+          {state === "copied" ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
         </button>
       </div>
+      {state === "copied" && <p className="text-xs text-green-600 dark:text-green-400">Copied to clipboard.</p>}
+      {state === "failed" && (
+        <p className="text-xs text-red-600 dark:text-red-400">
+          Your browser blocked copying — click the link above, then press Ctrl+C.
+        </p>
+      )}
     </div>
   );
 }
@@ -79,7 +84,7 @@ export default function UsersPage() {
   const [form, setForm] = useState({ username: "", email: "", full_name: "", role: "radiologist" });
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [inviteBusy, setInviteBusy] = useState(false);
-  const [issuedLink, setIssuedLink] = useState<{ username: string; link: string } | null>(null);
+  const [issuedLink, setIssuedLink] = useState<{ username: string; link: string; hours?: number } | null>(null);
   const [pendingDeactivate, setPendingDeactivate] = useState<{ id: string; username: string } | null>(null);
   const [pendingRoleChange, setPendingRoleChange] = useState<{ id: string; username: string; role: string } | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -111,7 +116,7 @@ export default function UsersPage() {
     try {
       const res = await api.auth.inviteUser(form);
       setShowInvite(false);
-      setIssuedLink({ username: res.username, link: res.invite_link });
+      setIssuedLink({ username: res.username, link: res.invite_link, hours: res.expires_in_hours });
       setForm({ username: "", email: "", full_name: "", role: form.role });
       mutate();
     } catch (err: any) {
@@ -124,7 +129,7 @@ export default function UsersPage() {
   const reinvite = async (id: string, username: string) => {
     try {
       const res = await api.auth.reinviteUser(id);
-      setIssuedLink({ username, link: res.invite_link });
+      setIssuedLink({ username, link: res.invite_link, hours: res.expires_in_hours });
     } catch (err: any) {
       setActionError(err.message || "Failed to create a new link");
     }
@@ -280,7 +285,7 @@ export default function UsersPage() {
             </select>
           </label>
           <p className="text-xs text-gray-400 dark:text-gray-500">
-            You&apos;ll get a one-time link to send them. They set their own password; nobody else ever sees it.
+            You&apos;ll get a one-time link to send them (it expires after a few hours). They set their own password; nobody else ever sees it.
           </p>
           <div className="flex justify-end gap-2 pt-2">
             <button type="button" onClick={() => setShowInvite(false)}
@@ -296,7 +301,7 @@ export default function UsersPage() {
       </Modal>
 
       <Modal open={issuedLink !== null} onClose={() => setIssuedLink(null)} title={`Invitation for ${issuedLink?.username ?? ""}`} size="sm">
-        {issuedLink && <CopyLink link={issuedLink.link} />}
+        {issuedLink && <CopyLink key={issuedLink.link} link={issuedLink.link} hours={issuedLink.hours} />}
       </Modal>
 
       <ConfirmDialog

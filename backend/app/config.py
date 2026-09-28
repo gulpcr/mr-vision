@@ -118,6 +118,8 @@ class Settings(BaseSettings):
     # Public self-registration (POST /api/auth/register). Off: accounts are created by
     # workspace admins through invitations, never by anonymous sign-up into a tenant.
     public_registration_enabled: bool = False
+    # Lifetime of invitation / password-reset links (hours).
+    invitation_ttl_hours: int = 3
     viewer_cookie_name: str = "mrv_viewer"
     viewer_cookie_secure: bool = False
     jwt_access_token_expire_minutes: int = 480

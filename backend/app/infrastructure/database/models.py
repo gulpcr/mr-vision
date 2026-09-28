@@ -514,7 +514,8 @@ class TenantRecord(Base):
     # "active" | "suspended" | "offboarded" — checked by TenantResolutionMiddleware,
     # independent of is_active (which nothing currently enforces on its own).
     status = Column(String(32), nullable=False, server_default="active")
-    plan = Column(String(32), nullable=False, server_default="starter")
+    plan = Column(String(32), ForeignKey("plans.name", onupdate="CASCADE", ondelete="RESTRICT"),
+                  nullable=False, server_default="starter")
     # Additive override on top of the plan's own features (see plan_features table) —
     # can grant a tenant something beyond its plan, never revoke a plan-granted one.
     features = Column(JSON, nullable=False, default=list)
@@ -1083,3 +1084,25 @@ class DashboardVersionRecord(Base):
     snapshot = Column(JSON, nullable=False)
     created_by = Column(String(128), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class PlanRecord(Base):
+    """A subscription plan defined by the platform admin (alembic 048). Platform-level
+    configuration — no tenant_id, no RLS. ``tenants.plan`` references ``name``."""
+
+    __tablename__ = "plans"
+
+    name = Column(String(32), primary_key=True)
+    display_name = Column(String(128), nullable=False)
+    description = Column(Text, nullable=True)
+    # Seat limit given to tenants created on this plan (None = unlimited).
+    default_max_users = Column(Integer, nullable=True)
+    # AI use cases included (None = every registered use case).
+    usecases = Column(JSON, nullable=True)
+    # Permission ceiling: the most any role of a tenant on this plan may do (["*"] = none).
+    permissions = Column(JSON, nullable=False, default=lambda: ["*"])
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )

@@ -49,7 +49,8 @@ async def update_routing_rules(
     return {"status": "ok", "message": "Routing rules updated"}
 
 
-@router.get("/usecases", response_model=UseCaseListResponse, dependencies=[require_permission("config.manage")])
+# The AI model registry is platform-wide: only platform admins see or manage it.
+@router.get("/usecases", response_model=UseCaseListResponse, dependencies=[Depends(require_platform_admin)])
 async def admin_list_usecases(
     registry: Annotated[UseCaseRegistry, Depends(get_registry)],
 ):
@@ -72,7 +73,7 @@ async def admin_list_usecases(
     )
 
 
-@router.get("/usecases/{usecase_name}/manifest", dependencies=[require_permission("config.manage")])
+@router.get("/usecases/{usecase_name}/manifest", dependencies=[Depends(require_platform_admin)])
 async def get_usecase_manifest(
     usecase_name: str,
     registry: Annotated[UseCaseRegistry, Depends(get_registry)],

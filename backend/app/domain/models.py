@@ -261,6 +261,7 @@ class Tenant:
     status: str = "active"
     plan: str = "starter"
     features: list[str] = field(default_factory=list)
+    max_users: int | None = None
     created_at: datetime = field(default_factory=_utcnow)
 
 

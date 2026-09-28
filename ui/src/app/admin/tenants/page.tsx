@@ -1,10 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { mutate } from "swr";
 import { useTenants } from "@/lib/hooks";
-import { api, CreatedTenant } from "@/lib/api";
+import { api, CreatedTenant, type Plan } from "@/lib/api";
+import { copyToClipboard } from "@/lib/clipboard";
 import { useAuth } from "@/lib/auth";
 import { Modal } from "@/components/ui/Modal";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -43,6 +44,13 @@ export default function TenantsPage() {
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
   const [created, setCreated] = useState<CreatedTenant | null>(null);
+  const [plans, setPlans] = useState<Plan[]>([]);
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  useEffect(() => {
+    api.plans.list().then((p) => setPlans(p.filter((x) => x.is_active))).catch(() => setPlans([]));
+  }, []);
+  const planLabel = (name: string) => plans.find((p) => p.name === name)?.display_name ?? name;
+  const selectedPlan = plans.find((p) => p.name === form.plan);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -67,6 +75,7 @@ export default function TenantsPage() {
         max_users: form.max_users ? Number(form.max_users) : undefined,
       });
       setCreated(result);
+      setCopyState("idle");
       setShowForm(false);
       setForm(EMPTY_FORM);
       mutate("tenants");
@@ -99,14 +108,27 @@ export default function TenantsPage() {
           </div>
           <p className="text-sm text-green-900 dark:text-green-200">
             Roles, default dashboards, settings and branding were created. Send this one-time link
-            (valid 72 hours) to <strong>{created.admin_username}</strong> so they can set their password:
+            (valid {created.invite_expires_in_hours ?? 3} hours) to <strong>{created.admin_username}</strong> so they
+            can set their password:
           </p>
-          <input
-            readOnly
-            value={created.admin_invite_link ?? ""}
-            onFocus={(e) => e.currentTarget.select()}
-            className="mt-2 w-full font-mono text-xs bg-white dark:bg-surface border border-green-200 dark:border-green-900 rounded-lg p-2"
-          />
+          <div className="mt-2 flex gap-2">
+            <input
+              readOnly
+              value={created.admin_invite_link ?? ""}
+              onFocus={(e) => e.currentTarget.select()}
+              className="flex-1 font-mono text-xs bg-white dark:bg-surface border border-green-200 dark:border-green-900 rounded-lg p-2"
+            />
+            <button
+              type="button"
+              onClick={async () => setCopyState((await copyToClipboard(created.admin_invite_link ?? "")) ? "copied" : "failed")}
+              className="px-3 text-xs font-medium rounded-lg bg-white dark:bg-surface border border-green-200 dark:border-green-900"
+            >
+              {copyState === "copied" ? "Copied" : "Copy"}
+            </button>
+          </div>
+          {copyState === "failed" && (
+            <p className="mt-1 text-xs text-red-600">Your browser blocked copying — click the link, then press Ctrl+C.</p>
+          )}
           {created.called_aet && (
             <p className="mt-2 text-sm text-green-900 dark:text-green-200">
               Scanners should send studies to AE title <span className="font-mono">{created.called_aet}</span>.
@@ -157,7 +179,7 @@ export default function TenantsPage() {
                   <td className="py-2.5 px-4 text-gray-500 dark:text-gray-400 font-mono text-xs">{t.slug}</td>
                   <td className="py-2.5 px-4">
                     <span className="px-2 py-0.5 bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-300 text-xs rounded-full">
-                      {t.plan}
+                      {planLabel(t.plan)}
                     </span>
                   </td>
                   <td className="py-2.5 px-4"><StatusBadge status={t.status} /></td>
@@ -199,11 +221,20 @@ export default function TenantsPage() {
           </div>
           <label className="block text-xs">
             <span className="text-gray-500 dark:text-gray-400 uppercase tracking-wider">Plan</span>
-            <input
+            <select
+              required
               value={form.plan}
               onChange={(e) => setForm({ ...form, plan: e.target.value })}
               className="w-full mt-1 text-sm border border-gray-200 dark:border-gray-700 dark:bg-surface-raised rounded-lg px-3 py-2"
-            />
+            >
+              {!plans.some((p) => p.name === form.plan) && <option value={form.plan}>{form.plan}</option>}
+              {plans.map((p) => (
+                <option key={p.name} value={p.name}>{p.display_name}</option>
+              ))}
+            </select>
+            {selectedPlan?.description && (
+              <span className="block mt-1 normal-case tracking-normal text-gray-400">{selectedPlan.description}</span>
+            )}
           </label>
           <p className="text-xs text-gray-400 dark:text-gray-500 pt-2 border-t border-gray-100 dark:border-gray-800">
             The tenant's first admin user, provisioned in the same request:
@@ -253,6 +284,7 @@ export default function TenantsPage() {
               <input
                 type="number"
                 min={1}
+                placeholder={selectedPlan?.default_max_users ? `Plan default: ${selectedPlan.default_max_users}` : "Unlimited"}
                 value={form.max_users}
                 onChange={(e) => setForm({ ...form, max_users: e.target.value })}
                 className="w-full mt-1 text-sm border border-gray-200 dark:border-gray-700 dark:bg-surface-raised rounded-lg px-3 py-2"

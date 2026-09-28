@@ -91,10 +91,19 @@ class TenantProvisioningService:
         from app.infrastructure.database.models import TenantRecord
         from app.infrastructure.database.repositories import PgAuditRepository
 
+        from app.application.plan_service import PlanService
+
+        plan_record = await PlanService(self._session).get_plan(plan)  # PlanNotFound → ValueError
+        if not plan_record.is_active:
+            raise ValueError(f"Plan '{plan}' is inactive")
+        # Seat limit: explicit value, else the plan's default.
+        max_users = max_users or plan_record.default_max_users
+
         tenant = await self._tenants.create_tenant(name=name, slug=slug, plan=plan, features=features)
         if max_users:
             record = await self._session.get(TenantRecord, tenant.id)
             record.max_users = max_users
+            tenant.max_users = max_users
         await seed_tenant_defaults(self._session, tenant.id, name)
 
         endpoint = None

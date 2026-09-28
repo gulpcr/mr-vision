@@ -332,12 +332,10 @@ async def ingest_stable_study(
                     except Exception as exc:
                         logger.warning("orthanc_label_failed", orthanc_id=orthanc_id, error=str(exc))
 
-                    allowed = None
-                    if settings.multi_tenant_enabled:
-                        from app.infrastructure.tenant.repository import get_tenant_by_id
+                    from app.infrastructure.tenant.entitlements import get_tenant_entitlements
 
-                        entitled = await get_tenant_by_id(study.tenant_id)
-                        allowed = set(entitled.features) if entitled else set()
+                    usecases = (await get_tenant_entitlements(study.tenant_id)).usecases
+                    allowed = set(usecases) if usecases is not None else None
                     with tenant_scope(study.tenant_id):
                         await reapply_scope(session)
                         orchestrator = build_job_orchestrator(

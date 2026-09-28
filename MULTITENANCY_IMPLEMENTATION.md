@@ -137,6 +137,25 @@ scope:
 configure, reorder, resize). Also customise (clone), share, versions and delete. No new npm
 dependencies.
 
+### Plans (migration 048)
+
+**Plans tab** (`/admin/plans`, superadmin only). A plan has:
+- a key and display name;
+- a description;
+- a **default seat limit**;
+- the **AI use cases** it includes (or all);
+- a **permission ceiling**: the most any role in the tenant can do, the tenant admin included.
+
+**Effect of a plan:**
+- Tenant create and edit pick the plan from a dropdown.
+- A new tenant takes the plan's default seat limit unless one is given.
+- Entitlements are enforced on every request, whatever `MULTI_TENANT_ENABLED` is set to: the permission ceiling applies to roles, and use cases apply to manual and auto-routed AI jobs.
+- The role builder marks permissions a tenant's plan doesn't include.
+
+**Other changes:**
+- Invitation and reset links expire after `INVITATION_TTL_HOURS` (default 3).
+- The AI Models registry is superadmin-only.
+
 ### Operator console (Phase 6)
 
 - `/admin/platform`: usage per workspace (users, studies, jobs, storage), a cross-tenant audit

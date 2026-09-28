@@ -12,7 +12,6 @@ from app.application.flagged_slice_service import FlaggedSliceService
 from app.application.job_orchestrator import JobOrchestrator
 from app.application.llm_report_service import LLMReportService
 from app.application.longitudinal_service import LongitudinalAnalysisService
-from app.application.plan_service import PlanService
 from app.application.result_service import ResultService
 from app.application.routing_service import RoutingService
 from app.application.study_service import StudyService
@@ -24,7 +23,6 @@ from app.infrastructure.database.repositories import (
     PgAuditRepository,
     PgJobRepository,
     PgPendingStudyTenantRepository,
-    PgPlanFeatureRepository,
     PgResultRepository,
     PgSeriesRepository,
     PgStudyRepository,
@@ -87,19 +85,22 @@ def request_tenant_id(request: Request) -> str:
     return getattr(request.state, "tenant_id", "default") or "default"
 
 
-def tenant_has_usecase_access(usecase_name: str) -> bool:
-    """Feature-key is the usecase name itself (e.g. "brain_mri", "mammography").
-    Single-tenant deployments (multi_tenant_enabled=False) never restrict."""
-    if not get_settings().multi_tenant_enabled:
-        return True
-    return TenantContextService.has_feature(usecase_name)
+def request_allowed_usecases(request: Request) -> frozenset[str] | None:
+    """AI use cases the caller's tenant plan includes (None = all), resolved per request
+    by RBACMiddleware from ``plans`` (alembic 048)."""
+    return getattr(request.state, "allowed_usecases", None)
+
+
+def tenant_has_usecase_access(request: Request, usecase_name: str) -> bool:
+    allowed = request_allowed_usecases(request)
+    return allowed is None or usecase_name in allowed
 
 
 def require_usecase_feature(usecase_name: str):
     from fastapi import HTTPException
 
-    def _check() -> None:
-        if not tenant_has_usecase_access(usecase_name):
+    def _check(request: Request) -> None:
+        if not tenant_has_usecase_access(request, usecase_name):
             raise HTTPException(status_code=403, detail=USECASE_FEATURE_LOCKED_DETAIL)
 
     return Depends(_check)
@@ -152,12 +153,12 @@ def get_job_orchestrator(
     tenant_id: Annotated[str, Depends(request_tenant_id)],
     registry: Annotated[UseCaseRegistry, Depends(get_registry)],
     routing_service: Annotated[RoutingService, Depends(get_routing_service)],
+    request: Request,
 ) -> JobOrchestrator:
-    allowed = None
-    if get_settings().multi_tenant_enabled:
-        ctx = TenantContextService.get_context_or_null()
-        allowed = set(ctx.features) if ctx is not None else set()
-    return build_job_orchestrator(session, tenant_id, registry, routing_service, allowed)
+    allowed = request_allowed_usecases(request)
+    return build_job_orchestrator(
+        session, tenant_id, registry, routing_service, set(allowed) if allowed is not None else None
+    )
 
 
 def get_result_service(
@@ -207,10 +208,6 @@ def get_tenant_api_key_service(
     return TenantApiKeyService(key_repo=PgTenantApiKeyRepository(session))
 
 
-def get_plan_service(
-    session: Annotated[AsyncSession, Depends(get_session)],
-) -> PlanService:
-    return PlanService(plan_feature_repo=PgPlanFeatureRepository(session))
 
 
 def get_auth_service(

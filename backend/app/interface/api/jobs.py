@@ -2,7 +2,7 @@ import asyncio
 import json
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from app.application.job_orchestrator import JobOrchestrator
@@ -21,13 +21,13 @@ router = APIRouter(tags=["jobs"])
 async def create_jobs(
     study_uid: str,
     body: CreateJobRequest,
+    request: Request,
     orchestrator: Annotated[JobOrchestrator, Depends(get_job_orchestrator)],
 ):
-    # Only gates an explicit usecase_names selection — auto-routing (usecase_names
-    # omitted) is left to the routing engine's own candidate list. No-ops entirely
-    # when multi_tenant_enabled is off (tenant_has_usecase_access always True then).
+    # Explicitly requested use cases must be in the tenant's plan; auto-routed jobs are
+    # filtered to the plan by the orchestrator itself.
     if body.usecase_names:
-        locked = [n for n in body.usecase_names if not tenant_has_usecase_access(n)]
+        locked = [n for n in body.usecase_names if not tenant_has_usecase_access(request, n)]
         if locked:
             raise HTTPException(
                 status_code=403,

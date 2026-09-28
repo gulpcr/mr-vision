@@ -46,9 +46,18 @@ def _actor(request: Request) -> str:
 
 
 @router.get("/permissions", dependencies=[require_permission("user.manage||role.manage")])
-async def list_permissions():
-    """Return the permission catalog (key → description) for the roles editor."""
-    return {"permissions": [{"key": k, "description": v} for k, v in PERMISSIONS.items()]}
+async def list_permissions(request: Request):
+    """Return the permission catalog for the roles editor. ``in_plan`` is False for
+    permissions the workspace's plan does not include — granting them to a role has
+    no effect until the plan allows them."""
+    from app.domain.permissions import has_permission
+    from app.infrastructure.tenant.entitlements import get_tenant_entitlements
+
+    ceiling = (await get_tenant_entitlements(_tenant(request))).permissions
+    return {"permissions": [
+        {"key": k, "description": v, "in_plan": has_permission(ceiling, k)}
+        for k, v in PERMISSIONS.items()
+    ]}
 
 
 @router.get("", dependencies=[require_permission("user.manage||role.manage")])

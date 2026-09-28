@@ -147,3 +147,21 @@ def is_referral_scoped(granted) -> bool:
     return has_permission(granted, "study.view.referred") and not has_permission(
         granted, "study.view"
     )
+
+
+def apply_ceiling(granted, ceiling) -> frozenset[str]:
+    """Effective grants of a role inside a plan's permission ceiling.
+
+    A plan caps what any role of a tenant on it may do. ``*`` in the ceiling means no
+    cap. Otherwise the result keeps each role grant the ceiling allows, plus each ceiling
+    key the role's (possibly wildcard) grants cover — so a tenant admin (``*``) on a capped
+    plan gets exactly the plan's permissions, never more.
+    """
+    granted = frozenset(granted or ())
+    ceiling = frozenset(ceiling or ())
+    if WILDCARD in ceiling:
+        return granted
+    kept = {g for g in granted if g != WILDCARD and has_permission(ceiling, g)}
+    kept |= {c for c in ceiling if has_permission(granted, c)}
+    return frozenset(kept)
+

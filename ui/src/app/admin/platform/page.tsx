@@ -225,7 +225,7 @@ export default function PlatformPage() {
                           onClick={async () => {
                             try {
                               const r = await api.platform.resetLink(u.id);
-                              setNotice(`Reset link for ${u.username} (valid 72h): ${r.reset_link}`);
+                              setNotice(`Reset link for ${u.username} (valid ${r.expires_in_hours ?? 3}h): ${r.reset_link}`);
                             } catch (e: any) { setError(e.message); }
                           }}
                           className="p-1.5 rounded-lg text-gray-400 hover:text-primary-600 hover:bg-primary-50 dark:hover:bg-primary-950">
