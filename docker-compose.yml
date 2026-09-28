@@ -19,7 +19,10 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      # Localhost only. Redis has no password, and while it was published on 0.0.0.0
+      # internet scanners repeatedly issued SLAVEOF to attacker hosts (seen from
+      # 2026-08-02). Services reach it over the compose network as redis:6379.
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
