@@ -327,6 +327,50 @@ export interface Artifact {
   size_bytes: number;
 }
 
+export interface SliceWindow {
+  name: string;
+  level: number;
+  width: number;
+}
+
+/** A CT-report slice tile resolved to the exact DICOM image the viewer shows. */
+export interface SliceLinkTile {
+  artifact_name: string;
+  z: number;
+  window: SliceWindow | null;
+  sop_instance_uid: string;
+  instance_number: number | null;
+  stack_position: number | null;
+  /** Got the detailed (Pass-2) read and appears in the report. */
+  reported: boolean;
+  /** Evenly-spread overview tile, stored whether flagged or not. */
+  overview: boolean;
+  /** Flagged by the Pass-1 screening scan (may not have been reviewed in detail). */
+  screen_flagged: boolean;
+  finding: string | null;
+}
+
+export interface FlaggedImage {
+  z: number;
+  sop_instance_uid: string;
+  instance_number: number | null;
+  stack_position: number | null;
+  finding: string | null;
+  /** false → screening-only flag, not covered by the detailed read. */
+  reported: boolean;
+}
+
+export interface FlaggedSlices {
+  supported: boolean;
+  resolved: boolean;
+  reason: string | null;
+  series_instance_uid: string | null;
+  series_description: string | null;
+  spacing_irregular: boolean;
+  tiles: SliceLinkTile[];
+  flagged_images: FlaggedImage[];
+}
+
 export interface UseCase {
   name: string;
   version: string;
@@ -866,6 +910,8 @@ export const api = {
       fetchAPI<{ results: Result[] }>(`/results/${studyUid}`),
     listVersions: (studyUid: string, usecase: string) =>
       fetchAPI<{ results: Result[] }>(`/results/${studyUid}/${usecase}/versions`),
+    flaggedSlices: (studyUid: string, usecase: string) =>
+      fetchAPI<FlaggedSlices>(`/results/${studyUid}/${usecase}/flagged-slices`),
     compare: (resultIdA: string, resultIdB: string) =>
       fetchAPI<ComparisonData>("/compare", {
         method: "POST",

@@ -184,7 +184,9 @@ services:
 
   # ========== OHIF Viewer (F17) ==========
   ohif:
-    image: ohif/app:latest
+    # Pinned: ui/src/lib/ohifBridge.ts drives OHIF through globals of this exact
+    # build (flagged-slice jump + highlight). Re-check that file before bumping.
+    image: ohif/app:v3.12.2
     ports:
       - "3001:80"
     environment:

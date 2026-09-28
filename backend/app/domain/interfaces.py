@@ -6,6 +6,7 @@ from typing import Any, Protocol
 from app.domain.hl7_models import ParsedMessage, ProcessResult
 from app.domain.models import (
     AuditEntry,
+    InstanceGeometry,
     JobRun,
     PendingStudyTenant,
     Result,
@@ -226,6 +227,14 @@ class PACSClient(abc.ABC):
     @abc.abstractmethod
     async def upload_dicom_instance(self, dicom_bytes: bytes) -> str:
         """Push a single raw DICOM instance into the PACS. Returns its PACS id."""
+        ...
+
+    @abc.abstractmethod
+    async def get_series_instance_geometry(
+        self, study_instance_uid: str, series_instance_uid: str
+    ) -> list[InstanceGeometry]:
+        """Position/orientation/identity of every image in a series (unordered).
+        Instances without an ImagePositionPatient are omitted."""
         ...
 
 

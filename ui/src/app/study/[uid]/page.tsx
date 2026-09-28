@@ -2,7 +2,8 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useParams } from "next/navigation";
-import { api, Study, Job, Result, CptSuggestion, ProtocolCheckResult, ComparisonData, ClinicalForStudy } from "@/lib/api";
+import { api, Study, Job, Result, CptSuggestion, ProtocolCheckResult, ComparisonData, ClinicalForStudy, FlaggedSlices, SliceLinkTile } from "@/lib/api";
+import { attachFlagHighlight, jumpToImage, waitForOhif, type FlagInfo } from "@/lib/ohifBridge";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { useAuth } from "@/lib/auth";
@@ -194,6 +195,47 @@ export default function StudyPage() {
     setSelectedResult(r || null);
   }, [selectedUsecase, results]);
 
+  // Flagged-slice ↔ viewer linking (CT report family): tiles resolved to their exact
+  // DICOM image so a click jumps the embedded OHIF viewer there, and flagged images
+  // get a red highlight while scrolling. Keyed on the result id, not the polled object.
+  const viewerRef = useRef<HTMLIFrameElement>(null);
+  const viewerSectionRef = useRef<HTMLDivElement>(null);
+  const [viewerLoadTick, setViewerLoadTick] = useState(0);
+  const [viewerNotice, setViewerNotice] = useState<string | null>(null);
+  const [flaggedSlices, setFlaggedSlices] = useState<FlaggedSlices | null>(null);
+  const linkResultId = selectedResult?.id ?? null;
+  const linkUsecase = selectedResult?.usecase_name ?? null;
+  useEffect(() => {
+    setFlaggedSlices(null);
+    setViewerNotice(null);
+    if (!linkResultId || !linkUsecase || !isCtReportUsecase(linkUsecase)) return;
+    let active = true;
+    api.results
+      .flaggedSlices(uid, linkUsecase)
+      .then((fs) => { if (active) setFlaggedSlices(fs); })
+      .catch(() => { /* links are an enhancement — tiles stay static */ });
+    return () => { active = false; };
+  }, [uid, linkResultId, linkUsecase]);
+
+  useEffect(() => {
+    if (!flaggedSlices?.resolved || flaggedSlices.flagged_images.length === 0) return;
+    const flagged = new Map<string, FlagInfo>(
+      flaggedSlices.flagged_images.map((f) => [
+        f.sop_instance_uid,
+        { finding: f.finding, instanceNumber: f.instance_number, reported: f.reported },
+      ]),
+    );
+    let cancelled = false;
+    let detach: (() => void) | null = null;
+    waitForOhif(viewerRef.current).then((ok) => {
+      if (ok && !cancelled) detach = attachFlagHighlight(viewerRef.current, flagged);
+    });
+    return () => {
+      cancelled = true;
+      detach?.();
+    };
+  }, [flaggedSlices, viewerLoadTick]);
+
   // Per-use-case setup + panel reset. Keyed ONLY on the use case (and uid), NOT on
   // `results`, so it fires when the user switches use case — not on every poll.
   useEffect(() => {
@@ -318,6 +360,23 @@ export default function StudyPage() {
   // (or for the full interactive experience), the OHIF TMTV mode is used.
   const petResult = results.find((r) => r.usecase_name.startsWith("pet_ct"));
   const showNativeFused = hasPetSeries && !!petResult;
+
+  const handleSliceClick = async (tile: SliceLinkTile) => {
+    const seriesUid = flaggedSlices?.series_instance_uid;
+    if (!seriesUid || showNativeFused) return;
+    viewerSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    setViewerNotice(null);
+    const outcome = await jumpToImage(
+      viewerRef.current,
+      { seriesInstanceUID: seriesUid, sopInstanceUID: tile.sop_instance_uid, window: tile.window },
+      viewerUrl,
+    );
+    if (outcome === "reloaded") {
+      setViewerNotice(
+        `Viewer reopened at image ${tile.instance_number ?? ""} — the tile's W/L could not be applied.`,
+      );
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -679,10 +738,13 @@ export default function StudyPage() {
           );
         })()}
         {/* DICOM Viewer */}
-        <div className="glass rounded-2xl accent-top overflow-hidden">
+        <div ref={viewerSectionRef} className="glass rounded-2xl accent-top overflow-hidden scroll-mt-4">
           <div className="px-4 py-3 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <h2 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">DICOM Viewer</h2>
+            {viewerNotice && (
+              <span className="text-xs text-amber-700 dark:text-amber-300">{viewerNotice}</span>
+            )}
             {showNativeFused ? (
               <span className="text-xs bg-amber-100 dark:bg-amber-900 text-amber-700 dark:text-amber-300 px-2 py-0.5 rounded-full font-medium">
                 CT + PET
@@ -707,6 +769,8 @@ export default function StudyPage() {
           <FusedViewer studyUid={uid} usecase={petResult.usecase_name} />
         ) : (
           <iframe
+            ref={viewerRef}
+            onLoad={() => setViewerLoadTick((t) => t + 1)}
             src={viewerUrl}
             className="w-full border-0 min-h-[560px] max-h-[1100px]"
             style={{ height: hasPetSeries ? "calc(100vh - 180px)" : "calc(100vh - 210px)" }}
@@ -926,6 +990,8 @@ export default function StudyPage() {
                 uiSchema={uiSchema}
                 compact={hasDedicatedReport}
                 reportHref={hasDedicatedReport ? `/study/${uid}/report/${selectedResult.usecase_name}` : undefined}
+                sliceLinks={showNativeFused ? null : flaggedSlices}
+                onSliceClick={handleSliceClick}
               />
             );
           })() : selectedUsecase ? (

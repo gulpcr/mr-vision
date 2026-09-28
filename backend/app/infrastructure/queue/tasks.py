@@ -1148,6 +1148,10 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
                         anomaly_z = result.get("anomaly_z") or []
                         summ["anomaly_slices"] = anomaly_z
                         summ["anomaly_findings"] = result.get("flagged") or []
+                        # Levels that got the detailed Pass-2 read (a capped subset of the
+                        # Pass-1 flags) — distinguishes reported tiles from screening-only
+                        # flags in the UI (application/flagged_slice_service.py).
+                        summ["report_z"] = [int(z) for z in result.get("report_z") or []]
                         summ["scan_batches"] = result.get("batches")
                         if result.get("ai_report"):
                             summ["ai_report"] = result["ai_report"]

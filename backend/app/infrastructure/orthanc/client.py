@@ -13,6 +13,7 @@ import structlog
 
 from app.config import get_settings
 from app.domain.interfaces import PACSClient
+from app.domain.models import InstanceGeometry
 
 logger = structlog.get_logger(__name__)
 
@@ -319,6 +320,43 @@ class OrthancPACSClient(PACSClient):
         sitk.WriteImage(image, output_path)
         logger.info("converted_dicom_to_nifti", output=output_path)
         return output_path
+
+    async def get_series_instance_geometry(
+        self, study_instance_uid: str, series_instance_uid: str
+    ) -> list[InstanceGeometry]:
+        """One ``/series/{id}/instances-tags`` call → per-instance position/orientation."""
+        orthanc_series_id = await self.get_orthanc_series_id(series_instance_uid)
+        response = await self._client.get(
+            f"/series/{orthanc_series_id}/instances-tags", params={"simplify": ""}
+        )
+        response.raise_for_status()
+
+        def _floats(raw: Any) -> list[float] | None:
+            try:
+                return [float(v) for v in str(raw).split("\\")]
+            except (TypeError, ValueError):
+                return None
+
+        out: list[InstanceGeometry] = []
+        for tags in (response.json() or {}).values():
+            ipp = _floats(tags.get("ImagePositionPatient"))
+            sop = tags.get("SOPInstanceUID")
+            if not sop or not ipp or len(ipp) != 3:
+                continue
+            iop = _floats(tags.get("ImageOrientationPatient"))
+            try:
+                inst_no: int | None = int(str(tags.get("InstanceNumber")).strip())
+            except (TypeError, ValueError):
+                inst_no = None
+            out.append(
+                InstanceGeometry(
+                    sop_instance_uid=str(sop),
+                    instance_number=inst_no,
+                    image_position=(ipp[0], ipp[1], ipp[2]),
+                    image_orientation=tuple(iop) if iop and len(iop) == 6 else None,  # type: ignore[arg-type]
+                )
+            )
+        return out
 
     async def upload_dicom_instance(self, dicom_bytes: bytes) -> str:
         """Upload a DICOM instance to Orthanc via POST /instances. Returns the Orthanc instance ID.

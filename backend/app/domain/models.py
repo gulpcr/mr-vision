@@ -96,6 +96,21 @@ class Series:
 
 
 @dataclass
+class InstanceGeometry:
+    """Per-image placement of one DICOM instance within its series.
+
+    Enough to reproduce the slice order a volume reader (GDCM/SimpleITK) builds — sort
+    by ImagePositionPatient projected onto the slice normal — and so map a pipeline's
+    volume index ``z`` back to the exact SOP instance a DICOM viewer displays.
+    """
+
+    sop_instance_uid: str
+    instance_number: int | None
+    image_position: tuple[float, float, float]
+    image_orientation: tuple[float, float, float, float, float, float] | None = None
+
+
+@dataclass
 class UseCase:
     name: str
     version: str

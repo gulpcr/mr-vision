@@ -6,13 +6,20 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.flagged_slice_service import FlaggedSliceService
 from app.application.result_service import ResultService
-from app.interface.api.dependencies import get_result_service, get_session
+from app.config import get_settings
+from app.interface.api.dependencies import (
+    get_flagged_slice_service,
+    get_result_service,
+    get_session,
+)
 from app.interface.schemas.result import (
     ArtifactResponse,
     CompareRequest,
     CompareResponse,
     DeltaResponse,
+    FlaggedSlicesResponse,
     MeasurementDelta,
     ResultListResponse,
     ResultResponse,
@@ -256,6 +263,38 @@ async def list_result_versions(
     """List all result versions for a study/use-case pair, newest first."""
     results = await service.list_result_versions(study_uid, usecase)
     return ResultListResponse(results=[_to_response(r) for r in results])
+
+
+@router.get(
+    "/results/{study_uid}/{usecase}/flagged-slices", response_model=FlaggedSlicesResponse,
+    dependencies=[require_permission(STUDY_READ)],
+)
+async def get_flagged_slices(
+    study_uid: str,
+    usecase: str,
+    request: Request,
+    service: Annotated[FlaggedSliceService, Depends(get_flagged_slice_service)],
+    result_service: Annotated[ResultService, Depends(get_result_service)],
+):
+    """Resolve the latest result's slice tiles to the exact DICOM images (series + SOP
+    instance + W/L) so the viewer can jump to them and highlight flagged images."""
+    if not get_settings().flagged_slice_viewer_link_enabled:
+        raise HTTPException(status_code=404, detail="Flagged-slice viewer links are disabled")
+    links = await service.get_slice_links(study_uid, usecase)
+    if links is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No results found for study {study_uid} / use case {usecase}",
+        )
+    # Carries AI findings for the study → PHI read, audited like get_result.
+    from app.application.audit_service import AuditService
+
+    await AuditService(result_service._result_repo._session).record_read(
+        request, "result_viewed", "result", study_uid,
+        details={"study_instance_uid": study_uid, "usecase": usecase,
+                 "view": "flagged_slices"},
+    )
+    return FlaggedSlicesResponse(**links)
 
 
 @router.get("/results/{study_uid}/{usecase}/cpt-suggestions", dependencies=[require_permission(STUDY_READ)])

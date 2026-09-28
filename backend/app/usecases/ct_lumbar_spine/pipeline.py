@@ -177,6 +177,7 @@ class Pipeline(BasePipeline):
             "study_uid": study.study_instance_uid,
             "modality": (primary.modality or study.modality or "").upper() or None,
             "series_description": primary.series_description,
+            "series_instance_uid": primary.series_instance_uid,
             "study_description": study.study_description,
             "qa_flags": qa_flags,
             "qa_details": qa_details,
@@ -272,8 +273,21 @@ class Pipeline(BasePipeline):
         summary = {
             "modality": inference_output.get("modality"),
             "series_description": inference_output.get("series_description"),
+            # Exact series + per-tile HU windows, so tiles can be linked to their DICOM
+            # image in the viewer (application/flagged_slice_service.py).
+            "series_instance_uid": inference_output.get("series_instance_uid"),
+            "window_settings": {
+                self._slug(w["name"]): {
+                    "name": str(w["name"]),
+                    "level": float(w["level"]),
+                    "width": float(w["width"]),
+                }
+                for w in windows
+            },
             "study_description": inference_output.get("study_description"),
             "candidate_slices": len(candidates),
+            # Evenly-spread overview tiles (always stored, flagged or not).
+            "preview_z": [int(z) for z in preview_z],
             "image_dimensions": image_dimensions,
             "hu_windows": win_names,
             "scan_windows": scan_windows,
