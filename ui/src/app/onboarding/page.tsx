@@ -21,7 +21,7 @@ const REGION_PROFILES = ["PK-diagnostic-assist", "AU-decision-support"];
 
 const EMPTY = {
   patient_ref: "", sex: "", age_band: "", modality: "",
-  indication: "", referrer: "", priority: "routine",
+  indication: "", referrer: "", referring_user_id: "", priority: "routine",
   region_profile: "PK-diagnostic-assist", study_instance_uid: "", consent_ack: false,
   clinical_history: "", comparative_study: "", height_cm: "", weight_kg: "",
   fasting_glucose: "", injection_site: "", creatinine: "",
@@ -38,6 +38,10 @@ function calcBmi(heightCm: string, weightKg: string): string {
 
 export default function OnboardingPage() {
   const [form, setForm] = useState({ ...EMPTY });
+  const [doctors, setDoctors] = useState<{ id: string; username: string; full_name: string }[]>([]);
+  useEffect(() => {
+    api.onboarding.referringDoctors().then(setDoctors).catch(() => setDoctors([]));
+  }, []);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -73,6 +77,7 @@ export default function OnboardingPage() {
         modality: o?.modality || "",
         indication: o?.indication || "",
         referrer: o?.referrer || "",
+        referring_user_id: o?.referring_user_id || "",
         priority: o?.priority || "routine",
         region_profile: o?.region_profile || "PK-diagnostic-assist",
         study_instance_uid: o?.study_instance_uid || "",
@@ -129,6 +134,7 @@ export default function OnboardingPage() {
           modality: form.modality,
           indication: form.indication.trim(), region_profile: form.region_profile,
           referrer: form.referrer.trim() || null, priority: form.priority,
+          referring_user_id: form.referring_user_id || null,
           consent_ack: form.consent_ack,
           study_instance_uid: form.study_instance_uid.trim() || null,
           ...clinical,
@@ -153,6 +159,7 @@ export default function OnboardingPage() {
           indication: form.indication.trim(),
           region_profile: form.region_profile,
           referrer: form.referrer.trim() || null,
+          referring_user_id: form.referring_user_id || null,
           priority: form.priority,
           consent_ack: form.consent_ack,
           study_instance_uid: form.study_instance_uid.trim() || null,
@@ -300,6 +307,22 @@ export default function OnboardingPage() {
             <div>
               <label className={labelCls}>Referrer</label>
               <input className={inputCls} value={form.referrer} onChange={(e) => set("referrer", e.target.value)} placeholder="Referring physician / hospital" />
+            </div>
+            <div>
+              <label className={labelCls}>Referring doctor (portal access)</label>
+              <select
+                className={inputCls}
+                value={form.referring_user_id}
+                onChange={(e) => set("referring_user_id", e.target.value)}
+              >
+                <option value="">— none —</option>
+                {doctors.map((d) => (
+                  <option key={d.id} value={d.id}>{d.full_name}</option>
+                ))}
+              </select>
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                The selected doctor will see this patient&apos;s study and report.
+              </p>
             </div>
             <div>
               <label className={labelCls}>Region profile *</label>

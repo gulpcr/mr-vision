@@ -9,8 +9,7 @@ from typing import Any
 import structlog
 from celery import Task
 from celery.exceptions import SoftTimeLimitExceeded, Terminated
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.domain.enums import AuditAction, JobStatus
@@ -25,7 +24,15 @@ from app.application.ct_report_regions import CT_REPORT_USECASES as _CT_REPORT_U
 from app.infrastructure.orthanc.client import OrthancPACSClient
 from app.infrastructure.queue.celery_app import celery_app
 from app.infrastructure.storage.client import MinIOArtifactStore
+from app.domain.storage_keys import artifact_key
 from app.infrastructure.tenant.context import TenantContext, TenantContextService
+from app.infrastructure.tenant.db_scope import (
+    bind_platform_scope,
+    bind_tenant_scope,
+    platform_scope,
+    reapply_scope_sync,
+    reset_scope,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -34,10 +41,11 @@ _RETRIABLE_ERRORS = (ConnectionError, IOError, TimeoutError, OSError)
 
 
 def _get_sync_session() -> Session:
-    settings = get_settings()
-    engine = create_engine(settings.database_url, pool_pre_ping=True)
-    factory = sessionmaker(bind=engine)
-    return factory()
+    # One process-wide sync engine (session.py) instead of a new engine — and a new
+    # connection pool — per call.
+    from app.infrastructure.database.session import get_sync_session
+
+    return get_sync_session()
 
 
 def _run_async_beat_task(coro_factory: Callable[[], Awaitable[Any]]) -> Any:
@@ -422,6 +430,10 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
     session = _get_sync_session()
     worker_id = self.request.hostname or "unknown"
     tenant_token = None
+    # The task arguments carry no tenant, so the study row is looked up under a
+    # platform DB scope; the scope is narrowed to the study's own tenant immediately
+    # after, before any other statement runs.
+    scope_token = bind_platform_scope()
 
     try:
         # Guard: study must still exist (handles post-reset orphaned queue entries)
@@ -452,6 +464,12 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
         tenant_token = TenantContextService.set_context(
             TenantContext(tenant_id=tenant_id, slug=tenant_id, plan="", features=[])
         )
+        # Row-Level Security: from here on every statement this task (and its
+        # post-result hooks, which inherit this context) issues is confined to the
+        # study's tenant.
+        reset_scope(scope_token)
+        scope_token = bind_tenant_scope(tenant_id)
+        reapply_scope_sync(session)
 
         # Check if cancelled before starting
         if _is_job_cancelled(session, job_id):
@@ -1390,7 +1408,7 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
             artifact_records = []
             for artifact in postprocessed.get("artifacts", []):
                 artifact_local_path = artifact["local_path"]
-                storage_key = f"{study_instance_uid}/{usecase_name}/{artifact['name']}"
+                storage_key = artifact_key(tenant_id, study_instance_uid, usecase_name, artifact["name"])
                 with open(artifact_local_path, "rb") as f:
                     artifact_data = f.read()
                 loop.run_until_complete(
@@ -1436,6 +1454,7 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
                             study_instance_uid=study_instance_uid,
                             usecase_name=usecase_name,
                             result_data=result_data,
+                            tenant_id=tenant_id,
                             export_sr=settings.dicom_sr_enabled,
                             export_seg=settings.dicom_seg_enabled,
                         )
@@ -1581,6 +1600,7 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
         session.close()
         if tenant_token is not None:
             TenantContextService.reset_context(tenant_token)
+        reset_scope(scope_token)
 
 
 @celery_app.task(
@@ -1594,17 +1614,22 @@ def run_retention_cleanup():
     async def _run():
         from app.application.retention_service import RetentionService
 
-        async with async_session_factory() as session:
-            try:
-                service = RetentionService(session)
-                totals = await service.apply_policies()
-                await session.commit()
-                logger.info("retention_cleanup_completed", totals=totals)
-                return totals
-            except Exception as e:
-                await session.rollback()
-                logger.error("retention_cleanup_failed", error=str(e))
-                raise
+        from app.infrastructure.tenant.db_scope import platform_scope
+
+        # Cross-tenant sweep: every tenant's policies run, each confined to its own
+        # tenant's rows by RetentionService itself.
+        with platform_scope():
+            async with async_session_factory() as session:
+                try:
+                    service = RetentionService(session)
+                    totals = await service.apply_policies()
+                    await session.commit()
+                    logger.info("retention_cleanup_completed", totals=totals)
+                    return totals
+                except Exception as e:
+                    await session.rollback()
+                    logger.error("retention_cleanup_failed", error=str(e))
+                    raise
 
     return _run_async_beat_task(_run)
 
@@ -1621,18 +1646,20 @@ def run_critical_alert_escalation():
         from app.application.alerting_service import AlertingService
 
         threshold_minutes = 30
-        async with async_session_factory() as session:
-            try:
-                svc = AlertingService(session)
-                count = await svc.escalate_overdue_alerts(threshold_minutes)
-                await session.commit()
-                if count:
-                    logger.info("critical_alerts_escalated", count=count)
-                return count
-            except Exception as e:
-                await session.rollback()
-                logger.error("critical_alert_escalation_failed", error=str(e))
-                raise
+        # Cross-tenant sweep over every tenant's pending CRITICAL alerts (update-only).
+        with platform_scope():
+            async with async_session_factory() as session:
+                try:
+                    svc = AlertingService(session)
+                    count = await svc.escalate_overdue_alerts(threshold_minutes)
+                    await session.commit()
+                    if count:
+                        logger.info("critical_alerts_escalated", count=count)
+                    return count
+                except Exception as e:
+                    await session.rollback()
+                    logger.error("critical_alert_escalation_failed", error=str(e))
+                    raise
 
     return _run_async_beat_task(_run)
 
@@ -1662,20 +1689,37 @@ def process_batch_item(
             PgSeriesRepository,
             PgStudyRepository,
         )
+        from app.infrastructure.database.models import BatchUploadRecord
         from app.infrastructure.dicomweb.client import DICOMwebClient
         from app.infrastructure.orthanc.client import OrthancPACSClient
+        from sqlalchemy import select
+
+        # The batch belongs to exactly one tenant; resolve it (cross-tenant lookup),
+        # then run the ingest confined to that tenant.
+        with platform_scope():
+            async with async_session_factory() as lookup_session:
+                batch_tenant_id = (
+                    await lookup_session.execute(
+                        select(BatchUploadRecord.tenant_id).where(BatchUploadRecord.id == batch_id)
+                    )
+                ).scalar_one_or_none()
+        if batch_tenant_id is None:
+            logger.warning("batch_not_found", batch_id=batch_id, study_uid=study_instance_uid)
+            return
+        bind_tenant_scope(batch_tenant_id)
 
         async with async_session_factory() as session:
             try:
                 batch_service = BatchUploadService(session)
                 study_service = StudyService(
-                    study_repo=PgStudyRepository(session),
-                    series_repo=PgSeriesRepository(session),
-                    audit_repo=PgAuditRepository(session),
+                    study_repo=PgStudyRepository(session, tenant_id=batch_tenant_id),
+                    series_repo=PgSeriesRepository(session, tenant_id=batch_tenant_id),
+                    audit_repo=PgAuditRepository(session, tenant_id=batch_tenant_id),
                     pacs_client=OrthancPACSClient(),
                     dicomweb_client=DICOMwebClient(),
                     pending_tenant_repo=PgPendingStudyTenantRepository(session),
                     unscoped_study_repo=PgStudyRepository(session, tenant_id=None),
+                    caller_tenant_id=batch_tenant_id,
                 )
 
                 await study_service.ingest_study(study_instance_uid)
@@ -1690,6 +1734,7 @@ def process_batch_item(
                     batch = await batch_service.get_batch(batch_id)
                     if batch:
                         await notify_batch_progress(
+                            batch_tenant_id,
                             batch_id,
                             batch["completed_items"],
                             batch["total_items"],
@@ -1738,6 +1783,7 @@ def run_stale_job_cleanup():
     _STALE_MINUTES = 30
 
     session = _get_sync_session()
+    scope_token = bind_platform_scope()  # cross-tenant sweep (update-only)
     try:
         cutoff = utcnow() - timedelta(minutes=_STALE_MINUTES)
         stale_records = (
@@ -1772,3 +1818,4 @@ def run_stale_job_cleanup():
         raise
     finally:
         session.close()
+        reset_scope(scope_token)

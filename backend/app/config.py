@@ -15,6 +15,26 @@ class Settings(BaseSettings):
     postgres_db: str = "mri_platform"
     postgres_user: str = "mri_admin"
     postgres_password: str = "changeme_in_production"
+    # Row-Level Security app role (alembic 044). POSTGRES_USER owns the schema and runs
+    # migrations; Postgres exempts owners/superusers from RLS, so tenant isolation is
+    # only DB-enforced when the application connects as this separate NOSUPERUSER /
+    # NOBYPASSRLS role. Leave empty to keep connecting as POSTGRES_USER (policies inert,
+    # app-level tenant filters only).
+    postgres_app_user: str = ""
+    postgres_app_password: str = ""
+    # Shared secret the Orthanc stable-study webhook must present (X-Orthanc-Webhook-Secret,
+    # sent by orthanc/on_stable_study.lua from ORTHANC_WEBHOOK_SECRET). Empty = not
+    # enforced (logged as a warning) for backward compatibility.
+    orthanc_webhook_secret: str = ""
+    # Tenant for C-STORE studies whose called AE title matches no tenant_dicom_endpoints
+    # row. "default" (the Admin tenant) keeps single-tenant deployments working as before;
+    # set to "" in multi-tenant production so unmapped studies are left unattributed
+    # (visible only to platform admins) instead of landing in the Admin tenant.
+    dicom_unmapped_aet_tenant: str = "default"
+    # Refuse to start unless the DB session is actually subject to RLS (i.e. connected
+    # as a non-superuser without BYPASSRLS). Turn on in production once the app role is
+    # configured.
+    require_rls: bool = False
 
     # Redis
     redis_host: str = "redis"
@@ -86,6 +106,16 @@ class Settings(BaseSettings):
     # Auth / RBAC (F1)
     jwt_secret_key: str = "changeme"
     jwt_algorithm: str = "HS256"
+    # Viewer session (OHIF / DICOMweb / WebSocket). The OHIF viewer and the browser
+    # WebSocket cannot attach an Authorization header, so after login the API also sets
+    # this httpOnly cookie carrying a narrowly-scoped "viewer" JWT (tenant-bound, same
+    # lifetime as the access token). nginx auth_request validates it on every
+    # /dicom-web and /wado request. Set VIEWER_COOKIE_SECURE=true once served over TLS.
+    # Public self-registration (POST /api/auth/register). Off: accounts are created by
+    # workspace admins through invitations, never by anonymous sign-up into a tenant.
+    public_registration_enabled: bool = False
+    viewer_cookie_name: str = "mrv_viewer"
+    viewer_cookie_secure: bool = False
     jwt_access_token_expire_minutes: int = 480
     auth_mode: str = "jwt"  # "jwt" | "api_key" | "none"
 
@@ -322,16 +352,24 @@ class Settings(BaseSettings):
     mri_report_signatory_qualifications: str = "MBBS, FCPS, M.Med"
 
     @property
+    def _db_credentials(self) -> tuple[str, str]:
+        if self.postgres_app_user and self.postgres_app_password:
+            return self.postgres_app_user, self.postgres_app_password
+        return self.postgres_user, self.postgres_password
+
+    @property
     def database_url(self) -> str:
+        user, password = self._db_credentials
         return (
-            f"postgresql://{self.postgres_user}:{self.postgres_password}"
+            f"postgresql://{user}:{password}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
         )
 
     @property
     def async_database_url(self) -> str:
+        user, password = self._db_credentials
         return (
-            f"postgresql+asyncpg://{self.postgres_user}:{self.postgres_password}"
+            f"postgresql+asyncpg://{user}:{password}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
         )
 

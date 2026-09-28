@@ -2,17 +2,24 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.application.auth_service import AuthService, TenantAccessError
+from app.application.auth_service import (
+    AmbiguousAccountError,
+    AuthService,
+    InvitationError,
+    SeatLimitError,
+    TenantAccessError,
+)
 from app.application.impersonation_service import ImpersonationService
 from app.application.mfa_service import MfaLockedError, MfaService
 from app.domain.enums import AuditAction
 from app.domain.models import AuditEntry
 from app.infrastructure.database.repositories import PgAuditRepository
 from app.interface.api.dependencies import get_session
+from app.infrastructure.tenant.db_scope import bind_platform_scope
 from app.interface.middleware.auth import (
     require_permission,
     require_platform_admin,
@@ -25,6 +32,22 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 class LoginRequest(BaseModel):
     username: str = Field(..., min_length=1, max_length=128)
     password: str = Field(..., min_length=1)
+    # Workspace (tenant slug). Optional: also taken from the subdomain or the
+    # X-Tenant-Slug header; required only when the username exists in several
+    # workspaces.
+    workspace: str | None = Field(default=None, max_length=128)
+
+
+class InviteRequest(BaseModel):
+    username: str = Field(..., min_length=3, max_length=128)
+    email: str = Field(..., max_length=256)
+    role: str = Field(..., min_length=1, max_length=64)
+    full_name: str = ""
+
+
+class AcceptInvitationRequest(BaseModel):
+    token: str = Field(..., min_length=16, max_length=256)
+    password: str = Field(..., min_length=10, max_length=256)
 
 
 class RegisterRequest(BaseModel):
@@ -102,6 +125,7 @@ class UserResponse(BaseModel):
     is_platform_operator: bool = False
     totp_enabled: bool = False
     created_at: str | None = None
+    status: str = "active"
 
 
 def _to_user_response(user) -> UserResponse:
@@ -117,7 +141,63 @@ def _to_user_response(user) -> UserResponse:
         is_platform_operator=user.is_platform_operator,
         totp_enabled=user.totp_enabled,
         created_at=user.created_at.isoformat() if user.created_at else None,
+        status=getattr(user, "status", "active") or "active",
     )
+
+
+def _set_viewer_cookie(
+    response: Response, user_id: str, tenant_id: str, is_platform_admin: bool,
+    referral_scoped: bool = False,
+) -> None:
+    """Issue the httpOnly viewer-session cookie (see interface/api/viewer_access.py)."""
+    from app.config import get_settings
+
+    settings = get_settings()
+    token = AuthService(session=None).create_viewer_token(
+        subject=user_id, tenant_id=tenant_id, is_platform_admin=is_platform_admin,
+        referral_scoped=referral_scoped,
+    )
+    response.set_cookie(
+        key=settings.viewer_cookie_name,
+        value=token,
+        max_age=settings.jwt_access_token_expire_minutes * 60,
+        httponly=True,
+        secure=settings.viewer_cookie_secure,
+        samesite="strict",
+        path="/",
+    )
+
+
+async def _set_viewer_cookie_from_login(response: Response, result: dict) -> None:
+    if result.get("access_token"):
+        from app.domain.permissions import is_referral_scoped
+        from app.infrastructure.auth.principal import load_principal
+
+        payload = AuthService(session=None).decode_token(result["access_token"]) or {}
+        principal = await load_principal(result["user_id"], result["tenant_id"])
+        _set_viewer_cookie(
+            response, result["user_id"], result["tenant_id"],
+            bool(payload.get("is_platform_admin", False)),
+            referral_scoped=bool(principal and is_referral_scoped(principal.permissions)),
+        )
+
+
+async def _resolve_login_tenant(request: Request, workspace: str | None) -> str | None:
+    """Tenant id for a login: explicit workspace, else subdomain / X-Tenant-Slug.
+    None = not specified (login then succeeds only if the username is unambiguous)."""
+    from app.config import get_settings
+    from app.infrastructure.tenant.repository import get_tenant_by_slug
+    from app.interface.middleware.tenant import _resolve_tenant_slug
+
+    slug = (workspace or "").strip().lower() or _resolve_tenant_slug(
+        request, get_settings().tenant_root_domain
+    )
+    if not slug:
+        return None
+    tenant = await get_tenant_by_slug(slug)
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="Unknown workspace")
+    return tenant.tenant_id
 
 
 def _mfa_locked_exception(e: MfaLockedError) -> HTTPException:
@@ -131,22 +211,29 @@ def _mfa_locked_exception(e: MfaLockedError) -> HTTPException:
 @router.post("/login", response_model=LoginResponse)
 async def login(
     body: LoginRequest,
+    request: Request,
+    response: Response,
     session: Annotated[AsyncSession, Depends(get_session)],
 ):
     """Authenticate user and return a JWT token, or an mfa_token if MFA is enabled."""
+    tenant_id = await _resolve_login_tenant(request, body.workspace)
     service = AuthService(session)
     try:
-        result = await service.authenticate(body.username, body.password)
+        result = await service.authenticate(body.username, body.password, tenant_id=tenant_id)
     except TenantAccessError as e:
         raise HTTPException(status_code=403, detail=str(e))
+    except AmbiguousAccountError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     if not result:
         raise HTTPException(status_code=401, detail="Invalid credentials")
+    await _set_viewer_cookie_from_login(response, result)
     return LoginResponse(**result)
 
 
 @router.post("/mfa/verify", response_model=LoginResponse)
 async def verify_mfa(
     body: MfaVerifyRequest,
+    response: Response,
     session: Annotated[AsyncSession, Depends(get_session)],
 ):
     """Second step of login when the account has MFA enabled."""
@@ -157,7 +244,144 @@ async def verify_mfa(
         raise _mfa_locked_exception(e)
     if not result:
         raise HTTPException(status_code=401, detail="Invalid or expired MFA session, or wrong code")
+    await _set_viewer_cookie_from_login(response, result)
     return LoginResponse(**result)
+
+
+@router.get("/me/permissions")
+async def my_permissions(request: Request):
+    """The caller's live effective permissions (from their role's current definition)
+    — the UI gates navigation, routes and actions on this instead of a hard-coded
+    role map, so custom roles and edited system roles take effect immediately."""
+    from app.domain.permissions import has_permission
+
+    permissions = sorted(getattr(request.state, "permissions", None) or [])
+    return {
+        "user_id": getattr(request.state, "user_id", ""),
+        "role": (getattr(request.state, "roles", None) or [None])[0],
+        "tenant_id": getattr(request.state, "tenant_id", None),
+        "permissions": permissions,
+        "referral_scoped": bool(getattr(request.state, "referral_scoped", False)),
+        "is_platform_admin": bool(getattr(request.state, "is_platform_admin", False)),
+        "is_platform_operator": bool(getattr(request.state, "is_platform_operator", False)),
+        "is_admin": has_permission(permissions, "*"),
+    }
+
+
+async def _invite_link(request: Request, token: str, tenant_id: str) -> str:
+    from app.infrastructure.tenant.repository import get_tenant_by_id
+
+    tenant = await get_tenant_by_id(tenant_id)
+    workspace = tenant.slug if tenant else tenant_id
+    base = str(request.base_url).rstrip("/")
+    forwarded_host = request.headers.get("x-forwarded-host") or request.headers.get("host")
+    if forwarded_host:
+        proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+        base = f"{proto}://{forwarded_host}"
+    return f"{base}/accept-invite?token={token}&workspace={workspace}"
+
+
+@router.post("/users/invite", status_code=201, dependencies=[require_permission("user.manage")])
+async def invite_user(
+    body: InviteRequest,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """Invite a user into the caller's own workspace with a role defined there. Returns a
+    one-time link (valid 72h) for the admin to send — the platform has no mail relay."""
+    tenant_id = getattr(request.state, "tenant_id", "default") or "default"
+    if body.role == "admin" and "admin" not in (getattr(request.state, "roles", None) or []):
+        raise HTTPException(status_code=403, detail="Only an admin can invite another admin")
+    service = AuthService(session)
+    try:
+        user, token = await service.invite_user(
+            tenant_id=tenant_id, username=body.username, email=body.email, role=body.role,
+            full_name=body.full_name, invited_by=getattr(request.state, "user", "unknown"),
+        )
+    except SeatLimitError as e:
+        raise HTTPException(status_code=402, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return {**_to_user_response(user).model_dump(), "status": "invited",
+            "invite_link": await _invite_link(request, token, tenant_id)}
+
+
+@router.post("/users/{user_id}/reinvite", dependencies=[require_permission("user.manage")])
+async def reinvite_user(
+    user_id: str,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """Issue a fresh invitation / password-set link for a user of the caller's workspace."""
+    tenant_id = getattr(request.state, "tenant_id", "default") or "default"
+    try:
+        token = await AuthService(session).issue_password_reset(
+            user_id, tenant_id, actor=getattr(request.state, "user", "unknown")
+        )
+    except ValueError:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"invite_link": await _invite_link(request, token, tenant_id)}
+
+
+@router.post("/users/{user_id}/revoke-sessions", dependencies=[require_permission("user.manage")])
+async def revoke_user_sessions(
+    user_id: str,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """Sign a user of the caller's workspace out everywhere (invalidates all tokens)."""
+    from app.infrastructure.auth.principal import invalidate_principal
+
+    tenant_id = getattr(request.state, "tenant_id", "default") or "default"
+    if not await AuthService(session).revoke_sessions(
+        user_id, tenant_id, actor=getattr(request.state, "user", "unknown")
+    ):
+        raise HTTPException(status_code=404, detail="User not found")
+    invalidate_principal(user_id)
+    return {"status": "ok"}
+
+
+@router.post("/invitations/accept")
+async def accept_invitation(
+    body: AcceptInvitationRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """Public: redeem an invitation / password-reset link and set a password."""
+    from app.infrastructure.auth.principal import invalidate_principal
+
+    try:
+        user = await AuthService(session).accept_invitation(body.token, body.password)
+    except InvitationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except TenantAccessError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    invalidate_principal(user.id)
+    return {"status": "ok", "username": user.username, "tenant_id": user.tenant_id}
+
+
+@router.post("/viewer-session", status_code=204)
+async def refresh_viewer_session(request: Request, response: Response):
+    """(Re)issue the viewer-session cookie for the authenticated caller — the UI calls
+    this on load so a session restored from storage also has a valid viewer cookie."""
+    _set_viewer_cookie(
+        response,
+        getattr(request.state, "user_id", "") or "",
+        getattr(request.state, "tenant_id", "default") or "default",
+        bool(getattr(request.state, "is_platform_admin", False)),
+        referral_scoped=bool(getattr(request.state, "referral_scoped", False)),
+    )
+    response.status_code = 204
+    return response
+
+
+@router.delete("/viewer-session", status_code=204)
+async def clear_viewer_session(response: Response):
+    """Drop the viewer-session cookie (logout)."""
+    from app.config import get_settings
+
+    response.delete_cookie(get_settings().viewer_cookie_name, path="/")
+    response.status_code = 204
+    return response
 
 
 @router.get("/me", response_model=UserResponse)
@@ -180,7 +404,15 @@ async def register(
     body: RegisterRequest,
     session: Annotated[AsyncSession, Depends(get_session)],
 ):
-    """Register a new user (default role: viewer)."""
+    """Self-registration (default role: viewer, Admin workspace) — disabled unless
+    PUBLIC_REGISTRATION_ENABLED. Workspace users are created by invitation."""
+    from app.config import get_settings
+
+    if not get_settings().public_registration_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Self-registration is disabled — ask your workspace administrator for an invitation",
+        )
     service = AuthService(session)
     try:
         user = await service.create_user(
@@ -206,10 +438,15 @@ async def list_users(
     used to list every tenant's users unconditionally, which was a cross-tenant
     data leak."""
     caller_tenant_id = getattr(request.state, "tenant_id", "default") or "default"
-    if tenant_id and tenant_id != caller_tenant_id and not getattr(request.state, "is_platform_admin", False):
-        raise HTTPException(403, "Viewing another tenant's users requires platform admin access")
+    target_tenant_id = tenant_id or caller_tenant_id
+    if target_tenant_id != caller_tenant_id:
+        if not getattr(request.state, "is_platform_admin", False):
+            raise HTTPException(403, "Viewing another tenant's users requires platform admin access")
+        # Row-Level Security confines the session to the caller's tenant; a platform
+        # admin reading another tenant's roster must widen it explicitly.
+        bind_platform_scope(caller_tenant_id)
     service = AuthService(session)
-    users = await service.list_users(tenant_id=tenant_id or caller_tenant_id)
+    users = await service.list_users(tenant_id=target_tenant_id)
     return [_to_user_response(u) for u in users]
 
 
@@ -217,24 +454,64 @@ async def list_users(
 async def update_user_role(
     user_id: str,
     role: str,
+    request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
 ):
-    """Update a user's role (requires user.manage)."""
+    """Update a user's role within the caller's tenant (requires user.manage).
+
+    Only an admin may grant the admin role — user.manage alone must not be a path to
+    privilege escalation.
+    """
+    caller_tenant_id = getattr(request.state, "tenant_id", "default") or "default"
+    if role == "admin" and "admin" not in (getattr(request.state, "roles", None) or []):
+        raise HTTPException(status_code=403, detail="Only an admin can grant the admin role")
     service = AuthService(session)
-    user = await service.update_user_role(user_id, role)
+    try:
+        user = await service.update_user_role(user_id, role, tenant_id=caller_tenant_id)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    from app.infrastructure.auth.principal import invalidate_principal
+
+    invalidate_principal(user_id)
+    await PgAuditRepository(session, tenant_id=caller_tenant_id).save(AuditEntry(
+        action=AuditAction.USER_ROLE_CHANGED,
+        entity_type="user",
+        entity_id=user_id,
+        actor=getattr(request.state, "user", "unknown"),
+        details={"target_username": user.username, "role": role},
+        tenant_id=caller_tenant_id,
+    ))
     return {"status": "ok", "user_id": user_id, "role": role}
 
 
 @router.delete("/users/{user_id}", dependencies=[require_permission("user.manage")])
 async def deactivate_user(
     user_id: str,
+    request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
 ):
-    """Deactivate a user account (requires user.manage)."""
+    """Deactivate a user account within the caller's tenant (requires user.manage)."""
+    caller_tenant_id = getattr(request.state, "tenant_id", "default") or "default"
     service = AuthService(session)
-    await service.deactivate_user(user_id)
+    try:
+        user = await service.deactivate_user(user_id, tenant_id=caller_tenant_id)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    from app.infrastructure.auth.principal import invalidate_principal
+
+    invalidate_principal(user_id)
+    await PgAuditRepository(session, tenant_id=caller_tenant_id).save(AuditEntry(
+        action=AuditAction.USER_DEACTIVATED,
+        entity_type="user",
+        entity_id=user_id,
+        actor=getattr(request.state, "user", "unknown"),
+        details={"target_username": user.username},
+        tenant_id=caller_tenant_id,
+    ))
     return {"status": "ok", "user_id": user_id}
 
 

@@ -22,6 +22,8 @@ from app.application.mammography_service import (
 from app.interface.api.dependencies import get_session
 from app.interface.middleware.auth import require_permission
 
+from app.domain.permissions import STUDY_READ
+
 router = APIRouter(tags=["mammography"])
 
 
@@ -66,14 +68,15 @@ def _tenant(request: Request) -> str:
 
 @router.get(
     "/studies/{study_uid}/mammography-report",
-    dependencies=[require_permission("study.view")],
+    dependencies=[require_permission(STUDY_READ)],
 )
 async def get_report(
     study_uid: str,
+    request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
 ):
     """Saved mammography report for a study; {} if none saved yet."""
-    report = await MammographyService(session).get_report(study_uid)
+    report = await MammographyService(session, tenant_id=_tenant(request)).get_report(study_uid)
     return report or {}
 
 
@@ -97,7 +100,7 @@ async def upsert_report(
             403, "Mammography report is AI-authored and read-only (MAMMOGRAPHY_AI_REPORT_ENABLED)."
         )
     try:
-        report = await MammographyService(session).upsert_report(
+        report = await MammographyService(session, tenant_id=_tenant(request)).upsert_report(
             study_uid,
             body.model_dump(exclude_unset=True),
             actor_id=_actor_id(request),
@@ -117,6 +120,7 @@ async def upsert_report(
 )
 async def download_report_pdf(
     study_uid: str,
+    request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
 ):
     """Render the mammography report to PDF.
@@ -139,6 +143,7 @@ async def download_report_pdf(
                     ResultRecord.study_instance_uid == study_uid,
                     ResultRecord.usecase_name == "mammography",
                     ResultRecord.is_latest == True,  # noqa: E712
+                    ResultRecord.tenant_id == _tenant(request),
                 )
             )
         ).scalar_one_or_none()
@@ -163,24 +168,33 @@ async def download_report_pdf(
 
     if report is None:
         # Fall back to the saved radiologist report record (edit mode / no AI report yet).
-        report = await MammographyService(session).get_report(study_uid)
+        report = await MammographyService(session, tenant_id=_tenant(request)).get_report(study_uid)
     if report is None:
         raise HTTPException(404, "No mammography report available for this study")
 
     study_rec = (
         await session.execute(
-            select(StudyRecord).where(StudyRecord.study_instance_uid == study_uid)
+            select(StudyRecord).where(
+                StudyRecord.study_instance_uid == study_uid,
+                StudyRecord.tenant_id == _tenant(request),
+            )
         )
     ).scalar_one_or_none()
+    if study_rec is None:
+        raise HTTPException(404, f"Study {study_uid} not found")
+
+    from app.application.tenant_settings_service import TenantSettingsService
+    from app.reports.pdf_generator import report_profile
 
     patient_info = build_petct_patient_info(study_rec)
-    pdf_bytes = PDFReportGenerator().generate(
-        study_uid=study_uid,
-        usecase_name="mammography",
-        result={"summary": report, "measurements": {}, "qa_flags": [], "qa_details": {}},
-        patient_info=patient_info,
-        narrative="",
-    )
+    with report_profile(await TenantSettingsService(session).report_profile(_tenant(request))):
+        pdf_bytes = PDFReportGenerator().generate(
+            study_uid=study_uid,
+            usecase_name="mammography",
+            result={"summary": report, "measurements": {}, "qa_flags": [], "qa_details": {}},
+            patient_info=patient_info,
+            narrative="",
+        )
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",

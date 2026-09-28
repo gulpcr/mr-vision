@@ -104,10 +104,10 @@ def require_usecase_feature(usecase_name: str):
     return Depends(_check)
 
 
-def get_study_service(
-    session: Annotated[AsyncSession, Depends(get_session)],
-    tenant_id: Annotated[str, Depends(request_tenant_id)],
-) -> StudyService:
+def build_study_service(session: AsyncSession, tenant_id: str | None) -> StudyService:
+    """``tenant_id=None`` builds the internal (webhook) variant: unscoped repositories
+    and no caller-tenant conflict check — the caller must already hold a platform DB
+    scope and resolve the study's tenant itself."""
     return StudyService(
         study_repo=PgStudyRepository(session, tenant_id=tenant_id),
         series_repo=PgSeriesRepository(session, tenant_id=tenant_id),
@@ -116,7 +116,34 @@ def get_study_service(
         dicomweb_client=DICOMwebClient(),
         pending_tenant_repo=PgPendingStudyTenantRepository(session),
         unscoped_study_repo=PgStudyRepository(session, tenant_id=None),
+        caller_tenant_id=tenant_id,
     )
+
+
+def build_job_orchestrator(
+    session: AsyncSession,
+    tenant_id: str,
+    registry: UseCaseRegistry,
+    routing_service: RoutingService,
+    allowed_usecases: set[str] | None = None,
+) -> JobOrchestrator:
+    """``allowed_usecases`` = the tenant's entitled use cases (None = unrestricted)."""
+    return JobOrchestrator(
+        study_repo=PgStudyRepository(session, tenant_id=tenant_id),
+        series_repo=PgSeriesRepository(session, tenant_id=tenant_id),
+        job_repo=PgJobRepository(session, tenant_id=tenant_id),
+        audit_repo=PgAuditRepository(session, tenant_id=tenant_id),
+        routing_service=routing_service,
+        registry=registry,
+        usecase_allowed=(allowed_usecases.__contains__ if allowed_usecases is not None else None),
+    )
+
+
+def get_study_service(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    tenant_id: Annotated[str, Depends(request_tenant_id)],
+) -> StudyService:
+    return build_study_service(session, tenant_id)
 
 
 def get_job_orchestrator(
@@ -125,14 +152,11 @@ def get_job_orchestrator(
     registry: Annotated[UseCaseRegistry, Depends(get_registry)],
     routing_service: Annotated[RoutingService, Depends(get_routing_service)],
 ) -> JobOrchestrator:
-    return JobOrchestrator(
-        study_repo=PgStudyRepository(session, tenant_id=tenant_id),
-        series_repo=PgSeriesRepository(session, tenant_id=tenant_id),
-        job_repo=PgJobRepository(session, tenant_id=tenant_id),
-        audit_repo=PgAuditRepository(session, tenant_id=tenant_id),
-        routing_service=routing_service,
-        registry=registry,
-    )
+    allowed = None
+    if get_settings().multi_tenant_enabled:
+        ctx = TenantContextService.get_context_or_null()
+        allowed = set(ctx.features) if ctx is not None else set()
+    return build_job_orchestrator(session, tenant_id, registry, routing_service, allowed)
 
 
 def get_result_service(
@@ -142,6 +166,7 @@ def get_result_service(
     return ResultService(
         result_repo=PgResultRepository(session, tenant_id=tenant_id),
         artifact_store=get_artifact_store(),
+        tenant_id=tenant_id,
     )
 
 

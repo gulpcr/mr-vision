@@ -36,6 +36,19 @@ class StudyRepository(abc.ABC):
     @abc.abstractmethod
     async def update(self, study: Study) -> Study: ...
 
+    @abc.abstractmethod
+    async def delete(self, study_instance_uid: str) -> bool:
+        """Delete a study (and its FK-cascaded rows). False if not found in scope."""
+
+    @abc.abstractmethod
+    async def owner_tenant_of(self, study_instance_uid: str) -> str | None:
+        """Tenant owning this UID (ingested or pending upload), regardless of the
+        caller's own scope — or None if nobody owns it yet."""
+
+    @abc.abstractmethod
+    async def existing_uids(self, study_instance_uids: list[str]) -> set[str]:
+        """The subset of ``study_instance_uids`` present in this repository's scope."""
+
 
 class SeriesRepository(abc.ABC):
     @abc.abstractmethod

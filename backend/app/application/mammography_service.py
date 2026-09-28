@@ -85,17 +85,27 @@ class ReportValidationError(Exception):
 class MammographyService:
     """Get / upsert the radiologist-authored mammography report for a study."""
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, tenant_id: str | None = None) -> None:
         self._session = session
+        # Confines reads/writes to this tenant's studies (None = unscoped, internal use).
+        self._tenant_id = tenant_id
+
+    async def _get_scoped(self, model, study_uid: str):
+        from sqlalchemy import select
+
+        stmt = select(model).where(model.study_instance_uid == study_uid)
+        if self._tenant_id:
+            stmt = stmt.where(model.tenant_id == self._tenant_id)
+        return (await self._session.execute(stmt)).scalar_one_or_none()
 
     async def get_report(self, study_uid: str) -> dict[str, Any] | None:
-        rec = await self._session.get(MammographyReportRecord, study_uid)
+        rec = await self._get_scoped(MammographyReportRecord, study_uid)
         return self._to_dict(rec) if rec else None
 
     async def upsert_report(
         self, study_uid: str, payload: dict[str, Any], actor_id: str, tenant_id: str
     ) -> dict[str, Any]:
-        study = await self._session.get(StudyRecord, study_uid)
+        study = await self._get_scoped(StudyRecord, study_uid)
         if study is None:
             raise StudyNotFoundError(study_uid)
 
@@ -111,7 +121,7 @@ class MammographyService:
                     f"{key} must be one of {sorted(allowed)}"
                 )
 
-        rec = await self._session.get(MammographyReportRecord, study_uid)
+        rec = await self._get_scoped(MammographyReportRecord, study_uid)
         created = rec is None
         if rec is None:
             rec = MammographyReportRecord(

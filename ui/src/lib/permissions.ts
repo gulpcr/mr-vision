@@ -1,57 +1,31 @@
-// Client-side mirror of backend/app/domain/permissions.py's SYSTEM_ROLE_PERMISSIONS.
-// There is no /auth/me permissions endpoint yet — only a role string is issued at
-// login (see app/login/page.tsx) — so this hand-synced copy is what nav/route
-// gating checks against. Keep it in sync by hand with the backend catalog until a
-// real permissions endpoint exists and this can be deleted in favor of a fetch.
+// Permission matching — mirrors backend/app/domain/permissions.py.
+//
+// The caller's effective permissions come live from GET /api/auth/me/permissions (the
+// role's current definition in their workspace), so custom roles and edited system
+// roles take effect without a code change or re-login. This module only implements the
+// matching grammar:
+//   * a grant of "*" satisfies everything; "resource.*" satisfies "resource.<anything>";
+//   * a broader grant implies its scoped variants ("study.view" ⊇ "study.view.referred");
+//   * a required key may list alternatives with "||".
+//
+// "tenant.manage" is not a tenant permission at all: it stands for the cross-tenant
+// platform-admin flag and is special-cased in lib/auth.tsx's can().
 
-export const ALL_PERMISSIONS = [
-  "study.view",
-  "study.upload",
-  "study.claim",
-  "study.escalate",
-  "study.delete",
-  "job.run",
-  "job.manage",
-  "result.approve",
-  "result.export",
-  "alert.view",
-  "alert.acknowledge",
-  "patient.onboard",
-  "user.manage",
-  "config.manage",
-  "audit.view",
-  "data.purge",
-  // Cross-tenant capability — NOT granted through any role in
-  // SYSTEM_ROLE_PERMISSIONS below. Gated on is_platform_admin instead (see
-  // lib/auth.tsx's can()), since platform-admin is orthogonal to a user's
-  // per-tenant role.
-  "tenant.manage",
-] as const;
+export type Permission = string;
 
-export type Permission = (typeof ALL_PERMISSIONS)[number];
+export const STUDY_READ: Permission = "study.view||study.view.referred";
 
-// Excludes "tenant.manage" — role="admin" is a per-tenant role and must NOT imply
-// platform-admin; can() special-cases that one permission against is_platform_admin
-// instead of this table (see lib/auth.tsx).
-const TENANT_ROLE_PERMISSIONS = ALL_PERMISSIONS.filter((p) => p !== "tenant.manage");
+function grantSatisfies(grant: string, required: string): boolean {
+  if (grant === "*" || grant === required) return true;
+  if (grant.endsWith(".*")) return required.startsWith(grant.slice(0, -1));
+  return required.startsWith(grant + ".");
+}
 
-export const SYSTEM_ROLE_PERMISSIONS: Record<string, Permission[]> = {
-  admin: [...TENANT_ROLE_PERMISSIONS],
-  receptionist: ["patient.onboard", "study.view"],
-  technician: ["job.manage", "job.run", "study.escalate", "study.upload", "study.view"],
-  radiologist: [
-    "alert.acknowledge",
-    "alert.view",
-    "result.approve",
-    "result.export",
-    "study.claim",
-    "study.escalate",
-    "study.view",
-  ],
-  viewer: ["study.view"],
-};
-
-export function roleHasPermission(role: string | null | undefined, permission: Permission): boolean {
-  if (!role) return false;
-  return SYSTEM_ROLE_PERMISSIONS[role]?.includes(permission) ?? false;
+export function hasPermission(granted: readonly string[] | null | undefined, required: Permission): boolean {
+  if (!granted || granted.length === 0) return false;
+  return required
+    .split("||")
+    .map((r) => r.trim())
+    .filter(Boolean)
+    .some((alt) => granted.some((g) => grantSatisfies(g, alt)));
 }

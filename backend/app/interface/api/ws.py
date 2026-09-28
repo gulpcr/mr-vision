@@ -6,45 +6,54 @@ from typing import Any
 import structlog
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from app.infrastructure.realtime.events import publish_tenant_event
+from app.interface.api.viewer_access import resolve_viewer
+
 logger = structlog.get_logger(__name__)
 
 router = APIRouter(tags=["websocket"])
 
-# Simple in-memory connection manager
-_connections: list[WebSocket] = []
+# Close code for a rejected handshake (RFC 6455 1008 = policy violation).
+_WS_POLICY_VIOLATION = 1008
 
 
 class ConnectionManager:
-    """Manages active WebSocket connections."""
+    """This process's WebSocket connections, grouped by tenant.
+
+    There is deliberately no broadcast-to-everyone: every event is addressed to one
+    tenant and only reaches sockets authenticated as that tenant.
+    """
 
     def __init__(self):
-        self.active_connections: list[WebSocket] = []
+        self._by_tenant: dict[str, list[WebSocket]] = {}
 
-    async def connect(self, websocket: WebSocket):
+    @property
+    def active_connections(self) -> list[WebSocket]:
+        return [ws for conns in self._by_tenant.values() for ws in conns]
+
+    async def connect(self, websocket: WebSocket, tenant_id: str):
         await websocket.accept()
-        self.active_connections.append(websocket)
-        logger.info("ws_connected", total=len(self.active_connections))
+        self._by_tenant.setdefault(tenant_id, []).append(websocket)
+        logger.info("ws_connected", tenant_id=tenant_id, total=len(self.active_connections))
 
     def disconnect(self, websocket: WebSocket):
-        if websocket in self.active_connections:
-            self.active_connections.remove(websocket)
+        for tenant_id, conns in list(self._by_tenant.items()):
+            if websocket in conns:
+                conns.remove(websocket)
+                if not conns:
+                    del self._by_tenant[tenant_id]
         logger.info("ws_disconnected", total=len(self.active_connections))
 
-    async def broadcast(self, message: dict[str, Any]):
-        """Send a message to all connected clients."""
+    async def send_to_tenant(self, tenant_id: str, message: dict[str, Any]):
+        """Deliver to this process's sockets of ``tenant_id`` only."""
         disconnected = []
-        for connection in self.active_connections:
+        for connection in list(self._by_tenant.get(tenant_id, [])):
             try:
                 await connection.send_json(message)
             except Exception:
                 disconnected.append(connection)
         for conn in disconnected:
             self.disconnect(conn)
-
-    async def send_to_tenant(self, tenant_id: str, message: dict[str, Any]):
-        """Send to all connections for a specific tenant."""
-        # For now, broadcast to all - tenant filtering via client state
-        await self.broadcast(message)
 
 
 manager = ConnectionManager()
@@ -54,18 +63,27 @@ manager = ConnectionManager()
 async def websocket_endpoint(websocket: WebSocket):
     """WebSocket endpoint for real-time notifications.
 
+    Authenticated by the viewer-session cookie set at login (browsers cannot attach an
+    Authorization header to a WebSocket) — HTTP middleware never sees WebSocket
+    handshakes, so this endpoint checks it itself. The socket only ever receives its own
+    tenant's events.
+
     Messages are JSON objects with 'type' field:
     - job_update: Job status changed
     - result_ready: New result available
     - alert: Alert triggered
     - batch_progress: Batch upload progress
     """
-    await manager.connect(websocket)
+    viewer = resolve_viewer(websocket)
+    if viewer is None:
+        await websocket.close(code=_WS_POLICY_VIOLATION)
+        return
+
+    await manager.connect(websocket, viewer.tenant_id)
     try:
         while True:
             # Keep connection alive, receive pings
             data = await websocket.receive_text()
-            # Client can send subscribe/unsubscribe messages
             try:
                 msg = json.loads(data)
                 if msg.get("type") == "ping":
@@ -76,9 +94,18 @@ async def websocket_endpoint(websocket: WebSocket):
         manager.disconnect(websocket)
 
 
-async def notify_job_update(job_id: str, status: str, progress: float, study_uid: str):
-    """Notify all clients about a job status change."""
-    await manager.broadcast({
+async def _notify(tenant_id: str, message: dict[str, Any]) -> None:
+    """Publish via Redis so every API process delivers it; if Redis is unavailable,
+    still deliver to this process's own sockets of the tenant."""
+    if not await publish_tenant_event(tenant_id, message):
+        await manager.send_to_tenant(tenant_id, message)
+
+
+async def notify_job_update(
+    tenant_id: str, job_id: str, status: str, progress: float, study_uid: str
+):
+    """Notify the tenant's clients about a job status change."""
+    await _notify(tenant_id, {
         "type": "job_update",
         "job_id": job_id,
         "status": status,
@@ -87,9 +114,9 @@ async def notify_job_update(job_id: str, status: str, progress: float, study_uid
     })
 
 
-async def notify_result_ready(study_uid: str, usecase_name: str, result_id: str):
-    """Notify all clients about a new result."""
-    await manager.broadcast({
+async def notify_result_ready(tenant_id: str, study_uid: str, usecase_name: str, result_id: str):
+    """Notify the tenant's clients about a new result."""
+    await _notify(tenant_id, {
         "type": "result_ready",
         "study_instance_uid": study_uid,
         "usecase_name": usecase_name,
@@ -97,18 +124,20 @@ async def notify_result_ready(study_uid: str, usecase_name: str, result_id: str)
     })
 
 
-async def notify_alert(event_type: str, payload: dict[str, Any]):
-    """Notify clients about a triggered alert."""
-    await manager.broadcast({
+async def notify_alert(tenant_id: str, event_type: str, payload: dict[str, Any]):
+    """Notify the tenant's clients about a triggered alert."""
+    await _notify(tenant_id, {
         "type": "alert",
         "event_type": event_type,
         "payload": payload,
     })
 
 
-async def notify_batch_progress(batch_id: str, completed: int, total: int, status: str):
-    """Notify clients about batch upload progress."""
-    await manager.broadcast({
+async def notify_batch_progress(
+    tenant_id: str, batch_id: str, completed: int, total: int, status: str
+):
+    """Notify the tenant's clients about batch upload progress."""
+    await _notify(tenant_id, {
         "type": "batch_progress",
         "batch_id": batch_id,
         "completed": completed,

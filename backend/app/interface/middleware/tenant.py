@@ -103,15 +103,6 @@ class TenantResolutionMiddleware(BaseHTTPMiddleware):
         jwt_tenant_id = getattr(request.state, "tenant_id", None)
         explicit_slug = _resolve_tenant_slug(request, settings.tenant_root_domain)
 
-        if explicit_slug and jwt_tenant_id and explicit_slug != jwt_tenant_id:
-            logger.warning(
-                "tenant_mismatch", path=path, jwt_tenant=jwt_tenant_id, slug=explicit_slug,
-            )
-            return JSONResponse(
-                status_code=403,
-                content={"detail": "Tenant workspace does not match the authenticated account"},
-            )
-
         slug = explicit_slug or jwt_tenant_id
         if not slug:
             logger.warning("tenant_slug_missing", path=path)
@@ -126,6 +117,18 @@ class TenantResolutionMiddleware(BaseHTTPMiddleware):
         if tenant is None:
             logger.warning("tenant_not_found", slug=slug, path=path)
             return JSONResponse(status_code=404, content={"detail": "Tenant not found"})
+
+        # An explicit workspace (subdomain / header / query) must be the authenticated
+        # account's own tenant. Compared by tenant id: a slug and an id differ for the
+        # seeded Admin tenant (slug "admin", id "default").
+        if explicit_slug and jwt_tenant_id and tenant.tenant_id != jwt_tenant_id:
+            logger.warning(
+                "tenant_mismatch", path=path, jwt_tenant=jwt_tenant_id, slug=explicit_slug,
+            )
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "Tenant workspace does not match the authenticated account"},
+            )
 
         if tenant.status == "suspended":
             logger.warning("tenant_suspended", tenant_id=tenant.tenant_id, slug=slug, path=path)

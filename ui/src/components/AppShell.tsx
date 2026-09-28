@@ -4,11 +4,48 @@ import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { Sidebar } from "./Sidebar";
 import { NotificationToast } from "./NotificationToast";
-import { AuthProvider } from "@/lib/auth";
+import { AuthProvider, useAuth } from "@/lib/auth";
+import { NAV_ITEMS } from "@/lib/nav";
+import { EmptyState } from "@/components/ui/EmptyState";
 import { isImpersonating, stopImpersonation } from "@/lib/impersonation";
-import { LogOut } from "lucide-react";
+import { LogOut, ShieldAlert } from "lucide-react";
 
-const PUBLIC_PATHS = ["/login", "/portal/"];
+const PUBLIC_PATHS = ["/login", "/portal/", "/accept-invite"];
+
+/** Route-level permission gate: the page's nav entry (longest matching prefix) names
+ * the permission it needs, checked against the caller's live server permissions. The
+ * backend enforces the same permissions on every API route; this only spares users a
+ * page full of 403s. */
+function RouteGuard({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname();
+  const { can, isLoading, refresh } = useAuth();
+  const entry = NAV_ITEMS.filter(
+    (item) => item.requiredPermission && (pathname === item.href || pathname.startsWith(item.href + "/")),
+  ).sort((a, b) => b.href.length - a.href.length)[0];
+
+  if (!entry) return <>{children}</>;
+  if (isLoading) return null;
+  if (!can(entry.requiredPermission!)) {
+    return (
+      <div className="pt-16">
+        <EmptyState
+          icon={ShieldAlert}
+          title="You don't have access to this page"
+          description={`Your role in this workspace doesn't include "${entry.requiredPermission}". Ask a workspace administrator if you need it.`}
+        />
+        <div className="flex justify-center mt-4">
+          <button
+            onClick={refresh}
+            className="px-4 py-2 text-sm font-medium rounded-lg bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700"
+          >
+            Refresh permissions
+          </button>
+        </div>
+      </div>
+    );
+  }
+  return <>{children}</>;
+}
 
 function ImpersonationBanner() {
   const router = useRouter();
@@ -102,7 +139,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             {/* Keyed by route so each navigation re-triggers the entrance animation,
                 giving the app a consistent sense of "flow" between pages. */}
             <div key={pathname} className="max-w-[1760px] mx-auto px-6 py-6 animate-fade-up">
-              {children}
+              <RouteGuard>{children}</RouteGuard>
             </div>
           </main>
         </div>

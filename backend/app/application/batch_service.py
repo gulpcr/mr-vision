@@ -45,6 +45,7 @@ class BatchUploadService:
                 batch_id=batch_id,
                 study_instance_uid=uid,
                 status="pending",
+                tenant_id=tenant_id,
             )
             self._session.add(item)
 

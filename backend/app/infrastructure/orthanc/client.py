@@ -186,6 +186,39 @@ class OrthancPACSClient(PACSClient):
             })
         return studies
 
+    async def get_study_origin(self, orthanc_id: str) -> dict[str, str]:
+        """How the study's first instance arrived: Orthanc records ``CalledAET``,
+        ``RemoteAET``, ``RemoteIP`` and ``Origin`` metadata on every stored instance.
+        Returns {} if unavailable (e.g. REST uploads carry no AE titles)."""
+        response = await self._client.get(f"/studies/{orthanc_id}/instances")
+        response.raise_for_status()
+        instances = response.json()
+        if not instances:
+            return {}
+        instance_id = instances[0].get("ID") if isinstance(instances[0], dict) else instances[0]
+        meta_resp = await self._client.get(f"/instances/{instance_id}/metadata", params={"expand": ""})
+        meta_resp.raise_for_status()
+        meta = meta_resp.json() or {}
+        return {
+            "called_aet": (meta.get("CalledAET") or "").strip(),
+            "calling_aet": (meta.get("RemoteAET") or "").strip(),
+            "remote_ip": (meta.get("RemoteIP") or "").strip(),
+            "origin": (meta.get("Origin") or "").strip(),
+        }
+
+    async def add_study_label(self, orthanc_id: str, label: str) -> None:
+        """Attach an Orthanc label (Orthanc >= 1.12) to a study."""
+        response = await self._client.put(f"/studies/{orthanc_id}/labels/{label}", content=b"")
+        response.raise_for_status()
+
+    async def get_study_instance_uid(self, orthanc_id: str) -> str | None:
+        """StudyInstanceUID for an Orthanc-internal study id, or None if unknown."""
+        response = await self._client.get(f"/studies/{orthanc_id}")
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        return response.json().get("MainDicomTags", {}).get("StudyInstanceUID") or None
+
     async def delete_study(self, orthanc_id: str) -> None:
         """Permanently delete a study (and its DICOM instances) from Orthanc.
 

@@ -39,8 +39,8 @@ class DicomUploadService:
     ) -> dict:
         study_instance_uid, sop_instance_uid = self._extract_uids(dicom_bytes)
 
-        existing_study = await self._study_repo.get_by_uid(study_instance_uid)
-        if existing_study is not None and existing_study.tenant_id != tenant_id:
+        owner = await self._study_repo.owner_tenant_of(study_instance_uid)
+        if owner is not None and owner != tenant_id:
             raise ValueError(
                 f"Study {study_instance_uid} belongs to a different workspace"
             )

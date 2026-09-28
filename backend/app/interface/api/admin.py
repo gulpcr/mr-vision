@@ -24,10 +24,14 @@ from app.interface.schemas.usecase import (
     UseCaseResponse,
 )
 
+from app.interface.middleware.auth import require_permission
+
+from app.domain.permissions import STUDY_READ
+
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 
-@router.get("/routing-rules", response_model=RoutingRulesResponse)
+@router.get("/routing-rules", response_model=RoutingRulesResponse, dependencies=[require_permission("config.manage")])
 async def get_routing_rules(
     routing_service: Annotated[RoutingService, Depends(get_routing_service)],
 ):
@@ -36,7 +40,7 @@ async def get_routing_rules(
     return RoutingRulesResponse(routing_rules=rules, site_overrides=overrides)
 
 
-@router.put("/routing-rules")
+@router.put("/routing-rules", dependencies=[Depends(require_platform_admin)])
 async def update_routing_rules(
     body: UpdateRoutingRulesRequest,
     routing_service: Annotated[RoutingService, Depends(get_routing_service)],
@@ -45,7 +49,7 @@ async def update_routing_rules(
     return {"status": "ok", "message": "Routing rules updated"}
 
 
-@router.get("/usecases", response_model=UseCaseListResponse)
+@router.get("/usecases", response_model=UseCaseListResponse, dependencies=[require_permission("config.manage")])
 async def admin_list_usecases(
     registry: Annotated[UseCaseRegistry, Depends(get_registry)],
 ):
@@ -68,7 +72,7 @@ async def admin_list_usecases(
     )
 
 
-@router.get("/usecases/{usecase_name}/manifest")
+@router.get("/usecases/{usecase_name}/manifest", dependencies=[require_permission("config.manage")])
 async def get_usecase_manifest(
     usecase_name: str,
     registry: Annotated[UseCaseRegistry, Depends(get_registry)],
@@ -80,7 +84,7 @@ async def get_usecase_manifest(
     return manifest
 
 
-@router.get("/site-config")
+@router.get("/site-config", dependencies=[require_permission("config.manage")])
 async def get_site_config():
     from app.config import get_settings
     import yaml
@@ -100,7 +104,7 @@ class UpdateSiteConfigRequest(BaseModel):
     routing_overrides: list[dict[str, Any]] = []
 
 
-@router.put("/site-config")
+@router.put("/site-config", dependencies=[Depends(require_platform_admin)])
 async def update_site_config(body: UpdateSiteConfigRequest):
     from app.config import get_settings
     import yaml
@@ -121,7 +125,7 @@ async def update_site_config(body: UpdateSiteConfigRequest):
 
 # ── Audit Dashboard (F13) ──────────────────────────────────────
 
-@router.get("/audit")
+@router.get("/audit", dependencies=[require_permission("audit.view")])
 async def list_audit_logs(
     session: Annotated[AsyncSession, Depends(get_session)],
     tenant_id: Annotated[str, Depends(request_tenant_id)],
@@ -185,7 +189,7 @@ async def verify_audit_chain(session: Annotated[AsyncSession, Depends(get_sessio
 
 # ── Retention Policies (F15) ───────────────────────────────────
 
-@router.get("/retention")
+@router.get("/retention", dependencies=[require_permission("data.purge")])
 async def list_retention_policies(
     session: Annotated[AsyncSession, Depends(get_session)],
     tenant_id: Annotated[str, Depends(request_tenant_id)],
@@ -195,7 +199,7 @@ async def list_retention_policies(
     return {"policies": await service.list_policies(tenant_id=tenant_id)}
 
 
-@router.post("/retention", status_code=201)
+@router.post("/retention", status_code=201, dependencies=[require_permission("data.purge")])
 async def create_retention_policy(
     body: dict,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -213,7 +217,7 @@ async def create_retention_policy(
     return policy
 
 
-@router.delete("/retention/{policy_id}")
+@router.delete("/retention/{policy_id}", dependencies=[require_permission("data.purge")])
 async def delete_retention_policy(
     policy_id: str,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -227,19 +231,21 @@ async def delete_retention_policy(
     return {"status": "ok"}
 
 
-@router.post("/retention/apply")
+@router.post("/retention/apply", dependencies=[require_permission("data.purge")])
 async def apply_retention_policies(
     session: Annotated[AsyncSession, Depends(get_session)],
+    tenant_id: Annotated[str, Depends(request_tenant_id)],
 ):
+    """Apply the caller's own tenant's retention policies now."""
     from app.application.retention_service import RetentionService
     service = RetentionService(session)
-    totals = await service.apply_policies()
+    totals = await service.apply_policies(tenant_id=tenant_id)
     return {"status": "ok", "purged": totals}
 
 
 # ── A/B Testing (F6) ──────────────────────────────────────────
 
-@router.get("/experiments")
+@router.get("/experiments", dependencies=[require_permission("config.manage")])
 async def list_experiments(
     session: Annotated[AsyncSession, Depends(get_session)],
     usecase_name: str | None = None,
@@ -249,7 +255,7 @@ async def list_experiments(
     return {"experiments": await service.list_experiments(usecase_name)}
 
 
-@router.post("/experiments", status_code=201)
+@router.post("/experiments", status_code=201, dependencies=[Depends(require_platform_admin)])
 async def create_experiment(
     body: dict,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -266,7 +272,7 @@ async def create_experiment(
     return exp
 
 
-@router.get("/experiments/{experiment_id}/stats")
+@router.get("/experiments/{experiment_id}/stats", dependencies=[require_permission("config.manage")])
 async def get_experiment_stats(
     experiment_id: str,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -276,7 +282,7 @@ async def get_experiment_stats(
     return await service.get_experiment_stats(experiment_id)
 
 
-@router.post("/experiments/{experiment_id}/stop")
+@router.post("/experiments/{experiment_id}/stop", dependencies=[Depends(require_platform_admin)])
 async def stop_experiment(
     experiment_id: str,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -289,7 +295,7 @@ async def stop_experiment(
 
 # ── Alerting (F14) ─────────────────────────────────────────────
 
-@router.get("/alerts")
+@router.get("/alerts", dependencies=[require_permission("config.manage")])
 async def list_alert_rules(
     session: Annotated[AsyncSession, Depends(get_session)],
     tenant_id: Annotated[str, Depends(request_tenant_id)],
@@ -299,7 +305,7 @@ async def list_alert_rules(
     return {"rules": await service.list_rules(tenant_id=tenant_id)}
 
 
-@router.post("/alerts", status_code=201)
+@router.post("/alerts", status_code=201, dependencies=[require_permission("config.manage")])
 async def create_alert_rule(
     body: dict,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -317,7 +323,7 @@ async def create_alert_rule(
     return rule
 
 
-@router.delete("/alerts/{rule_id}")
+@router.delete("/alerts/{rule_id}", dependencies=[require_permission("config.manage")])
 async def delete_alert_rule(
     rule_id: str,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -331,7 +337,7 @@ async def delete_alert_rule(
     return {"status": "ok"}
 
 
-@router.get("/alerts/history")
+@router.get("/alerts/history", dependencies=[require_permission("config.manage")])
 async def list_alert_history(
     session: Annotated[AsyncSession, Depends(get_session)],
     tenant_id: Annotated[str, Depends(request_tenant_id)],
@@ -345,7 +351,7 @@ async def list_alert_history(
 
 # ── Model Registry (F7) ───────────────────────────────────────
 
-@router.get("/models/{usecase_name}/versions")
+@router.get("/models/{usecase_name}/versions", dependencies=[require_permission("config.manage")])
 async def list_model_versions(
     usecase_name: str,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -355,7 +361,7 @@ async def list_model_versions(
     return {"versions": await service.list_versions(usecase_name)}
 
 
-@router.post("/models/{usecase_name}/versions", status_code=201)
+@router.post("/models/{usecase_name}/versions", status_code=201, dependencies=[Depends(require_platform_admin)])
 async def register_model_version(
     usecase_name: str,
     body: dict,
@@ -373,7 +379,7 @@ async def register_model_version(
     return version
 
 
-@router.post("/models/{usecase_name}/versions/{version}/activate")
+@router.post("/models/{usecase_name}/versions/{version}/activate", dependencies=[Depends(require_platform_admin)])
 async def activate_model_version(
     usecase_name: str,
     version: str,
@@ -387,7 +393,7 @@ async def activate_model_version(
     return {"status": "ok", "usecase": usecase_name, "version": version}
 
 
-@router.get("/models/{usecase_name}/active")
+@router.get("/models/{usecase_name}/active", dependencies=[require_permission("config.manage")])
 async def get_active_model_version(
     usecase_name: str,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -402,7 +408,7 @@ async def get_active_model_version(
 
 # ── Review Queue (F20) ────────────────────────────────────────
 
-@router.get("/review")
+@router.get("/review", dependencies=[require_permission("result.approve")])
 async def list_review_queue(
     session: Annotated[AsyncSession, Depends(get_session)],
     tenant_id: Annotated[str, Depends(request_tenant_id)],
@@ -418,7 +424,7 @@ async def list_review_queue(
     return {"items": items, "stats": stats, "offset": offset, "limit": limit}
 
 
-@router.get("/review/stats")
+@router.get("/review/stats", dependencies=[require_permission("result.approve")])
 async def get_review_stats(
     session: Annotated[AsyncSession, Depends(get_session)],
     tenant_id: Annotated[str, Depends(request_tenant_id)],
@@ -428,7 +434,7 @@ async def get_review_stats(
     return await service.get_queue_stats(tenant_id=tenant_id)
 
 
-@router.get("/review/{review_id}")
+@router.get("/review/{review_id}", dependencies=[require_permission("result.approve")])
 async def get_review_item(
     review_id: str,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -442,7 +448,7 @@ async def get_review_item(
     return item
 
 
-@router.post("/review/{review_id}/submit")
+@router.post("/review/{review_id}/submit", dependencies=[require_permission("result.approve")])
 async def submit_review(
     review_id: str,
     body: dict,
@@ -467,7 +473,7 @@ async def submit_review(
 
 # ── Batch Upload (F19) ────────────────────────────────────────
 
-@router.get("/batches")
+@router.get("/batches", dependencies=[require_permission("study.upload")])
 async def list_batches(
     session: Annotated[AsyncSession, Depends(get_session)],
     tenant_id: Annotated[str, Depends(request_tenant_id)],
@@ -477,7 +483,7 @@ async def list_batches(
     return {"batches": await service.list_batches(tenant_id=tenant_id)}
 
 
-@router.post("/batches", status_code=201)
+@router.post("/batches", status_code=201, dependencies=[require_permission("study.upload")])
 async def create_batch(
     body: dict,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -496,7 +502,7 @@ async def create_batch(
     return batch
 
 
-@router.get("/batches/{batch_id}")
+@router.get("/batches/{batch_id}", dependencies=[require_permission("study.upload")])
 async def get_batch(
     batch_id: str,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -512,7 +518,7 @@ async def get_batch(
 
 # ── QA / Audit Metrics Dashboard (Feature 8) ─────────────────────────────────
 
-@router.get("/metrics")
+@router.get("/metrics", dependencies=[require_permission("audit.view")])
 async def get_qa_metrics(
     service: Annotated[AnalyticsService, Depends(get_analytics_service)],
     days: int = Query(30, ge=1, le=365),
@@ -524,7 +530,7 @@ async def get_qa_metrics(
 
 # ── Capacity Prediction (Feature 11) ─────────────────────────────────────────
 
-@router.get("/capacity")
+@router.get("/capacity", dependencies=[require_permission("audit.view")])
 async def get_capacity_metrics(
     service: Annotated[AnalyticsService, Depends(get_analytics_service)],
     days: int = Query(30, ge=1, le=365),
@@ -535,7 +541,7 @@ async def get_capacity_metrics(
 
 # ── Longitudinal Trend (Feature 7) ───────────────────────────────────────────
 
-@router.get("/patients/{patient_id}/trend/{usecase_name}")
+@router.get("/patients/{patient_id}/trend/{usecase_name}", dependencies=[require_permission("study.view")])
 async def get_patient_trend(
     patient_id: str,
     usecase_name: str,
@@ -547,7 +553,7 @@ async def get_patient_trend(
 
 # ── Protocol Optimization (Feature 10) ───────────────────────────────────────
 
-@router.get("/studies/{study_uid}/protocol-check")
+@router.get("/studies/{study_uid}/protocol-check", dependencies=[require_permission(STUDY_READ)])
 async def check_protocol(
     study_uid: str,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -625,7 +631,7 @@ async def check_protocol(
 
 # ── Prior Auto-Comparison (Feature 5) ────────────────────────────────────────
 
-@router.get("/studies/{study_uid}/prior-comparison/{usecase_name}")
+@router.get("/studies/{study_uid}/prior-comparison/{usecase_name}", dependencies=[require_permission(STUDY_READ)])
 async def get_prior_comparison(
     study_uid: str,
     usecase_name: str,
@@ -691,6 +697,7 @@ async def get_prior_comparison(
     result_service = ResultService(
         result_repo=PgResultRepository(session, tenant_id=tenant_id),
         artifact_store=get_artifact_store(),
+        tenant_id=tenant_id,
     )
     data = await result_service.compare_results(prior_result.id, current_result.id)
 
@@ -716,7 +723,7 @@ async def get_prior_comparison(
 
 # ── Worklist Urgency Scores (Feature 3) ──────────────────────────────────────
 
-@router.post("/urgency-scores")
+@router.post("/urgency-scores", dependencies=[require_permission("study.view")])
 async def compute_urgency_scores(
     body: dict,
     service: Annotated[AnalyticsService, Depends(get_analytics_service)],
@@ -732,7 +739,7 @@ async def compute_urgency_scores(
 
 # ── Data Reset (Danger Zone) ──────────────────────────────────────────────────
 
-@router.post("/reset")
+@router.post("/reset", dependencies=[require_permission("data.purge")])
 async def reset_all_data(
     session: Annotated[AsyncSession, Depends(get_session)],
     tenant_id: Annotated[str, Depends(request_tenant_id)],
@@ -749,10 +756,11 @@ async def reset_all_data(
 
     Clears:
       - studies, series (cascade: job_runs, results_index)
-      - critical_alerts, review_queue, audit_log, share_links
+      - critical_alerts, review_queue, share_links
       - MinIO artifacts for the affected studies (or the whole bucket, if all_tenants)
 
     Preserved (not touched):
+      - audit_log (the reset itself is recorded there as data_purged)
       - users, tenants, routing rules, alert rules, retention policies,
         model_versions, ab_experiments, batch_uploads, usecase_registry
 
@@ -773,10 +781,17 @@ async def reset_all_data(
     import structlog as _structlog
     logger = _structlog.get_logger(__name__)
 
+    if all_tenants:
+        # Row-Level Security confines the session to the caller's tenant; a
+        # platform-wide wipe has to widen it explicitly.
+        from app.infrastructure.tenant.db_scope import bind_platform_scope, reapply_scope
+
+        bind_platform_scope(tenant_id)
+        await reapply_scope(session)
+
     from sqlalchemy import select
 
     from app.infrastructure.database.models import (
-        AuditLogRecord,
         CriticalAlertRecord,
         ReviewQueueRecord,
         ShareLinkRecord,
@@ -806,12 +821,6 @@ async def reset_all_data(
     r = await session.execute(stmt)
     totals["review_queue"] = r.rowcount
 
-    stmt = delete(AuditLogRecord)
-    if scope_tenant_id:
-        stmt = stmt.where(AuditLogRecord.tenant_id == scope_tenant_id)
-    r = await session.execute(stmt)
-    totals["audit_log"] = r.rowcount
-
     stmt = delete(ShareLinkRecord)
     if scope_tenant_id:
         stmt = stmt.where(ShareLinkRecord.tenant_id == scope_tenant_id)
@@ -824,6 +833,21 @@ async def reset_all_data(
         stmt = stmt.where(StudyRecord.tenant_id == scope_tenant_id)
     r = await session.execute(stmt)
     totals["studies"] = r.rowcount
+
+    # The audit log is never wiped (it is a tamper-evident hash chain and must outlive
+    # the data it describes); the wipe itself is recorded in it instead.
+    from app.application.audit_service import AuditService, actor_from_request
+
+    actor_id, actor_display, client_ip = actor_from_request(request)
+    await AuditService(session).record(
+        action="data_purged",
+        entity_type="tenant",
+        entity_id=scope_tenant_id or "ALL",
+        actor_id=actor_id,
+        actor_display=actor_display,
+        client_ip=client_ip,
+        details={"reason": "admin_reset", "cleared": dict(totals)},
+    )
 
     await session.commit()
 
@@ -840,11 +864,14 @@ async def reset_all_data(
             from minio.deleteobjects import DeleteObject
 
             if scope_tenant_id:
+                from app.domain.storage_keys import study_prefixes
+
                 objects = []
                 for uid in affected_study_uids:
-                    objects.extend(
-                        store._client.list_objects(store._bucket, prefix=f"{uid}/", recursive=True)
-                    )
+                    for prefix in study_prefixes(scope_tenant_id, uid):
+                        objects.extend(
+                            store._client.list_objects(store._bucket, prefix=prefix, recursive=True)
+                        )
             else:
                 objects = list(store._client.list_objects(store._bucket, recursive=True))
             if not objects:

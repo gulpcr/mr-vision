@@ -22,10 +22,14 @@ from app.interface.api.dependencies import (
 
 logger = structlog.get_logger(__name__)
 
+from app.interface.middleware.auth import require_permission
+
+from app.domain.permissions import STUDY_READ
+
 router = APIRouter(prefix="/reports", tags=["reports"])
 
 
-@router.get("/{study_uid}/{usecase}/consolidated-report")
+@router.get("/{study_uid}/{usecase}/consolidated-report", dependencies=[require_permission(STUDY_READ)])
 async def get_consolidated_report(
     study_uid: str,
     usecase: str,
@@ -139,7 +143,7 @@ async def get_consolidated_report(
     return {**payload, "grounded": True, "cached": False, "flagged_count": len(flagged)}
 
 
-@router.get("/{study_uid}/{usecase}/clinical-context")
+@router.get("/{study_uid}/{usecase}/clinical-context", dependencies=[require_permission(STUDY_READ)])
 async def get_clinical_context(
     study_uid: str,
     usecase: str,
@@ -172,7 +176,7 @@ async def get_clinical_context(
     return {"study_uid": study_uid, "usecase": usecase, "clinical_context": clinical_context, "source": "generated"}
 
 
-@router.get("/{study_uid}/{usecase}/longitudinal")
+@router.get("/{study_uid}/{usecase}/longitudinal", dependencies=[require_permission(STUDY_READ)])
 async def get_longitudinal_analysis(
     study_uid: str,
     usecase: str,
@@ -215,8 +219,14 @@ async def get_longitudinal_analysis(
     result_repo = service._result_repo  # PgResultRepository holds the session
     async_session = result_repo._session
 
-    # Fetch the study's patient_id
-    study_stmt = select(StudyRecord).where(StudyRecord.study_instance_uid == study_uid)
+    # Fetch the study's patient_id — within the caller's tenant only. MRNs are only
+    # unique per institution: matching priors by patient_id across tenants would pull
+    # another hospital's patient into this analysis (and send it to the LLM).
+    caller_tenant_id = result_repo._tenant_id or "default"
+    study_stmt = select(StudyRecord).where(
+        StudyRecord.study_instance_uid == study_uid,
+        StudyRecord.tenant_id == caller_tenant_id,
+    )
     study_res = await async_session.execute(study_stmt)
     study_record = study_res.scalar_one_or_none()
     patient_id = study_record.patient_id if study_record else None
@@ -228,6 +238,8 @@ async def get_longitudinal_analysis(
             .join(StudyRecord, ResultRecord.study_instance_uid == StudyRecord.study_instance_uid)
             .where(
                 StudyRecord.patient_id == patient_id,
+                StudyRecord.tenant_id == caller_tenant_id,
+                ResultRecord.tenant_id == caller_tenant_id,
                 ResultRecord.usecase_name == usecase,
                 ResultRecord.is_latest == True,  # noqa: E712
                 ResultRecord.study_instance_uid != study_uid,
@@ -259,7 +271,7 @@ async def get_longitudinal_analysis(
     }
 
 
-@router.get("/{study_uid}/{usecase}/narrative")
+@router.get("/{study_uid}/{usecase}/narrative", dependencies=[require_permission(STUDY_READ)])
 async def get_narrative_impression(
     study_uid: str,
     usecase: str,
@@ -287,7 +299,7 @@ async def get_narrative_impression(
     return {"study_uid": study_uid, "usecase": usecase, "narrative": narrative}
 
 
-@router.get("/{study_uid}/{usecase}/pdf")
+@router.get("/{study_uid}/{usecase}/pdf", dependencies=[require_permission(STUDY_READ)])
 async def generate_pdf_report(
     study_uid: str,
     usecase: str,
@@ -466,20 +478,28 @@ async def generate_pdf_report(
     except Exception:
         pass  # clinical merge is best-effort — never block report generation
 
-    pdf_bytes = generator.generate(
-        study_uid=study_uid,
-        usecase_name=usecase,
-        result={
-            "summary": summary_for_pdf,
-            "measurements": result.measurements,
-            "qa_flags": [f.value if hasattr(f, "value") else f for f in result.qa_flags],
-            "qa_details": result.qa_details,
-            "model_version": result.model_version,
-            "model_checksum": result.model_checksum,
-        },
-        patient_info=patient_info,
-        narrative=narrative,
+    from app.application.tenant_settings_service import TenantSettingsService
+    from app.reports.pdf_generator import report_profile
+
+    # Tenant's own institution name / signatories on the report (tenant_settings).
+    profile = await TenantSettingsService(service._result_repo._session).report_profile(
+        service._result_repo._tenant_id or "default"
     )
+    with report_profile(profile):
+        pdf_bytes = generator.generate(
+            study_uid=study_uid,
+            usecase_name=usecase,
+            result={
+                "summary": summary_for_pdf,
+                "measurements": result.measurements,
+                "qa_flags": [f.value if hasattr(f, "value") else f for f in result.qa_flags],
+                "qa_details": result.qa_details,
+                "model_version": result.model_version,
+                "model_checksum": result.model_checksum,
+            },
+            patient_info=patient_info,
+            narrative=narrative,
+        )
 
     filename = f"report_{study_uid[:20]}_{usecase}.pdf"
     return Response(
@@ -496,7 +516,7 @@ async def generate_pdf_report(
     )
 
 
-@router.get("/{study_uid}/{usecase}/dicom-sr")
+@router.get("/{study_uid}/{usecase}/dicom-sr", dependencies=[require_permission("result.export")])
 async def generate_dicom_sr(
     study_uid: str,
     usecase: str,
@@ -532,7 +552,7 @@ async def generate_dicom_sr(
     )
 
 
-@router.get("/{study_uid}/{usecase}/fhir")
+@router.get("/{study_uid}/{usecase}/fhir", dependencies=[require_permission("result.export")])
 async def export_fhir_report(
     study_uid: str,
     usecase: str,
@@ -600,7 +620,7 @@ async def export_fhir_report(
     return report
 
 
-@router.get("/worklist")
+@router.get("/worklist", dependencies=[require_permission(STUDY_READ)])
 async def query_worklist(
     modality: str = "MR",
     scheduled_date: str | None = None,

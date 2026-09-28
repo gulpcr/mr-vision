@@ -6,6 +6,7 @@ import structlog
 
 from app.domain.interfaces import ArtifactStore, ResultRepository
 from app.domain.models import Result
+from app.domain.storage_keys import artifact_key, legacy_artifact_key
 
 logger = structlog.get_logger(__name__)
 
@@ -28,9 +29,12 @@ class ResultService:
         self,
         result_repo: ResultRepository,
         artifact_store: ArtifactStore,
+        tenant_id: str = "default",
     ):
         self._result_repo = result_repo
         self._artifact_store = artifact_store
+        # The caller's tenant: artifacts are stored under a {tenant_id}/ key prefix.
+        self._tenant_id = tenant_id or "default"
 
     async def get_result(
         self, study_instance_uid: str, usecase_name: str, version: int | None = None
@@ -51,17 +55,38 @@ class ResultService:
     ) -> list[Result]:
         return await self._result_repo.list_versions(study_instance_uid, usecase_name)
 
+    async def _ensure_artifact_visible(self, study_instance_uid: str, usecase_name: str) -> None:
+        """The object store is shared by every tenant and has no notion of tenancy, so
+        an artifact is only served when the caller's (tenant-scoped) result repository
+        can see a result for that study + use case. Without this, any user could read
+        another tenant's artifacts by guessing a StudyInstanceUID."""
+        results = await self._result_repo.list_by_study(study_instance_uid)
+        if not any(r.usecase_name == usecase_name for r in results):
+            raise ValueError(f"No result for {study_instance_uid}/{usecase_name}")
+
+    async def _resolve_artifact_key(
+        self, study_instance_uid: str, usecase_name: str, artifact_path: str
+    ) -> str:
+        """Tenant-prefixed key if that object exists, else the pre-tenancy legacy key
+        (objects not yet moved by scripts/migrate_artifact_keys.py)."""
+        key = artifact_key(self._tenant_id, study_instance_uid, usecase_name, artifact_path)
+        if await self._artifact_store.exists(key):
+            return key
+        return legacy_artifact_key(study_instance_uid, usecase_name, artifact_path)
+
     async def get_artifact_data(
         self, study_instance_uid: str, usecase_name: str, artifact_path: str
     ) -> bytes:
-        storage_path = f"{study_instance_uid}/{usecase_name}/{artifact_path}"
-        return await self._artifact_store.get(storage_path)
+        await self._ensure_artifact_visible(study_instance_uid, usecase_name)
+        key = await self._resolve_artifact_key(study_instance_uid, usecase_name, artifact_path)
+        return await self._artifact_store.get(key)
 
     async def get_artifact_url(
         self, study_instance_uid: str, usecase_name: str, artifact_path: str
     ) -> str:
-        storage_path = f"{study_instance_uid}/{usecase_name}/{artifact_path}"
-        return await self._artifact_store.get_presigned_url(storage_path)
+        await self._ensure_artifact_visible(study_instance_uid, usecase_name)
+        key = await self._resolve_artifact_key(study_instance_uid, usecase_name, artifact_path)
+        return await self._artifact_store.get_presigned_url(key)
 
     async def get_result_by_id(self, result_id: str) -> Result | None:
         return await self._result_repo.get_by_id(result_id)
@@ -121,5 +146,5 @@ class ResultService:
         data: bytes,
         content_type: str = "application/octet-stream",
     ) -> str:
-        storage_path = f"{study_instance_uid}/{usecase_name}/{artifact_path}"
+        storage_path = artifact_key(self._tenant_id, study_instance_uid, usecase_name, artifact_path)
         return await self._artifact_store.put(storage_path, data, content_type)

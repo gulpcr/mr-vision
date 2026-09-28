@@ -10,10 +10,14 @@ from app.infrastructure.database.repositories import PgJobRepository
 from app.interface.api.dependencies import get_job_orchestrator, get_job_repo, tenant_has_usecase_access
 from app.interface.schemas.job import CreateJobRequest, JobListResponse, JobResponse
 
+from app.interface.middleware.auth import require_permission
+
+from app.domain.permissions import STUDY_READ
+
 router = APIRouter(tags=["jobs"])
 
 
-@router.post("/studies/{study_uid}/jobs", response_model=JobListResponse, status_code=201)
+@router.post("/studies/{study_uid}/jobs", response_model=JobListResponse, status_code=201, dependencies=[require_permission("job.run")])
 async def create_jobs(
     study_uid: str,
     body: CreateJobRequest,
@@ -54,7 +58,7 @@ async def create_jobs(
     return JobListResponse(jobs=[_to_response(j) for j in jobs])
 
 
-@router.get("/jobs/{job_id}", response_model=JobResponse)
+@router.get("/jobs/{job_id}", response_model=JobResponse, dependencies=[require_permission(STUDY_READ)])
 async def get_job(
     job_id: str,
     job_repo: Annotated[PgJobRepository, Depends(get_job_repo)],
@@ -65,7 +69,7 @@ async def get_job(
     return _to_response(job)
 
 
-@router.get("/studies/{study_uid}/jobs", response_model=JobListResponse)
+@router.get("/studies/{study_uid}/jobs", response_model=JobListResponse, dependencies=[require_permission(STUDY_READ)])
 async def list_study_jobs(
     study_uid: str,
     orchestrator: Annotated[JobOrchestrator, Depends(get_job_orchestrator)],
@@ -74,7 +78,7 @@ async def list_study_jobs(
     return JobListResponse(jobs=[_to_response(j) for j in jobs])
 
 
-@router.post("/jobs/{job_id}/cancel", response_model=JobResponse)
+@router.post("/jobs/{job_id}/cancel", response_model=JobResponse, dependencies=[require_permission("job.manage")])
 async def cancel_job(
     job_id: str,
     orchestrator: Annotated[JobOrchestrator, Depends(get_job_orchestrator)],
@@ -87,7 +91,7 @@ async def cancel_job(
     return _to_response(job)
 
 
-@router.post("/jobs/{job_id}/retry", response_model=JobResponse, status_code=201)
+@router.post("/jobs/{job_id}/retry", response_model=JobResponse, status_code=201, dependencies=[require_permission("job.manage")])
 async def retry_job(
     job_id: str,
     orchestrator: Annotated[JobOrchestrator, Depends(get_job_orchestrator)],
@@ -100,7 +104,7 @@ async def retry_job(
     return _to_response(job)
 
 
-@router.get("/jobs/{job_id}/stream")
+@router.get("/jobs/{job_id}/stream", dependencies=[require_permission(STUDY_READ)])
 async def stream_job_progress(
     job_id: str,
     job_repo: Annotated[PgJobRepository, Depends(get_job_repo)],

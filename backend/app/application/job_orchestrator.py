@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from typing import Any
 
 import structlog
@@ -33,7 +34,11 @@ class JobOrchestrator:
         audit_repo: AuditRepository,
         routing_service: RoutingService,
         registry: UseCaseRegistry,
+        usecase_allowed: Callable[[str], bool] | None = None,
     ):
+        # Tenant entitlement check (plan/feature flags) applied to auto-routed jobs;
+        # None = unrestricted (single-tenant deployments).
+        self._usecase_allowed = usecase_allowed
         self._study_repo = study_repo
         self._series_repo = series_repo
         self._job_repo = job_repo
@@ -61,6 +66,13 @@ class JobOrchestrator:
             matched_usecases = usecase_names
         else:
             matched_usecases = self._routing_service.route_study(study, series)
+            if self._usecase_allowed is not None:
+                not_entitled = [u for u in matched_usecases if not self._usecase_allowed(u)]
+                if not_entitled:
+                    logger.info(
+                        "usecases_not_entitled", study_uid=study_instance_uid, skipped=not_entitled,
+                    )
+                matched_usecases = [u for u in matched_usecases if self._usecase_allowed(u)]
 
         if not matched_usecases:
             logger.warning("no_usecases_matched", study_uid=study_instance_uid)

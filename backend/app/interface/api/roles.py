@@ -45,13 +45,13 @@ def _actor(request: Request) -> str:
     return getattr(request.state, "user", "system") or "system"
 
 
-@router.get("/permissions", dependencies=[require_permission("study.view")])
+@router.get("/permissions", dependencies=[require_permission("user.manage||role.manage")])
 async def list_permissions():
     """Return the permission catalog (key → description) for the roles editor."""
     return {"permissions": [{"key": k, "description": v} for k, v in PERMISSIONS.items()]}
 
 
-@router.get("", dependencies=[require_permission("study.view")])
+@router.get("", dependencies=[require_permission("user.manage||role.manage")])
 async def list_roles(
     request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -59,7 +59,7 @@ async def list_roles(
     return await RoleService(session).list_roles(_tenant(request))
 
 
-@router.post("", status_code=201, dependencies=[require_permission("user.manage")])
+@router.post("", status_code=201, dependencies=[require_permission("role.manage")])
 async def create_role(
     body: RoleCreate,
     request: Request,
@@ -78,7 +78,7 @@ async def create_role(
     return role
 
 
-@router.patch("/{role_id}", dependencies=[require_permission("user.manage")])
+@router.patch("/{role_id}", dependencies=[require_permission("role.manage")])
 async def update_role(
     role_id: str,
     body: RoleUpdate,
@@ -95,13 +95,18 @@ async def update_role(
         )
     except UnknownPermissionError as e:
         raise HTTPException(status_code=422, detail=str(e))
+    except RoleProtectedError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     if role is None:
         raise HTTPException(status_code=404, detail="Role not found")
+    from app.infrastructure.auth.principal import invalidate_all_principals
+
+    invalidate_all_principals()  # the role's holders pick up the new permissions at once
     await session.commit()
     return role
 
 
-@router.delete("/{role_id}", status_code=204, dependencies=[require_permission("user.manage")])
+@router.delete("/{role_id}", status_code=204, dependencies=[require_permission("role.manage")])
 async def delete_role(
     role_id: str,
     request: Request,

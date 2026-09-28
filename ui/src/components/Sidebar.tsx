@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { CortexMark } from "@/components/ui/CortexMark";
 import { useCriticalAlertStats } from "@/lib/hooks";
+import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { useTheme } from "@/lib/theme";
 import { useLocale } from "@/lib/i18n";
@@ -24,7 +25,8 @@ export function Sidebar() {
   const [collapsed, setCollapsed] = useState(false);
   const { data: alertStats } = useCriticalAlertStats();
   const unackedCount = alertStats?.total_unacknowledged ?? 0;
-  const { can } = useAuth();
+  const { can, workspace } = useAuth();
+  const brand = workspace?.branding;
   const { theme, toggle: toggleTheme } = useTheme();
   const { locale, setLocale, strings } = useLocale();
   const visibleItems = NAV_ITEMS.filter((item) => !item.requiredPermission || can(item.requiredPermission));
@@ -67,6 +69,27 @@ export function Sidebar() {
           </span>
         )}
       </div>
+
+      {/* Workspace (tenant) identity */}
+      {!collapsed && workspace && (
+        <div
+          className="flex items-center gap-2 px-4 py-2.5 border-b border-white/10"
+          style={brand?.primary_color ? { borderLeft: `3px solid ${brand.primary_color}` } : undefined}
+        >
+          {brand?.logo_data_url && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={brand.logo_data_url} alt="" className="h-6 w-auto max-w-[5rem] object-contain" />
+          )}
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-white/90 truncate">
+              {brand?.display_name || workspace.workspace}
+            </p>
+            <p className="text-[10px] font-mono uppercase tracking-wider text-white/40 truncate">
+              {workspace.workspace}
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Navigation */}
       <nav className="stagger flex-1 min-h-0 overflow-y-auto py-3 space-y-1 px-2">
@@ -128,7 +151,8 @@ export function Sidebar() {
         </button>
         {!collapsed && (
           <button
-            onClick={() => {
+            onClick={async () => {
+              await api.auth.clearViewerSession().catch(() => {});
               localStorage.removeItem("auth_token");
               localStorage.removeItem("user");
               window.location.href = "/login";

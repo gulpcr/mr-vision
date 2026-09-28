@@ -44,6 +44,7 @@ class ImpersonationService:
             is_platform_operator=False,
             impersonated_by=operator_user_id,
             expires_minutes=IMPERSONATION_TOKEN_MINUTES,
+            token_version=target.token_version,
         )
 
         await PgAuditRepository(self._session).save(AuditEntry(

@@ -74,15 +74,20 @@ class NoRadiologistError(Exception):
 
 
 class ReadingService:
-    def __init__(self, session):
+    def __init__(self, session, tenant_id: str | None = None):
         self._session = session
+        # Every lifecycle transition is confined to this tenant's studies (a study in
+        # another workspace is reported as not found). Row-Level Security enforces the
+        # same boundary in the database; this is the application-level half.
+        self._tenant_id = tenant_id
 
     async def _get(self, study_uid: str):
         from app.infrastructure.database.models import StudyRecord
 
-        res = await self._session.execute(
-            select(StudyRecord).where(StudyRecord.study_instance_uid == study_uid)
-        )
+        stmt = select(StudyRecord).where(StudyRecord.study_instance_uid == study_uid)
+        if self._tenant_id:
+            stmt = stmt.where(StudyRecord.tenant_id == self._tenant_id)
+        res = await self._session.execute(stmt)
         rec = res.scalar_one_or_none()
         if rec is None:
             raise StudyNotFoundError(study_uid)
@@ -131,7 +136,7 @@ class ReadingService:
 
         load_rows = (await self._session.execute(
             select(StudyRecord.assigned_to, func.count())
-            .where(StudyRecord.reading_status == IN_PROGRESS)
+            .where(StudyRecord.reading_status == IN_PROGRESS, StudyRecord.tenant_id == tenant_id)
             .group_by(StudyRecord.assigned_to)
         )).all()
         load = {uid: n for uid, n in load_rows}

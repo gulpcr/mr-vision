@@ -107,6 +107,7 @@ class AlertingService:
                 event_type=event_type,
                 payload=payload,
                 status="sent" if success else "failed",
+                tenant_id=rule.tenant_id,
             )
             self._session.add(history)
 

@@ -63,6 +63,7 @@ class DICOMExportService:
         result_data: dict[str, Any],
         export_sr: bool = True,
         export_seg: bool = False,
+        tenant_id: str | None = None,
     ) -> dict[str, str]:
         """Export result to Orthanc as DICOM SR and/or Seg. Returns dict of Orthanc IDs."""
         exported: dict[str, str] = {}
@@ -82,7 +83,7 @@ class DICOMExportService:
 
         if export_seg:
             try:
-                seg_nifti_bytes = await self._load_seg_nifti(study_instance_uid, usecase_name)
+                seg_nifti_bytes = await self._load_seg_nifti(study_instance_uid, usecase_name, tenant_id)
                 if seg_nifti_bytes is not None:
                     seg_dcm_bytes = await asyncio.get_event_loop().run_in_executor(
                         None, self._build_seg, source_ds, seg_nifti_bytes, usecase_name
@@ -128,16 +129,24 @@ class DICOMExportService:
         dcm_resp.raise_for_status()
         return pydicom.dcmread(io.BytesIO(dcm_resp.content), force=True)
 
-    async def _load_seg_nifti(self, study_instance_uid: str, usecase_name: str) -> bytes | None:
-        """Try common artifact filenames to locate the segmentation NIfTI in MinIO."""
+    async def _load_seg_nifti(
+        self, study_instance_uid: str, usecase_name: str, tenant_id: str | None = None
+    ) -> bytes | None:
+        """Try common artifact filenames to locate the segmentation NIfTI in MinIO —
+        under the tenant prefix first, then the pre-tenancy legacy key."""
+        from app.domain.storage_keys import artifact_key, legacy_artifact_key
+
         for name in _SEG_ARTIFACT_NAMES:
-            key = f"{study_instance_uid}/{usecase_name}/{name}"
-            try:
-                data = await self._store.get(key)
-                if data:
-                    return data
-            except Exception:
-                continue
+            keys = [legacy_artifact_key(study_instance_uid, usecase_name, name)]
+            if tenant_id:
+                keys.insert(0, artifact_key(tenant_id, study_instance_uid, usecase_name, name))
+            for key in keys:
+                try:
+                    data = await self._store.get(key)
+                    if data:
+                        return data
+                except Exception:
+                    continue
         return None
 
     # ── SR builder (pydicom, Basic Text SR) ──────────────────────────────────

@@ -17,6 +17,29 @@ class TenantAccessError(Exception):
     """Raised on login when the user's tenant workspace is suspended/offboarded."""
 
 
+class AmbiguousAccountError(Exception):
+    """Raised on login when the username exists in several workspaces and none was
+    given — usernames are unique per tenant, not platform-wide."""
+
+
+class InvitationError(ValueError):
+    """Invalid, expired or already-used invitation / reset token."""
+
+
+class SeatLimitError(ValueError):
+    """The tenant has reached its plan's user limit."""
+
+
+PLATFORM_TENANT_ID = "default"
+INVITATION_TTL = timedelta(hours=72)
+
+
+def _hash_token(token: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
 def derive_tenant_jwt_secret(tenant_id: str) -> str:
     """Derive a tenant-specific JWT signing key from the platform master secret.
 
@@ -33,7 +56,9 @@ class AuthService:
     def __init__(self, session):
         self._session = session
 
-    async def authenticate(self, username: str, password: str) -> dict[str, Any] | None:
+    async def authenticate(
+        self, username: str, password: str, tenant_id: str | None = None
+    ) -> dict[str, Any] | None:
         """Verify credentials and return JWT tokens.
 
         Raises TenantAccessError (not a plain credentials failure) if the password is
@@ -48,8 +73,16 @@ class AuthService:
             UserRecord.username == username,
             UserRecord.is_active == True,
         )
-        result = await self._session.execute(stmt)
-        user_record = result.scalar_one_or_none()
+        if tenant_id:
+            stmt = stmt.where(UserRecord.tenant_id == tenant_id)
+        candidates = (await self._session.execute(stmt)).scalars().all()
+        if len(candidates) > 1:
+            # The same username exists in several workspaces and no workspace was
+            # given (subdomain / X-Tenant-Slug / login form) — never guess.
+            raise AmbiguousAccountError(
+                "This username exists in more than one workspace — enter your workspace"
+            )
+        user_record = candidates[0] if candidates else None
 
         if not user_record:
             return None
@@ -94,13 +127,16 @@ class AuthService:
         complete_mfa_login) — both expose the same fields used here."""
         from app.infrastructure.database.repositories import PgAuditRepository
 
+        in_platform_tenant = user.tenant_id == PLATFORM_TENANT_ID
         access_token = self.create_access_token(
             subject=user.id,
             username=user.username,
             role=user.role,
             tenant_id=user.tenant_id,
-            is_platform_admin=user.is_platform_admin,
-            is_platform_operator=user.is_platform_operator,
+            # Platform flags are honoured only for Admin-tenant accounts.
+            is_platform_admin=bool(user.is_platform_admin) and in_platform_tenant,
+            is_platform_operator=bool(user.is_platform_operator) and in_platform_tenant,
+            token_version=getattr(user, "token_version", 0) or 0,
         )
         await PgAuditRepository(self._session).save(AuditEntry(
             action=AuditAction.USER_LOGIN,
@@ -170,14 +206,15 @@ class AuthService:
         from app.infrastructure.database.models import UserRecord
         from sqlalchemy import select
 
-        # Check uniqueness
+        # Unique per tenant (alembic 046) — the same username may exist elsewhere.
         existing = await self._session.execute(
             select(UserRecord).where(
-                (UserRecord.username == username) | (UserRecord.email == email)
+                UserRecord.tenant_id == tenant_id,
+                (UserRecord.username == username) | (UserRecord.email == email),
             )
         )
-        if existing.scalar_one_or_none():
-            raise ValueError("Username or email already exists")
+        if existing.scalars().first():
+            raise ValueError("Username or email already exists in this workspace")
 
         hashed = self._hash_password(password)
         user_id = str(uuid.uuid4())
@@ -219,6 +256,167 @@ class AuthService:
             is_platform_operator=is_platform_operator,
         )
 
+    # ── Invitations, password resets, session revocation ──────────────────────
+
+    async def invite_user(
+        self,
+        tenant_id: str,
+        username: str,
+        email: str,
+        role: str,
+        full_name: str = "",
+        invited_by: str = "system",
+    ) -> tuple[User, str]:
+        """Create an ``invited`` account in ``tenant_id`` and return it with the one-time
+        cleartext invitation token (only its SHA-256 is stored; valid 72 hours). The
+        account cannot log in until the invitation is accepted and a password is set."""
+        import secrets
+
+        from app.infrastructure.database.models import RoleRecord, TenantRecord, UserRecord
+        from sqlalchemy import func, select
+
+        role_exists = (
+            await self._session.execute(
+                select(RoleRecord.id).where(RoleRecord.tenant_id == tenant_id, RoleRecord.name == role)
+            )
+        ).first()
+        if role_exists is None:
+            raise ValueError(f"Role '{role}' is not defined for this workspace")
+
+        tenant = (
+            await self._session.execute(select(TenantRecord).where(TenantRecord.id == tenant_id))
+        ).scalar_one_or_none()
+        if tenant is not None and tenant.max_users:
+            seats = (
+                await self._session.execute(
+                    select(func.count()).select_from(UserRecord).where(UserRecord.tenant_id == tenant_id)
+                )
+            ).scalar_one()
+            if seats >= tenant.max_users:
+                raise SeatLimitError(f"This workspace has reached its limit of {tenant.max_users} users")
+
+        user = await self.create_user(
+            username=username,
+            email=email,
+            password=secrets.token_urlsafe(32),  # unusable until the invite is accepted
+            full_name=full_name,
+            role=role,
+            tenant_id=tenant_id,
+        )
+        token = await self._issue_one_time_token(user.id, tenant_id, status="invited")
+        await self._audit("user_invited", user.id, invited_by, tenant_id,
+                          {"username": username, "role": role})
+        user.status = "invited"
+        return user, token
+
+    async def issue_password_reset(self, user_id: str, tenant_id: str, actor: str) -> str:
+        """One-time token letting the user set a new password (same flow as an invite)."""
+        token = await self._issue_one_time_token(user_id, tenant_id, status=None)
+        await self._audit("password_reset_issued", user_id, actor, tenant_id, {})
+        return token
+
+    async def _issue_one_time_token(self, user_id: str, tenant_id: str, status: str | None) -> str:
+        import secrets
+
+        from app.infrastructure.database.models import UserRecord
+        from sqlalchemy import update
+
+        token = secrets.token_urlsafe(32)
+        values: dict[str, Any] = {
+            "invitation_token_hash": _hash_token(token),
+            "invitation_expires_at": datetime.now(timezone.utc) + INVITATION_TTL,
+        }
+        if status:
+            values["status"] = status
+        result = await self._session.execute(
+            update(UserRecord)
+            .where(UserRecord.id == user_id, UserRecord.tenant_id == tenant_id)
+            .values(**values)
+        )
+        if not result.rowcount:
+            raise ValueError("User not found")
+        await self._session.flush()
+        return token
+
+    async def accept_invitation(self, token: str, password: str) -> User:
+        """Redeem an invitation or reset token: set the password, activate the account,
+        burn the token, and revoke any previously issued sessions."""
+        from app.infrastructure.database.models import UserRecord
+        from sqlalchemy import select
+
+        record = (
+            await self._session.execute(
+                select(UserRecord).where(UserRecord.invitation_token_hash == _hash_token(token))
+            )
+        ).scalar_one_or_none()
+        if record is None:
+            raise InvitationError("This link is invalid or has already been used")
+        expires = record.invitation_expires_at
+        if expires is not None and expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+        if expires is None or expires < datetime.now(timezone.utc):
+            raise InvitationError("This link has expired — ask your administrator for a new one")
+        await self._check_tenant_access(record.tenant_id)
+
+        record.hashed_password = self._hash_password(password)
+        record.status = "active"
+        record.is_active = True
+        record.invitation_token_hash = None
+        record.invitation_expires_at = None
+        record.token_version = (record.token_version or 0) + 1
+        await self._session.flush()
+        await self._audit("invitation_accepted", record.id, record.username, record.tenant_id, {})
+        return await self.get_user_by_id(record.id)
+
+    async def revoke_sessions(self, user_id: str, tenant_id: str, actor: str) -> bool:
+        """Invalidate every access token issued to the user (bumps token_version)."""
+        from app.infrastructure.database.models import UserRecord
+        from sqlalchemy import update
+
+        result = await self._session.execute(
+            update(UserRecord)
+            .where(UserRecord.id == user_id, UserRecord.tenant_id == tenant_id)
+            .values(token_version=UserRecord.token_version + 1)
+        )
+        await self._session.flush()
+        if result.rowcount:
+            await self._audit("sessions_revoked", user_id, actor, tenant_id, {})
+        return bool(result.rowcount)
+
+    async def _audit(self, action: str, user_id: str, actor: str, tenant_id: str, details: dict) -> None:
+        from app.infrastructure.database.repositories import PgAuditRepository
+
+        await PgAuditRepository(self._session, tenant_id=tenant_id).save(AuditEntry(
+            action=action,
+            entity_type="user",
+            entity_id=user_id,
+            actor=actor or "system",
+            details=details,
+            tenant_id=tenant_id,
+        ))
+
+    async def list_referring_doctors(self, tenant_id: str) -> list[dict[str, Any]]:
+        """Active users of the workspace whose role is referral-scoped (the referring
+        Doctor) — the choices for an order's referring physician at intake."""
+        from app.domain.permissions import is_referral_scoped
+        from app.infrastructure.database.models import RoleRecord, UserRecord
+        from sqlalchemy import select
+
+        roles = (await self._session.execute(
+            select(RoleRecord).where(RoleRecord.tenant_id == tenant_id)
+        )).scalars().all()
+        doctor_roles = [r.name for r in roles if is_referral_scoped(r.permissions or [])]
+        if not doctor_roles:
+            return []
+        rows = (await self._session.execute(
+            select(UserRecord).where(
+                UserRecord.tenant_id == tenant_id,
+                UserRecord.role.in_(doctor_roles),
+                UserRecord.is_active == True,  # noqa: E712
+            ).order_by(UserRecord.full_name, UserRecord.username)
+        )).scalars().all()
+        return [{"id": u.id, "username": u.username, "full_name": u.full_name or u.username} for u in rows]
+
     async def list_users(self, tenant_id: str | None = None) -> list[User]:
         from app.infrastructure.database.models import UserRecord
         from sqlalchemy import select
@@ -241,6 +439,8 @@ class AuthService:
                 is_platform_admin=r.is_platform_admin,
                 is_platform_operator=r.is_platform_operator,
                 totp_enabled=r.totp_enabled,
+                status=r.status or "active",
+                token_version=r.token_version or 0,
                 created_at=r.created_at,
                 updated_at=r.updated_at,
             ))
@@ -267,27 +467,90 @@ class AuthService:
             is_platform_admin=r.is_platform_admin,
             is_platform_operator=r.is_platform_operator,
             totp_enabled=r.totp_enabled,
+            status=r.status or "active",
+            token_version=r.token_version or 0,
             created_at=r.created_at,
             updated_at=r.updated_at,
         )
 
-    async def update_user_role(self, user_id: str, role: str) -> User | None:
-        from app.infrastructure.database.models import UserRecord
+    async def update_user_role(self, user_id: str, role: str, tenant_id: str) -> User | None:
+        """Change a user's role within ``tenant_id``.
+
+        Returns None when the user is not in that tenant (so a tenant admin can never
+        touch another tenant's accounts). Raises ValueError when ``role`` is not a role
+        defined for the tenant, or when the change would leave the tenant without an
+        active admin.
+        """
+        from app.infrastructure.database.models import RoleRecord, UserRecord
         from sqlalchemy import select, update
 
-        stmt = update(UserRecord).where(UserRecord.id == user_id).values(role=role)
-        await self._session.execute(stmt)
+        target = (
+            await self._session.execute(
+                select(UserRecord).where(UserRecord.id == user_id, UserRecord.tenant_id == tenant_id)
+            )
+        ).scalar_one_or_none()
+        if target is None:
+            return None
+
+        role_exists = (
+            await self._session.execute(
+                select(RoleRecord.id).where(RoleRecord.tenant_id == tenant_id, RoleRecord.name == role)
+            )
+        ).first()
+        if role_exists is None and role != "admin":
+            raise ValueError(f"Role '{role}' is not defined for this workspace")
+
+        if target.role == "admin" and role != "admin":
+            await self._ensure_other_active_admin(tenant_id, excluding_user_id=user_id)
+
+        await self._session.execute(
+            update(UserRecord)
+            .where(UserRecord.id == user_id, UserRecord.tenant_id == tenant_id)
+            .values(role=role)
+        )
         await self._session.flush()
         return await self.get_user_by_id(user_id)
 
-    async def deactivate_user(self, user_id: str) -> bool:
+    async def deactivate_user(self, user_id: str, tenant_id: str) -> User | None:
+        """Deactivate a user within ``tenant_id``; None if not in that tenant. Raises
+        ValueError if this would leave the tenant without an active admin."""
         from app.infrastructure.database.models import UserRecord
-        from sqlalchemy import update
+        from sqlalchemy import select, update
 
-        stmt = update(UserRecord).where(UserRecord.id == user_id).values(is_active=False)
-        await self._session.execute(stmt)
+        target = (
+            await self._session.execute(
+                select(UserRecord).where(UserRecord.id == user_id, UserRecord.tenant_id == tenant_id)
+            )
+        ).scalar_one_or_none()
+        if target is None:
+            return None
+        if target.role == "admin" and target.is_active:
+            await self._ensure_other_active_admin(tenant_id, excluding_user_id=user_id)
+
+        await self._session.execute(
+            update(UserRecord)
+            .where(UserRecord.id == user_id, UserRecord.tenant_id == tenant_id)
+            .values(is_active=False)
+        )
         await self._session.flush()
-        return True
+        return await self.get_user_by_id(user_id)
+
+    async def _ensure_other_active_admin(self, tenant_id: str, excluding_user_id: str) -> None:
+        from app.infrastructure.database.models import UserRecord
+        from sqlalchemy import func, select
+
+        remaining = (
+            await self._session.execute(
+                select(func.count()).select_from(UserRecord).where(
+                    UserRecord.tenant_id == tenant_id,
+                    UserRecord.role == "admin",
+                    UserRecord.is_active == True,  # noqa: E712
+                    UserRecord.id != excluding_user_id,
+                )
+            )
+        ).scalar_one()
+        if remaining == 0:
+            raise ValueError("A workspace must keep at least one active admin")
 
     async def set_platform_admin(self, user_id: str, is_platform_admin: bool) -> User | None:
         """Bootstrap/revoke platform-admin status on an existing user.
@@ -324,6 +587,41 @@ class AuthService:
         await self._session.execute(stmt)
         await self._session.flush()
         return await self.get_user_by_id(user_id)
+
+    def create_viewer_token(
+        self,
+        subject: str,
+        tenant_id: str,
+        is_platform_admin: bool = False,
+        expires_minutes: int | None = None,
+        referral_scoped: bool = False,
+    ) -> str:
+        """Mint a ``purpose=viewer`` token for the viewer-session cookie.
+
+        ``referral_scoped`` (the referring Doctor) adds ``ref`` = the user's id: the
+        viewer may then open only studies referred by that user.
+
+        It authorises exactly two things — DICOMweb/WADO reads (checked by the nginx
+        auth_request hook) and the realtime WebSocket — and is rejected by
+        RBACMiddleware as an API bearer token, so a cookie that leaks or is replayed
+        cross-site cannot drive the REST API.
+        """
+        from jose import jwt
+
+        settings = get_settings()
+        now = datetime.now(timezone.utc)
+        payload = {
+            "sub": subject,
+            "tenant_id": tenant_id,
+            "is_platform_admin": is_platform_admin,
+            "purpose": "viewer",
+            "ref": subject if referral_scoped else None,
+            "iat": now,
+            "exp": now + timedelta(
+                minutes=expires_minutes or settings.jwt_access_token_expire_minutes
+            ),
+        }
+        return jwt.encode(payload, derive_tenant_jwt_secret(tenant_id), algorithm=settings.jwt_algorithm)
 
     def decode_token(self, token: str) -> dict[str, Any] | None:
         """Decode and validate a JWT token.
@@ -364,8 +662,12 @@ class AuthService:
         is_platform_operator: bool = False,
         impersonated_by: str | None = None,
         expires_minutes: int | None = None,
+        token_version: int = 0,
     ) -> str:
         """Mint a signed access token.
+
+        ``token_version`` is embedded as ``tv``; RBACMiddleware rejects a token whose
+        ``tv`` no longer matches the user's ``token_version`` (revocation).
 
         impersonated_by / expires_minutes are used by ImpersonationService to mint a
         short-lived token representing another user — impersonation tokens never
@@ -381,6 +683,7 @@ class AuthService:
         )
         payload = {
             "sub": subject,
+            "tv": token_version,
             "username": username,
             "role": role,
             "tenant_id": tenant_id,

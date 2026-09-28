@@ -33,6 +33,10 @@ from app.interface.api.mammography import router as mammography_router
 from app.interface.api.medgemma_debug import router as medgemma_debug_router
 from app.interface.api.tenant_api_keys import router as tenant_api_keys_router
 from app.interface.api.tenants import router as tenants_router
+from app.interface.api.dashboards import router as dashboards_router
+from app.interface.api.platform_admin import router as platform_admin_router
+from app.interface.api.tenant_workspace import router as tenant_workspace_router
+from app.interface.api.viewer_access import router as viewer_access_router
 from app.interface.api.ws import router as ws_router
 from app.interface.middleware.auth import RBACMiddleware
 from app.interface.middleware.tenant import TenantResolutionMiddleware
@@ -56,6 +60,25 @@ logger = structlog.get_logger(__name__)
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("starting_mri_platform")
 
+    from app.infrastructure.database.session import rls_enforcement_status
+
+    settings = get_settings()
+    rls_enforced, db_role = await rls_enforcement_status()
+    if rls_enforced:
+        logger.info("tenant_rls_enforced", db_role=db_role)
+    elif settings.require_rls:
+        raise RuntimeError(
+            f"REQUIRE_RLS is set but the database role {db_role!r} bypasses Row-Level "
+            "Security (superuser or BYPASSRLS). Set POSTGRES_APP_USER/POSTGRES_APP_PASSWORD "
+            "to the RLS-bound application role created by migration 044."
+        )
+    else:
+        logger.warning(
+            "tenant_rls_not_enforced",
+            db_role=db_role,
+            detail="tenant isolation is application-level only; set POSTGRES_APP_USER",
+        )
+
     registry = UseCaseRegistry()
     await registry.discover_and_register()
 
@@ -63,6 +86,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     dependencies.set_registry(registry)
     dependencies.set_routing_service(routing_service)
+
+    # Tenant-addressed realtime events (published by API + Celery worker via Redis),
+    # delivered to this process's WebSockets of the matching tenant only.
+    import asyncio
+
+    from app.infrastructure.realtime.events import listen_tenant_events
+    from app.interface.api.ws import manager as ws_manager
+
+    realtime_task = asyncio.create_task(listen_tenant_events(ws_manager.send_to_tenant))
 
     logger.info(
         "platform_ready",
@@ -72,6 +104,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     yield
 
+    realtime_task.cancel()
     logger.info("shutting_down_mri_platform")
 
 
@@ -119,6 +152,10 @@ def create_app() -> FastAPI:
     app.include_router(mammography_router, prefix="/api")
     app.include_router(medgemma_debug_router, prefix="/api")
     app.include_router(dicomweb_router, prefix="/api")
+    app.include_router(viewer_access_router, prefix="/api")
+    app.include_router(dashboards_router, prefix="/api")
+    app.include_router(tenant_workspace_router, prefix="/api")
+    app.include_router(platform_admin_router, prefix="/api")
     app.include_router(tenants_router, prefix="/api")
     app.include_router(tenant_api_keys_router, prefix="/api")
     app.include_router(plan_features_router, prefix="/api")

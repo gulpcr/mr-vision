@@ -251,11 +251,14 @@ class OnboardingService:
                 if not exists:
                     raise OnboardingValidationError("study_instance_uid not found")
             order.study_instance_uid = uid
+        if "referring_user_id" in payload:
+            order.referring_user_id = await self._validated_referrer(payload["referring_user_id"], tenant_id)
 
         await self._session.flush()
         await self._link_study_to_patient(
             order.study_instance_uid, order.patient_id, order.tenant_id or tenant_id
         )
+        await self._propagate_referrer(order)
         # Re-derive this order's Observations from the edited values.
         patient_ref = (await self._session.execute(
             select(PatientRecord.patient_ref).where(PatientRecord.id == order.patient_id)
@@ -373,12 +376,14 @@ class OnboardingService:
             creatinine=creatinine, external_order_ref=external_order_ref,
             fasting_glucose_dt=fasting_glucose_dt, creatinine_dt=creatinine_dt,
             created_by=actor_id or None, tenant_id=tenant_id,
+            referring_user_id=await self._validated_referrer(payload.get("referring_user_id"), tenant_id),
         )
         self._session.add(order)
         await self._session.flush()
 
         # Establish the referential study→patient link alongside the MRN association.
         await self._link_study_to_patient(linked_uid, patient.id, tenant_id)
+        await self._propagate_referrer(order)
 
         # Materialise the response before the derived-data hook — the hook writes through
         # this same session, and reading ORM attributes afterwards can trigger implicit IO
@@ -394,6 +399,37 @@ class OnboardingService:
             {"patient_ref": patient_ref, "modality": modality, "study": linked_uid},
         )
         return response
+
+    async def _validated_referrer(self, user_id: str | None, tenant_id: str) -> str | None:
+        """The referring Doctor's account must belong to this workspace."""
+        from app.infrastructure.database.models import UserRecord
+
+        if not user_id:
+            return None
+        found = (await self._session.execute(
+            select(UserRecord.id).where(UserRecord.id == user_id, UserRecord.tenant_id == tenant_id)
+        )).scalar_one_or_none()
+        if not found:
+            raise OnboardingValidationError("referring_user_id is not a user of this workspace")
+        return found
+
+    async def _propagate_referrer(self, order) -> None:
+        """Copy the order's referring Doctor onto its linked study — that is what grants
+        a referral-scoped Doctor (study.view.referred) access to the study (alembic 046)."""
+        from sqlalchemy import update
+
+        from app.infrastructure.database.models import StudyRecord
+
+        if order.study_instance_uid and order.referring_user_id:
+            await self._session.execute(
+                update(StudyRecord)
+                .where(
+                    StudyRecord.study_instance_uid == order.study_instance_uid,
+                    StudyRecord.tenant_id == order.tenant_id,
+                )
+                .values(referring_user_id=order.referring_user_id)
+            )
+            await self._session.flush()
 
     async def link_study(
         self, order_id: str, study_uid: str, actor_id: str | None, tenant_id: str = "default"
@@ -417,6 +453,7 @@ class OnboardingService:
         await self._link_study_to_patient(
             study_uid, order.patient_id, order.tenant_id or tenant_id
         )
+        await self._propagate_referrer(order)
         await self._audit(actor_id, "order_linked_study", order.id, {"study": study_uid})
         return self._order_dict(order)
 
@@ -626,6 +663,7 @@ class OnboardingService:
             "body_part": o.body_part, "referrer": o.referrer, "priority": o.priority,
             "indication": o.indication, "region_profile": o.region_profile,
             "consent_ack": o.consent_ack, "study_instance_uid": o.study_instance_uid,
+            "referring_user_id": o.referring_user_id,
             "clinical_history": o.clinical_history, "comparative_study": o.comparative_study,
             "height_cm": o.height_cm, "weight_kg": o.weight_kg,
             "bmi": _bmi(o.height_cm, o.weight_kg),

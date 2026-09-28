@@ -59,11 +59,16 @@ class StudyRecord(Base):
     study_description = Column(String(512), nullable=True)
     accession_number = Column(String(64), nullable=True, index=True)
     referring_physician = Column(String(256), nullable=True)
+    # The referring Doctor's user account (copied from the linked order). Drives the
+    # referral-scoped RLS policies (alembic 046) for users holding study.view.referred.
+    referring_user_id = Column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     body_part_examined = Column(String(64), nullable=True, index=True)
     modality = Column(String(16), nullable=True, index=True)
     institution_name = Column(String(256), nullable=True)
     orthanc_id = Column(String(128), nullable=True)
-    tenant_id = Column(String(36), nullable=True, server_default="default")
+    tenant_id = Column(String(36), nullable=False)
     # ── Reading workflow (radiologist lifecycle) ──────────────────────────────
     # unread → in_progress → reported → signed. created_at is the "received" time
     # used for turnaround-time tracking.
@@ -105,7 +110,7 @@ class SeriesRecord(Base):
     image_orientation = Column(String(256), nullable=True)
     orthanc_id = Column(String(128), nullable=True)
     dicom_tags = Column(JSON, default=dict)
-    tenant_id = Column(String(36), nullable=True, server_default="default")
+    tenant_id = Column(String(36), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     study = relationship("StudyRecord", back_populates="series")
@@ -133,7 +138,7 @@ class JobRunRecord(Base):
     completed_at = Column(DateTime(timezone=True), nullable=True)
     error_detail = Column(Text, nullable=True)
     retry_count = Column(Integer, default=0, nullable=False, server_default="0")
-    tenant_id = Column(String(36), nullable=True, server_default="default")
+    tenant_id = Column(String(36), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
@@ -165,7 +170,7 @@ class ResultRecord(Base):
     artifacts = Column(JSON, default=list)
     version = Column(Integer, nullable=False, default=1, server_default="1")
     is_latest = Column(Boolean, nullable=False, default=True, server_default="true")
-    tenant_id = Column(String(36), nullable=True, server_default="default")
+    tenant_id = Column(String(36), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     study = relationship("StudyRecord", back_populates="results")
@@ -194,7 +199,7 @@ class ObservationRecord(Base):
     __tablename__ = "observations"
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    tenant_id = Column(String(36), nullable=False, server_default="default", index=True)
+    tenant_id = Column(String(36), nullable=False, index=True)
     # patient_ref is the MRN — the FHIR search key, and what the composite index below
     # is built on. patient_id is the referential link (same distinction as
     # studies.patient_id vs studies.patient_record_id).
@@ -282,7 +287,7 @@ class ConditionRecord(Base):
     __tablename__ = "conditions"
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    tenant_id = Column(String(36), nullable=False, server_default="default", index=True)
+    tenant_id = Column(String(36), nullable=False, index=True)
     # patient_ref (MRN) is the search key; patient_id is the referential link.
     patient_ref = Column(String(128), nullable=False, index=True)
     patient_id = Column(
@@ -383,7 +388,7 @@ class AuditLogRecord(Base):
     source_observer = Column(String(128), nullable=True)
     # AuditEvent.agent.network.address — who the request came from.
     client_ip = Column(String(64), nullable=True)
-    tenant_id = Column(String(36), nullable=True, server_default="default")
+    tenant_id = Column(String(36), nullable=False)
     # ── Tamper-evident hash chain (see app.domain.audit_chain) ────────────────
     # Nullable because rows written before this feature existed have no chain
     # position; the chain is forward-looking only from the first seq=1 row.
@@ -415,8 +420,10 @@ class UserRecord(Base):
     __tablename__ = "users"
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    username = Column(String(128), unique=True, nullable=False, index=True)
-    email = Column(String(256), unique=True, nullable=False)
+    # Unique per tenant (alembic 046), not platform-wide: two workspaces may each
+    # have a "jsmith". Login resolves the workspace first.
+    username = Column(String(128), nullable=False, index=True)
+    email = Column(String(256), nullable=False)
     hashed_password = Column(String(512), nullable=False)
     full_name = Column(String(256), default="")
     # ── FHIR Practitioner (step 7) ────────────────────────────────────────────
@@ -435,7 +442,7 @@ class UserRecord(Base):
     # Primary role, retained as a denormalised cache so require_permission and every
     # existing RBAC path keep working unchanged. user_roles is the authoritative set.
     role = Column(String(32), nullable=False, default="viewer")
-    tenant_id = Column(String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, default="default")
+    tenant_id = Column(String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
     is_active = Column(Boolean, default=True)
     # ── Cross-tenant platform roles (distinct from the per-tenant `role` above —
     # a tenant's own "admin" only has authority within that one tenant; these two
@@ -446,9 +453,22 @@ class UserRecord(Base):
     # Fernet-encrypted at rest (see application/mfa_service.py); never stored plaintext.
     totp_secret = Column(String(256), nullable=True)
     totp_enabled = Column(Boolean, nullable=False, default=False, server_default="false")
+    # ── Invitations / session revocation (alembic 046) ─────────────────────────
+    # "active" | "invited". An invited user cannot log in until they accept the
+    # one-time invitation (only its SHA-256 is stored) and set a password.
+    status = Column(String(16), nullable=False, default="active", server_default="active")
+    invitation_token_hash = Column(String(64), nullable=True, index=True)
+    invitation_expires_at = Column(DateTime(timezone=True), nullable=True)
+    # Embedded in every access token ("tv"); bumping it revokes all issued tokens.
+    token_version = Column(Integer, nullable=False, default=0, server_default="0")
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("uq_users_tenant_username", "tenant_id", "username", unique=True),
+        Index("uq_users_tenant_email", "tenant_id", "email", unique=True),
     )
 
 
@@ -498,7 +518,46 @@ class TenantRecord(Base):
     # Additive override on top of the plan's own features (see plan_features table) —
     # can grant a tenant something beyond its plan, never revoke a plan-granted one.
     features = Column(JSON, nullable=False, default=list)
+    # Seat limit enforced when inviting users (None = unlimited).
+    max_users = Column(Integer, nullable=True)
+    deleted_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class TenantSettingsRecord(Base):
+    """Per-tenant workspace settings (alembic 046): report header/footer and signatories
+    used on PDF reports, timezone."""
+
+    __tablename__ = "tenant_settings"
+
+    tenant_id = Column(String(36), ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True)
+    institution_name = Column(String(256), nullable=True)
+    institution_address = Column(Text, nullable=True)
+    report_header = Column(Text, nullable=True)
+    report_footer = Column(Text, nullable=True)
+    signatory_name = Column(String(256), nullable=True)
+    signatory_title = Column(String(256), nullable=True)
+    signatory_qualifications = Column(String(256), nullable=True)
+    secondary_signatory_name = Column(String(256), nullable=True)
+    timezone = Column(String(64), nullable=True)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class TenantBrandingRecord(Base):
+    """Per-tenant UI branding (alembic 046) — shown on the login page and app shell."""
+
+    __tablename__ = "tenant_branding"
+
+    tenant_id = Column(String(36), ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True)
+    display_name = Column(String(256), nullable=True)
+    logo_data_url = Column(Text, nullable=True)
+    primary_color = Column(String(7), nullable=True)
+    accent_color = Column(String(7), nullable=True)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
 
 
 class PatientRecord(Base):
@@ -511,7 +570,7 @@ class PatientRecord(Base):
     patient_ref = Column(String(128), nullable=False)
     sex = Column(String(16), nullable=True)            # female | male | other
     age_band = Column(String(16), nullable=True)       # exact age in years (legacy rows may hold a band)
-    tenant_id = Column(String(36), nullable=False, server_default="default")
+    tenant_id = Column(String(36), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     __table_args__ = (
@@ -556,7 +615,11 @@ class OrderRecord(Base):
         String(128), ForeignKey("studies.study_instance_uid", ondelete="SET NULL"), nullable=True
     )
     created_by = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    tenant_id = Column(String(36), nullable=False, server_default="default")
+    # Referring Doctor's user account, chosen at intake (see StudyRecord.referring_user_id).
+    referring_user_id = Column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    tenant_id = Column(String(36), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     __table_args__ = (
@@ -576,7 +639,7 @@ class RoleRecord(Base):
     __tablename__ = "roles"
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    tenant_id = Column(String(36), nullable=False, server_default="default", index=True)
+    tenant_id = Column(String(36), nullable=False, index=True)
     name = Column(String(64), nullable=False)
     permissions = Column(JSON, nullable=False, default=list)
     is_system = Column(Boolean, nullable=False, default=False, server_default="false")
@@ -624,7 +687,7 @@ class UserRoleRecord(Base):
     period_start = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     period_end = Column(DateTime(timezone=True), nullable=True)
     is_primary = Column(Boolean, nullable=False, server_default="false")
-    tenant_id = Column(String(36), nullable=False, server_default="default", index=True)
+    tenant_id = Column(String(36), nullable=False, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     __table_args__ = (
@@ -686,7 +749,7 @@ class BatchUploadRecord(Base):
     failed_items = Column(Integer, default=0)
     status = Column(String(32), default="pending", index=True)
     created_by = Column(String(128), default="")
-    tenant_id = Column(String(36), default="default")
+    tenant_id = Column(String(36), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
@@ -701,6 +764,7 @@ class BatchUploadItemRecord(Base):
     study_instance_uid = Column(String(128), nullable=False)
     status = Column(String(32), default="pending")
     error_detail = Column(Text, nullable=True)
+    tenant_id = Column(String(36), nullable=False, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     __table_args__ = (
@@ -720,7 +784,7 @@ class ReviewQueueRecord(Base):
     reviewer = Column(String(128), nullable=True)
     review_notes = Column(Text, default="")
     reviewed_at = Column(DateTime(timezone=True), nullable=True)
-    tenant_id = Column(String(36), nullable=True, server_default="default")
+    tenant_id = Column(String(36), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     __table_args__ = (
@@ -737,7 +801,7 @@ class AlertRuleRecord(Base):
     condition = Column(JSON, default=dict)
     webhook_url = Column(String(1024), nullable=False)
     is_active = Column(Boolean, default=True)
-    tenant_id = Column(String(36), default="default")
+    tenant_id = Column(String(36), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
@@ -749,6 +813,7 @@ class AlertHistoryRecord(Base):
     event_type = Column(String(64), nullable=False)
     payload = Column(JSON, default=dict)
     status = Column(String(32), default="sent")
+    tenant_id = Column(String(36), nullable=False, index=True)
     created_at = Column(
         DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
     )
@@ -763,7 +828,7 @@ class RetentionPolicyRecord(Base):
     max_age_days = Column(Integer, default=365)
     action = Column(String(32), default="archive")
     is_active = Column(Boolean, default=True)
-    tenant_id = Column(String(36), default="default")
+    tenant_id = Column(String(36), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
@@ -778,7 +843,7 @@ class ShareLinkRecord(Base):
     created_by = Column(String(128), default="system")
     expires_at = Column(DateTime(timezone=True), nullable=False)
     is_active = Column(Boolean, default=True)
-    tenant_id = Column(String(36), nullable=True, server_default="default")
+    tenant_id = Column(String(36), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     __table_args__ = (
@@ -805,7 +870,7 @@ class CriticalAlertRecord(Base):
     acknowledged_by = Column(String(128), nullable=True)
     escalated_at = Column(DateTime(timezone=True), nullable=True)
     escalation_count = Column(Integer, default=0, nullable=False, server_default="0")
-    tenant_id = Column(String(36), nullable=True, server_default="default")
+    tenant_id = Column(String(36), nullable=False)
     created_at = Column(
         DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
     )
@@ -866,7 +931,7 @@ class MammographyReportRecord(Base):
     reviewing_doctor = Column(String(256), nullable=True)
     reporting_doctor = Column(String(256), nullable=True)
     created_by = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    tenant_id = Column(String(36), nullable=False, server_default="default")
+    tenant_id = Column(String(36), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
@@ -899,7 +964,7 @@ class MriReportRecord(Base):
     doctor_title = Column(String(256), nullable=True)
     doctor_qualifications = Column(String(256), nullable=True)
     created_by = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    tenant_id = Column(String(36), nullable=False, server_default="default")
+    tenant_id = Column(String(36), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
@@ -947,6 +1012,21 @@ class PendingStudyTenantRecord(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
+class TenantDicomEndpointRecord(Base):
+    """A tenant-owned DICOM called AE title (alembic 045). C-STORE studies sent to
+    ``called_aet`` (optionally only from ``calling_aet``) are attributed to ``tenant_id``."""
+
+    __tablename__ = "tenant_dicom_endpoints"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = Column(String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    called_aet = Column(String(16), nullable=False)
+    calling_aet = Column(String(16), nullable=True)
+    description = Column(String(256), nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
 class PlanFeatureRecord(Base):
     """Feature keys granted by plan name (e.g. "starter" -> ["brain_mri", ...]). A
     tenant's own `features` override column (TenantRecord.features) can add beyond
@@ -963,3 +1043,43 @@ class PlanFeatureRecord(Base):
     __table_args__ = (
         Index("uq_plan_features_plan_key", "plan_name", "feature_key", unique=True),
     )
+
+
+class DashboardLayoutRecord(Base):
+    """A dashboard (alembic 047): a role default (owner_id NULL, is_default), a personal
+    dashboard (owner_id set) or a shared one (is_shared). Tenant-owned (RLS)."""
+
+    __tablename__ = "dashboard_layouts"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = Column(String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(256), nullable=False)
+    description = Column(Text, nullable=True)
+    owner_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    is_default = Column(Boolean, nullable=False, default=False, server_default="false")
+    role_default = Column(String(64), nullable=True)
+    is_shared = Column(Boolean, nullable=False, default=False, server_default="false")
+    widgets = Column(JSON, nullable=False, default=list)
+    filters = Column(JSON, nullable=False, default=dict)
+    refresh_interval = Column(Integer, nullable=False, default=300, server_default="300")
+    updated_by = Column(String(128), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class DashboardVersionRecord(Base):
+    """Snapshot of a dashboard's previous state, written on every save (alembic 047)."""
+
+    __tablename__ = "dashboard_versions"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = Column(String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    dashboard_id = Column(
+        String(36), ForeignKey("dashboard_layouts.id", ondelete="CASCADE"), nullable=False
+    )
+    version_number = Column(Integer, nullable=False)
+    snapshot = Column(JSON, nullable=False)
+    created_by = Column(String(128), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

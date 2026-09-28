@@ -96,6 +96,15 @@ class RoleService:
             return None
 
         before = {"name": role.name, "permissions": list(role.permissions or [])}
+        is_system = role.is_system or role.name in SYSTEM_ROLE_NAMES
+        if is_system and name is not None and name != role.name:
+            # users.role references roles by name; renaming a system role would orphan
+            # every account holding it.
+            raise RoleProtectedError("System roles cannot be renamed — clone it instead")
+        if role.name == "admin" and permissions is not None and "*" not in permissions:
+            # The workspace admin role always keeps full access, so a workspace can never
+            # lock itself out of its own administration.
+            raise RoleProtectedError("The admin role must keep full access (*)")
         if permissions is not None:
             unknown = validate_permissions(permissions)
             if unknown:

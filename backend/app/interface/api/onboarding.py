@@ -17,6 +17,8 @@ from app.application.onboarding_service import OnboardingService, OnboardingVali
 from app.interface.api.dependencies import get_session
 from app.interface.middleware.auth import require_permission
 
+from app.domain.permissions import STUDY_READ
+
 router = APIRouter(tags=["onboarding"])
 
 
@@ -29,6 +31,8 @@ class OrderCreate(BaseModel):
     indication: str = Field(..., min_length=1)
     region_profile: str = Field(..., min_length=1, max_length=64)
     referrer: str | None = None
+    # User account of the referring Doctor (grants them study.view.referred access).
+    referring_user_id: str | None = None
     priority: str = "routine"
     consent_ack: bool = False
     study_instance_uid: str | None = None
@@ -67,6 +71,7 @@ class OrderUpdate(BaseModel):
     indication: str | None = None
     region_profile: str | None = None
     referrer: str | None = None
+    referring_user_id: str | None = None
     priority: str | None = None
     consent_ack: bool | None = None
     study_instance_uid: str | None = None
@@ -109,7 +114,7 @@ async def search_patients(
     return await OnboardingService(session).list_patients(query=query, tenant_id=_tenant(request))
 
 
-@router.get("/studies/{study_uid}/clinical", dependencies=[require_permission("study.view")])
+@router.get("/studies/{study_uid}/clinical", dependencies=[require_permission(STUDY_READ)])
 async def get_study_clinical(
     study_uid: str,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -204,3 +209,15 @@ async def link_study(
         raise HTTPException(status_code=404, detail="Order not found")
     await session.commit()
     return result
+
+
+@router.get("/referring-doctors", dependencies=[require_permission("patient.onboard")])
+async def list_referring_doctors(
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """Referring Doctors of this workspace, for the order's referring-physician picker.
+    Linking an order to one grants that Doctor access to the study (study.view.referred)."""
+    from app.application.auth_service import AuthService
+
+    return await AuthService(session).list_referring_doctors(_tenant(request))

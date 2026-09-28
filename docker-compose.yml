@@ -53,6 +53,10 @@ services:
       # browser-upload role; the OHIF viewer uses /dicom-web + /wado (unaffected).
       - "4242:4242"
       - "127.0.0.1:8042:8042"
+    environment:
+      # Presented by on_stable_study.lua to the backend webhook (must match the
+      # backend's ORTHANC_WEBHOOK_SECRET from .env).
+      - ORTHANC_WEBHOOK_SECRET=${ORTHANC_WEBHOOK_SECRET:-}
     volumes:
       - orthanc_data:/var/lib/orthanc/db
     depends_on:

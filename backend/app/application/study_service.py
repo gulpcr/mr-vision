@@ -67,6 +67,26 @@ def _parse_study_datetime(
     return study_date.replace(tzinfo=timezone.utc), "date"
 
 
+class StudyTenantConflictError(Exception):
+    """The StudyInstanceUID is already owned by a different tenant.
+
+    ``study_instance_uid`` is a global primary key, so one study cannot live in two
+    tenants. Surfacing this as a conflict (instead of returning the existing row, as
+    ingest used to) keeps one tenant from reading — or, via ``merge``, overwriting —
+    another tenant's study by re-ingesting its UID.
+    """
+
+    def __init__(self, study_instance_uid: str):
+        super().__init__(f"Study {study_instance_uid} belongs to another workspace")
+        self.study_instance_uid = study_instance_uid
+
+
+class StudyUnattributedError(Exception):
+    """No tenant could be determined for a PACS study (no pending upload, no mapped AE
+    title, and no fallback configured) — it is left unattributed rather than filed
+    under a tenant that did not send it."""
+
+
 class StudyService:
     """Handles study ingestion from Orthanc and metadata synchronization."""
 
@@ -79,6 +99,7 @@ class StudyService:
         dicomweb_client: DICOMwebClient,
         pending_tenant_repo: PendingStudyTenantRepository | None = None,
         unscoped_study_repo: StudyRepository | None = None,
+        caller_tenant_id: str | None = None,
     ):
         self._study_repo = study_repo
         self._series_repo = series_repo
@@ -90,8 +111,22 @@ class StudyService:
         # DicomUploadService / PendingStudyTenant) rather than from request context.
         self._pending_tenant_repo = pending_tenant_repo
         self._unscoped_study_repo = unscoped_study_repo or study_repo
+        # The tenant an end-user caller acts for (None for internal/system callers such
+        # as the Orthanc webhook, which resolve the study's tenant themselves).
+        self._caller_tenant_id = caller_tenant_id
 
-    async def ingest_study(self, study_instance_uid: str) -> Study:
+    async def delete_study(self, study_instance_uid: str) -> bool:
+        """Delete a study within the caller's scope. FK cascades remove its series,
+        jobs and results. Returns False if the study is not visible to the caller."""
+        return await self._study_repo.delete(study_instance_uid)
+
+    async def owned_study_uids(self, study_instance_uids: list[str]) -> set[str]:
+        """Which of these UIDs belong to the caller's tenant."""
+        return await self._study_repo.existing_uids(study_instance_uids)
+
+    async def ingest_study(
+        self, study_instance_uid: str, fallback_tenant_id: str | None = "default"
+    ) -> Study:
         """Fetch study metadata from Orthanc and persist it.
 
         Checked against the unscoped repo, not the (possibly tenant-scoped)
@@ -101,6 +136,13 @@ class StudyService:
         """
         existing = await self._unscoped_study_repo.get_by_uid(study_instance_uid)
         if existing:
+            if self._caller_tenant_id and existing.tenant_id != self._caller_tenant_id:
+                logger.warning(
+                    "study_tenant_conflict",
+                    study_uid=study_instance_uid,
+                    caller_tenant=self._caller_tenant_id,
+                )
+                raise StudyTenantConflictError(study_instance_uid)
             logger.info("study_already_ingested", study_uid=study_instance_uid)
             return existing
 
@@ -162,9 +204,13 @@ class StudyService:
                 except (ValueError, TypeError):
                     pass
 
+        tenant_id = pending_tenant_id or self._caller_tenant_id or fallback_tenant_id
+        if not tenant_id:
+            raise StudyUnattributedError(study_instance_uid)
+
         study = Study(
             study_instance_uid=study_instance_uid,
-            tenant_id=pending_tenant_id or "default",
+            tenant_id=tenant_id,
             patient_id=ext(study_meta, "PatientID"),
             patient_name=ext(study_meta, "PatientName"),
             # Normalised at the boundary to the FHIR administrativeGender value set, so
@@ -190,8 +236,13 @@ class StudyService:
             if "unique" in str(exc).lower() or "duplicate" in str(exc).lower():
                 logger.info("study_already_exists_race", study_uid=study_instance_uid)
                 existing = await self._unscoped_study_repo.get_by_uid(study_instance_uid)
-                if existing:
+                if existing and (
+                    not self._caller_tenant_id or existing.tenant_id == self._caller_tenant_id
+                ):
                     return existing
+                # Under Row-Level Security another tenant's row is invisible here, so a
+                # duplicate key with no visible row means the UID is owned elsewhere.
+                raise StudyTenantConflictError(study_instance_uid) from exc
             raise
         if pending_tenant_id and self._pending_tenant_repo is not None:
             await self._pending_tenant_repo.consume(study_instance_uid)
@@ -290,6 +341,23 @@ class StudyService:
         total = await self._study_repo.count(filters)
         return studies, total
 
+    async def _claim_study_for_caller(self, study_uid: str) -> str | None:
+        """Returns an error message if ``study_uid`` belongs to another tenant, else
+        registers the caller's pending claim (if not already ingested) and returns None."""
+        if not self._caller_tenant_id:
+            return None
+        owner = await self._unscoped_study_repo.owner_tenant_of(study_uid)
+        if owner and owner != self._caller_tenant_id:
+            logger.warning("upload_study_tenant_conflict", study_uid=study_uid)
+            return "This study belongs to another workspace"
+        if owner is None and self._pending_tenant_repo is not None:
+            from app.domain.models import PendingStudyTenant
+
+            await self._pending_tenant_repo.register(
+                PendingStudyTenant(study_instance_uid=study_uid, tenant_id=self._caller_tenant_id)
+            )
+        return None
+
     async def upload_and_ingest(
         self, files: list[tuple[str, bytes]]
     ) -> dict[str, Any]:
@@ -309,6 +377,7 @@ class StudyService:
 
         file_results: list[dict[str, Any]] = []
         study_uids: set[str] = set()
+        claimed_uids: set[str] = set()
         uploaded = 0
         failed = 0
 
@@ -333,6 +402,20 @@ class StudyService:
                 )
                 failed += 1
                 continue
+
+            # The PACS is shared by every tenant: refuse a StudyInstanceUID another
+            # tenant already owns BEFORE its instances reach Orthanc (they would be
+            # merged into that tenant's study), and record the caller's claim on a new
+            # one so the stable-study webhook attributes it to the caller, not "default".
+            if study_uid not in claimed_uids:
+                claim_error = await self._claim_study_for_caller(study_uid)
+                if claim_error:
+                    file_results.append(
+                        {"filename": filename, "status": "error", "detail": claim_error}
+                    )
+                    failed += 1
+                    continue
+                claimed_uids.add(study_uid)
 
             try:
                 orthanc_id = await self._pacs.upload_dicom_instance(data)

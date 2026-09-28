@@ -1,11 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { mutate } from "swr";
 import { useTenant, useTenantApiKeys, useTenantUsers } from "@/lib/hooks";
-import { api, TenantUser } from "@/lib/api";
+import { api, TenantUser, type DicomEndpoint } from "@/lib/api";
 import { startImpersonation } from "@/lib/impersonation";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { ErrorBanner } from "@/components/ui/ErrorBanner";
@@ -537,6 +537,114 @@ function UsersCard({ tenantId }: { tenantId: string }) {
   );
 }
 
+function DicomEndpointsCard({ tenantId }: { tenantId: string }) {
+  const [rows, setRows] = useState<DicomEndpoint[]>([]);
+  const [called, setCalled] = useState("");
+  const [calling, setCalling] = useState("");
+  const [err, setErr] = useState<string | null>(null);
+  const load = () => api.tenants.listDicomEndpoints(tenantId).then(setRows).catch((e) => setErr(e.message));
+  useEffect(() => { load(); }, [tenantId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const add = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErr(null);
+    try {
+      await api.tenants.createDicomEndpoint(tenantId, { called_aet: called, calling_aet: calling || undefined });
+      setCalled(""); setCalling("");
+      load();
+    } catch (e: any) { setErr(e.message); }
+  };
+
+  return (
+    <section className="bg-white dark:bg-surface rounded-lg border border-gray-200 dark:border-gray-700 p-5 mb-6">
+      <h2 className="font-semibold text-gray-900 dark:text-gray-100">DICOM AE titles</h2>
+      <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+        Studies that scanners send (C-STORE) to one of these called AE titles are attributed to this tenant.
+        Leave &quot;calling AE&quot; empty to accept any scanner.
+      </p>
+      {err && <p className="text-sm text-red-600 mb-2">{err}</p>}
+      <ul className="divide-y divide-gray-100 dark:divide-gray-800 text-sm mb-3">
+        {rows.length === 0 && <li className="py-2 text-gray-400">No AE titles — scanner studies can&apos;t reach this tenant yet.</li>}
+        {rows.map((r) => (
+          <li key={r.id} className="py-2 flex items-center justify-between">
+            <span className="font-mono">{r.called_aet}{r.calling_aet ? ` ← ${r.calling_aet}` : " ← any scanner"}</span>
+            <button onClick={async () => { await api.tenants.deleteDicomEndpoint(tenantId, r.id).catch((e) => setErr(e.message)); load(); }}
+              className="text-xs text-red-600 hover:underline">Remove</button>
+          </li>
+        ))}
+      </ul>
+      <form onSubmit={add} className="flex flex-wrap gap-2">
+        <input required maxLength={16} value={called} onChange={(e) => setCalled(e.target.value.toUpperCase())}
+          placeholder="Called AE (e.g. CITYHOSP_AI)"
+          className="text-sm font-mono border border-gray-200 dark:border-gray-700 dark:bg-surface-raised rounded-lg px-3 py-1.5" />
+        <input maxLength={16} value={calling} onChange={(e) => setCalling(e.target.value.toUpperCase())}
+          placeholder="Calling AE (optional)"
+          className="text-sm font-mono border border-gray-200 dark:border-gray-700 dark:bg-surface-raised rounded-lg px-3 py-1.5" />
+        <button type="submit" className="px-3 py-1.5 text-sm font-medium rounded-lg bg-primary-600 text-white hover:bg-primary-700">Add</button>
+      </form>
+    </section>
+  );
+}
+
+function LimitsAndPurgeCard({ tenantId, slug }: { tenantId: string; slug: string }) {
+  const [maxUsers, setMaxUsers] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [msg, setMsg] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const protectedTenant = tenantId === "default";
+
+  return (
+    <section className="bg-white dark:bg-surface rounded-lg border border-gray-200 dark:border-gray-700 p-5 mb-6">
+      <h2 className="font-semibold text-gray-900 dark:text-gray-100 mb-3">Limits &amp; lifecycle</h2>
+      {msg && <p className="text-sm text-green-700 dark:text-green-300 mb-2">{msg}</p>}
+      {err && <p className="text-sm text-red-600 mb-2">{err}</p>}
+      <div className="flex flex-wrap items-end gap-2 mb-5">
+        <label className="text-sm">
+          <span className="block text-xs text-gray-500 dark:text-gray-400">Seat limit (blank = unlimited)</span>
+          <input type="number" min={1} value={maxUsers} onChange={(e) => setMaxUsers(e.target.value)}
+            className="mt-1 text-sm border border-gray-200 dark:border-gray-700 dark:bg-surface-raised rounded-lg px-3 py-1.5 w-40" />
+        </label>
+        <button
+          onClick={async () => {
+            setErr(null);
+            try {
+              const r = await api.platform.updateLimits(tenantId, maxUsers ? Number(maxUsers) : null);
+              setMsg(`Seat limit: ${r.max_users ?? "unlimited"}`);
+            } catch (e: any) { setErr(e.message); }
+          }}
+          className="px-3 py-1.5 text-sm rounded-lg bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700">
+          Save limit
+        </button>
+      </div>
+      {!protectedTenant && (
+        <div className="border-t border-red-100 dark:border-red-900/40 pt-4">
+          <p className="text-sm font-medium text-red-700 dark:text-red-400">Purge tenant</p>
+          <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
+            Permanently deletes every study, result, report, patient, user and setting of this tenant, its stored
+            artifacts and its PACS studies. The audit log is kept. Type the slug <span className="font-mono">{slug}</span> to confirm.
+          </p>
+          <div className="flex gap-2">
+            <input value={confirm} onChange={(e) => setConfirm(e.target.value)} placeholder={slug}
+              className="text-sm font-mono border border-red-200 dark:border-red-900 dark:bg-surface-raised rounded-lg px-3 py-1.5" />
+            <button
+              disabled={confirm !== slug}
+              onClick={async () => {
+                setErr(null);
+                try {
+                  const r = await api.platform.purgeTenant(tenantId, confirm);
+                  setMsg(`Purged: ${Object.values(r.rows_deleted ?? {}).reduce((a: number, b: any) => a + Number(b), 0)} rows, ${r.orthanc_studies_deleted} PACS studies.`);
+                } catch (e: any) { setErr(e.message); }
+              }}
+              className="px-3 py-1.5 text-sm font-medium rounded-lg bg-red-600 text-white disabled:opacity-40">
+              Purge
+            </button>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 export default function TenantDetailPage() {
   const params = useParams();
   const tenantId = params.id as string;
@@ -558,8 +666,10 @@ export default function TenantDetailPage() {
       </div>
 
       <PlanAndFeaturesCard tenantId={tenantId} />
+      <DicomEndpointsCard tenantId={tenantId} />
       <ApiKeysCard tenantId={tenantId} />
       <UsersCard tenantId={tenantId} />
+      {tenant && <LimitsAndPurgeCard tenantId={tenantId} slug={tenant.slug} />}
     </div>
   );
 }

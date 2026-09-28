@@ -84,6 +84,7 @@ async function fetchAPI<T>(path: string, options?: RequestInit): Promise<T> {
     }
     throw new Error(message);
   }
+  if (res.status === 204) return undefined as T;
   return res.json();
 }
 
@@ -125,6 +126,8 @@ export interface PatientRecordOut {
 }
 
 export interface OrderCreate {
+  /** Referring Doctor's account — grants them (study.view.referred) access to the study. */
+  referring_user_id?: string | null;
   patient_ref: string;
   sex: string;
   age_band: string;
@@ -200,6 +203,7 @@ export interface MammographyReportData {
 }
 
 export interface OrderOut {
+  referring_user_id?: string | null;
   id: string;
   patient_id: string;
   modality: string;
@@ -345,6 +349,181 @@ export interface UserResponse {
   is_platform_operator?: boolean;
   totp_enabled?: boolean;
   created_at: string | null;
+  status?: string;
+}
+
+// ── Workspace (tenant) / RBAC / dashboards / platform console ────────────────
+
+export interface MyPermissions {
+  user_id: string;
+  role: string | null;
+  tenant_id: string | null;
+  permissions: string[];
+  referral_scoped: boolean;
+  is_platform_admin: boolean;
+  is_platform_operator: boolean;
+  is_admin: boolean;
+}
+
+export interface WorkspaceBranding {
+  display_name: string | null;
+  logo_data_url: string | null;
+  primary_color: string | null;
+  accent_color: string | null;
+}
+
+export interface WorkspaceSettings {
+  institution_name: string | null;
+  institution_address: string | null;
+  report_header: string | null;
+  report_footer: string | null;
+  signatory_name: string | null;
+  signatory_title: string | null;
+  signatory_qualifications: string | null;
+  secondary_signatory_name: string | null;
+  timezone: string | null;
+}
+
+export interface WorkspaceInfo {
+  tenant_id: string;
+  workspace: string;
+  plan: string | null;
+  features: string[];
+  branding: WorkspaceBranding;
+  settings: WorkspaceSettings;
+}
+
+export interface RoleDef {
+  id: string;
+  name: string;
+  permissions: string[];
+  is_system: boolean;
+  user_count?: number;
+}
+
+export interface InviteResult extends UserResponse {
+  invite_link: string;
+}
+
+export interface WidgetPosition { x: number; y: number; w: number; h: number }
+
+export interface DashboardWidget {
+  id: string;
+  type: string;
+  title: string;
+  config: Record<string, any>;
+  position: WidgetPosition;
+}
+
+export interface Dashboard {
+  id: string;
+  name: string;
+  description: string | null;
+  owner_id: string | null;
+  is_default: boolean;
+  role_default: string | null;
+  is_shared: boolean;
+  widgets: DashboardWidget[];
+  filters: Record<string, any>;
+  refresh_interval: number;
+  can_edit: boolean;
+  is_owner: boolean;
+  updated_at: string | null;
+}
+
+export interface WidgetConfigField {
+  key: string;
+  label: string;
+  type: "select" | "number" | "string" | "text";
+  default: any;
+  options?: { value: string; label: string }[];
+  min?: number;
+  max?: number;
+}
+
+export interface WidgetType {
+  type: string;
+  label: string;
+  description: string;
+  category: string;
+  default_size: { w: number; h: number };
+  config_schema: WidgetConfigField[];
+  personal?: boolean;
+}
+
+export interface WidgetData {
+  type: string;
+  data: any;
+  error?: string | null;
+  fetched_at?: number;
+}
+
+export interface DashboardVersion {
+  version: number;
+  created_by: string | null;
+  created_at: string | null;
+  name: string | null;
+  widget_count: number;
+}
+
+export interface PlatformTenantRow {
+  tenant_id: string;
+  name: string;
+  slug: string;
+  status: string;
+  plan: string;
+  max_users: number | null;
+  deleted_at: string | null;
+  users: number;
+  studies: number;
+  studies_30d: number;
+  jobs_failed_7d: number;
+  jobs_active: number;
+  storage_bytes: number;
+  last_study_at: string | null;
+}
+
+export interface PlatformOverview {
+  tenants: PlatformTenantRow[];
+  totals: Record<string, number>;
+}
+
+export interface PlatformAuditEntry {
+  id: string;
+  tenant_id: string;
+  action: string;
+  entity_type: string;
+  entity_id: string;
+  actor: string;
+  outcome: string | null;
+  client_ip: string | null;
+  details: Record<string, any>;
+  seq: number | null;
+  timestamp: string | null;
+}
+
+export interface PlatformUser {
+  id: string;
+  username: string;
+  email: string;
+  full_name: string;
+  tenant_id: string;
+  role: string;
+  is_active: boolean;
+  status: string;
+  totp_enabled: boolean;
+  is_platform_admin: boolean;
+  created_at: string | null;
+}
+
+export interface DicomEndpoint {
+  id: string;
+  tenant_id: string;
+  called_aet: string;
+  calling_aet: string | null;
+  description: string | null;
+  is_active: boolean;
+  created_at: string | null;
 }
 
 export interface Tenant {
@@ -360,7 +539,9 @@ export interface Tenant {
 
 export interface CreatedTenant extends Tenant {
   admin_username: string;
-  admin_temp_password: string;
+  admin_temp_password: string | null;
+  admin_invite_link: string | null;
+  called_aet: string | null;
 }
 
 export interface TenantApiKey {
@@ -619,6 +800,8 @@ export const api = {
     },
   },
   onboarding: {
+    referringDoctors: () =>
+      fetchAPI<{ id: string; username: string; full_name: string }[]>("/referring-doctors"),
     searchPatients: (query = "") =>
       fetchAPI<PatientRecordOut[]>(`/patients?query=${encodeURIComponent(query)}`),
     getPatient: (id: string) =>
@@ -719,7 +902,7 @@ export const api = {
       fetchAPI<void>(`/orthanc/studies/${orthancId}`, { method: "DELETE" }),
   },
   auth: {
-    login: (username: string, password: string) =>
+    login: (username: string, password: string, workspace?: string) =>
       fetchAPI<{
         mfa_required: boolean;
         mfa_token: string | null;
@@ -729,8 +912,27 @@ export const api = {
         username: string | null;
         role: string | null;
         tenant_id: string | null;
-      }>("/auth/login", { method: "POST", body: JSON.stringify({ username, password }) }),
+      }>("/auth/login", {
+        method: "POST",
+        body: JSON.stringify({ username, password, workspace: workspace || undefined }),
+      }),
     me: () => fetchAPI<UserResponse & { tenant_slug?: string }>("/auth/me"),
+    myPermissions: () => fetchAPI<MyPermissions>("/auth/me/permissions"),
+    inviteUser: (data: { username: string; email: string; role: string; full_name?: string }) =>
+      fetchAPI<InviteResult>("/auth/users/invite", { method: "POST", body: JSON.stringify(data) }),
+    reinviteUser: (userId: string) =>
+      fetchAPI<{ invite_link: string }>(`/auth/users/${userId}/reinvite`, { method: "POST" }),
+    revokeUserSessions: (userId: string) =>
+      fetchAPI<{ status: string }>(`/auth/users/${userId}/revoke-sessions`, { method: "POST" }),
+    acceptInvitation: (token: string, password: string) =>
+      fetchAPI<{ status: string; username: string; tenant_id: string }>("/auth/invitations/accept", {
+        method: "POST",
+        body: JSON.stringify({ token, password }),
+      }),
+    // (Re)issue / drop the httpOnly viewer-session cookie that authorises the OHIF
+    // viewer's DICOMweb requests and the realtime WebSocket for the current tenant.
+    refreshViewerSession: () => fetchAPI<void>("/auth/viewer-session", { method: "POST" }),
+    clearViewerSession: () => fetchAPI<void>("/auth/viewer-session", { method: "DELETE" }),
     register: (data: { username: string; email: string; password: string; full_name?: string }) =>
       fetchAPI<UserResponse>("/auth/register", {
         method: "POST",
@@ -806,7 +1008,17 @@ export const api = {
       admin_username: string;
       admin_email: string;
       admin_full_name?: string;
+      called_aet?: string;
+      max_users?: number;
     }) => fetchAPI<CreatedTenant>("/admin/tenants", { method: "POST", body: JSON.stringify(data) }),
+    listDicomEndpoints: (id: string) => fetchAPI<DicomEndpoint[]>(`/admin/tenants/${id}/dicom-endpoints`),
+    createDicomEndpoint: (id: string, data: { called_aet: string; calling_aet?: string; description?: string }) =>
+      fetchAPI<DicomEndpoint>(`/admin/tenants/${id}/dicom-endpoints`, {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    deleteDicomEndpoint: (id: string, endpointId: string) =>
+      fetchAPI<void>(`/admin/tenants/${id}/dicom-endpoints/${endpointId}`, { method: "DELETE" }),
     updatePlan: (id: string, plan: string) =>
       fetchAPI<Tenant>(`/admin/tenants/${id}/plan`, { method: "PUT", body: JSON.stringify({ plan }) }),
     updateFeatures: (id: string, features: string[]) =>
@@ -816,6 +1028,73 @@ export const api = {
       }),
     updateStatus: (id: string, status: string) =>
       fetchAPI<Tenant>(`/admin/tenants/${id}/status`, { method: "PUT", body: JSON.stringify({ status }) }),
+  },
+  tenant: {
+    current: () => fetchAPI<WorkspaceInfo>("/tenant/current"),
+    publicBranding: (workspace?: string) =>
+      fetchAPI<WorkspaceBranding & { workspace: string | null }>(
+        `/tenant/public-branding${workspace ? `?${new URLSearchParams({ workspace }).toString()}` : ""}`,
+      ),
+    updateSettings: (data: Partial<WorkspaceSettings>) =>
+      fetchAPI<WorkspaceSettings>("/tenant/settings", { method: "PUT", body: JSON.stringify(data) }),
+    updateBranding: (data: Partial<WorkspaceBranding>) =>
+      fetchAPI<WorkspaceBranding>("/tenant/branding", { method: "PUT", body: JSON.stringify(data) }),
+  },
+  roles: {
+    list: () => fetchAPI<RoleDef[]>("/roles"),
+    catalog: () => fetchAPI<{ permissions: { key: string; description: string }[] }>("/roles/permissions"),
+    create: (data: { name: string; permissions: string[] }) =>
+      fetchAPI<RoleDef>("/roles", { method: "POST", body: JSON.stringify(data) }),
+    update: (id: string, data: { name?: string; permissions?: string[] }) =>
+      fetchAPI<RoleDef>(`/roles/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+    remove: (id: string) => fetchAPI<void>(`/roles/${id}`, { method: "DELETE" }),
+  },
+  dashboards: {
+    list: () => fetchAPI<Dashboard[]>("/dashboards"),
+    widgetTypes: () => fetchAPI<WidgetType[]>("/dashboards/widget-types"),
+    get: (id: string) => fetchAPI<Dashboard>(`/dashboards/${id}`),
+    create: (data: Partial<Dashboard>) =>
+      fetchAPI<Dashboard>("/dashboards", { method: "POST", body: JSON.stringify(data) }),
+    update: (id: string, data: Partial<Dashboard>) =>
+      fetchAPI<Dashboard>(`/dashboards/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+    remove: (id: string) => fetchAPI<void>(`/dashboards/${id}`, { method: "DELETE" }),
+    clone: (id: string, name?: string) =>
+      fetchAPI<Dashboard>(`/dashboards/${id}/clone`, { method: "POST", body: JSON.stringify({ name }) }),
+    versions: (id: string) => fetchAPI<DashboardVersion[]>(`/dashboards/${id}/versions`),
+    restore: (id: string, version: number) =>
+      fetchAPI<Dashboard>(`/dashboards/${id}/versions/${version}/restore`, { method: "POST" }),
+    data: (id: string, filters?: Record<string, any>) =>
+      fetchAPI<{ data: Record<string, WidgetData> }>(`/dashboards/${id}/data`, {
+        method: "POST",
+        body: JSON.stringify({ filters: filters ?? null }),
+      }),
+  },
+  platform: {
+    overview: () => fetchAPI<PlatformOverview>("/admin/platform/overview"),
+    audit: (params: { tenant_id?: string; action?: string; actor?: string; limit?: number; offset?: number }) => {
+      const qs = new URLSearchParams(
+        Object.entries(params).filter(([, v]) => v !== undefined && v !== "").map(([k, v]) => [k, String(v)]),
+      ).toString();
+      return fetchAPI<PlatformAuditEntry[]>(`/admin/platform/audit${qs ? `?${qs}` : ""}`);
+    },
+    users: (q: string, tenantId?: string) => {
+      const qs = new URLSearchParams({ q, ...(tenantId ? { tenant_id: tenantId } : {}) }).toString();
+      return fetchAPI<PlatformUser[]>(`/admin/platform/users?${qs}`);
+    },
+    revokeSessions: (userId: string) =>
+      fetchAPI<{ status: string }>(`/admin/platform/users/${userId}/revoke-sessions`, { method: "POST" }),
+    resetLink: (userId: string) =>
+      fetchAPI<{ reset_link: string }>(`/admin/platform/users/${userId}/reset-link`, { method: "POST" }),
+    updateLimits: (tenantId: string, maxUsers: number | null) =>
+      fetchAPI<{ tenant_id: string; max_users: number | null }>(`/admin/platform/tenants/${tenantId}/limits`, {
+        method: "PUT",
+        body: JSON.stringify({ max_users: maxUsers }),
+      }),
+    purgeTenant: (tenantId: string, confirmSlug: string) =>
+      fetchAPI<Record<string, any>>(
+        `/admin/platform/tenants/${tenantId}/purge?${new URLSearchParams({ confirm: confirmSlug }).toString()}`,
+        { method: "POST" },
+      ),
   },
   tenantApiKeys: {
     list: (tenantId: string) => fetchAPI<TenantApiKey[]>(`/admin/tenants/${tenantId}/api-keys`),

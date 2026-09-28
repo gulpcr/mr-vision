@@ -33,6 +33,8 @@ const EMPTY_FORM = {
   admin_username: "",
   admin_email: "",
   admin_full_name: "",
+  called_aet: "",
+  max_users: "",
 };
 
 export default function TenantsPage() {
@@ -59,7 +61,11 @@ export default function TenantsPage() {
     setError(null);
     setBusy(true);
     try {
-      const result = await api.tenants.create(form);
+      const result = await api.tenants.create({
+        ...form,
+        called_aet: form.called_aet.trim() || undefined,
+        max_users: form.max_users ? Number(form.max_users) : undefined,
+      });
       setCreated(result);
       setShowForm(false);
       setForm(EMPTY_FORM);
@@ -92,12 +98,20 @@ export default function TenantsPage() {
             <CheckCircle className="w-4 h-4" /> Tenant "{created.name}" created
           </div>
           <p className="text-sm text-green-900 dark:text-green-200">
-            Admin credentials — shown once, save them now:
+            Roles, default dashboards, settings and branding were created. Send this one-time link
+            (valid 72 hours) to <strong>{created.admin_username}</strong> so they can set their password:
           </p>
-          <div className="mt-2 font-mono text-sm bg-white dark:bg-surface border border-green-200 dark:border-green-900 rounded-lg p-3 inline-block">
-            <div>username: {created.admin_username}</div>
-            <div>password: {created.admin_temp_password}</div>
-          </div>
+          <input
+            readOnly
+            value={created.admin_invite_link ?? ""}
+            onFocus={(e) => e.currentTarget.select()}
+            className="mt-2 w-full font-mono text-xs bg-white dark:bg-surface border border-green-200 dark:border-green-900 rounded-lg p-2"
+          />
+          {created.called_aet && (
+            <p className="mt-2 text-sm text-green-900 dark:text-green-200">
+              Scanners should send studies to AE title <span className="font-mono">{created.called_aet}</span>.
+            </p>
+          )}
           <div className="mt-3">
             <button
               onClick={() => setCreated(null)}
@@ -223,6 +237,28 @@ export default function TenantsPage() {
               className="w-full mt-1 text-sm border border-gray-200 dark:border-gray-700 dark:bg-surface-raised rounded-lg px-3 py-2"
             />
           </label>
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block text-xs">
+              <span className="text-gray-500 dark:text-gray-400 uppercase tracking-wider">DICOM AE title (optional)</span>
+              <input
+                value={form.called_aet}
+                maxLength={16}
+                placeholder="e.g. CITYHOSP_AI"
+                onChange={(e) => setForm({ ...form, called_aet: e.target.value.toUpperCase() })}
+                className="w-full mt-1 text-sm font-mono border border-gray-200 dark:border-gray-700 dark:bg-surface-raised rounded-lg px-3 py-2"
+              />
+            </label>
+            <label className="block text-xs">
+              <span className="text-gray-500 dark:text-gray-400 uppercase tracking-wider">Seat limit (optional)</span>
+              <input
+                type="number"
+                min={1}
+                value={form.max_users}
+                onChange={(e) => setForm({ ...form, max_users: e.target.value })}
+                className="w-full mt-1 text-sm border border-gray-200 dark:border-gray-700 dark:bg-surface-raised rounded-lg px-3 py-2"
+              />
+            </label>
+          </div>
           <div className="flex justify-end gap-2 pt-2">
             <button
               type="button"

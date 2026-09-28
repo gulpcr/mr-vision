@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import { CortexMark } from "@/components/ui/CortexMark";
@@ -21,9 +21,33 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [mfaToken, setMfaToken] = useState<string | null>(null);
   const [mfaCode, setMfaCode] = useState("");
+  // Workspace (tenant). Usernames are unique per workspace; it may also come from the
+  // subdomain, the invitation link (?workspace=) or the last successful login.
+  const [workspace, setWorkspace] = useState("");
+  const [branding, setBranding] = useState<{
+    display_name: string | null; logo_data_url: string | null; primary_color: string | null;
+  } | null>(null);
+
+  useEffect(() => {
+    const fromQuery = new URLSearchParams(window.location.search).get("workspace");
+    let remembered: string | null = null;
+    try { remembered = localStorage.getItem("workspace"); } catch { remembered = null; }
+    setWorkspace(fromQuery || remembered || "");
+  }, []);
+
+  useEffect(() => {
+    const handle = window.setTimeout(() => {
+      api.tenant
+        .publicBranding(workspace.trim() || undefined)
+        .then((b) => setBranding(b.display_name || b.logo_data_url ? b : null))
+        .catch(() => setBranding(null));
+    }, 350);
+    return () => window.clearTimeout(handle);
+  }, [workspace]);
 
   const storeSessionAndGo = (result: SessionResult) => {
     localStorage.setItem("auth_token", result.access_token || "");
+    if (workspace.trim()) localStorage.setItem("workspace", workspace.trim().toLowerCase());
     localStorage.setItem("user", JSON.stringify({
       id: result.user_id,
       username: result.username,
@@ -39,7 +63,7 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      const result = await api.auth.login(username, password);
+      const result = await api.auth.login(username, password, workspace.trim().toLowerCase() || undefined);
       if (result.mfa_required) {
         setMfaToken(result.mfa_token);
       } else {
@@ -85,6 +109,19 @@ export default function LoginPage() {
               <span className="font-medium text-gray-700 dark:text-gray-200"> Radiology</span>
             </h1>
             <p className="text-xs font-mono uppercase tracking-[0.2em] text-accent">AI-Assisted Imaging Platform</p>
+            {branding && (
+              <div className="flex items-center gap-2 mt-2 px-3 py-1.5 rounded-xl bg-white/60 dark:bg-white/5 ring-1 ring-gray-200 dark:ring-white/10">
+                {branding.logo_data_url && (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={branding.logo_data_url} alt="" className="h-7 w-auto max-w-[8rem] object-contain" />
+                )}
+                {branding.display_name && (
+                  <span className="text-sm font-medium" style={branding.primary_color ? { color: branding.primary_color } : undefined}>
+                    {branding.display_name}
+                  </span>
+                )}
+              </div>
+            )}
           </div>
 
           {mfaToken ? (
@@ -141,6 +178,21 @@ export default function LoginPage() {
                   {error}
                 </div>
               )}
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                  Workspace <span className="text-gray-400 font-normal">(your hospital or clinic)</span>
+                </label>
+                <input
+                  type="text"
+                  value={workspace}
+                  onChange={(e) => setWorkspace(e.target.value)}
+                  className="w-full px-4 py-2.5 bg-white/70 dark:bg-white/5 border border-gray-300 dark:border-white/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent transition text-sm"
+                  placeholder="e.g. city-hospital"
+                  autoCapitalize="none"
+                  spellCheck={false}
+                />
+              </div>
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">

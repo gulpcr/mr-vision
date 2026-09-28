@@ -19,6 +19,10 @@ from app.interface.schemas.result import (
 )
 
 logger = structlog.get_logger(__name__)
+from app.interface.middleware.auth import require_permission
+
+from app.domain.permissions import STUDY_READ
+
 router = APIRouter(tags=["results"])
 
 
@@ -122,7 +126,11 @@ async def _load_fused_volumes(service: "ResultService", study_uid: str, usecase:
         return vols
 
 
-@router.post("/compare", response_model=CompareResponse)
+def _request_tenant(request: Request) -> str:
+    return getattr(request.state, "tenant_id", "default") or "default"
+
+
+@router.post("/compare", response_model=CompareResponse, dependencies=[require_permission(STUDY_READ)])
 async def compare_results(
     body: CompareRequest,
     service: Annotated[ResultService, Depends(get_result_service)],
@@ -157,7 +165,7 @@ async def compare_results(
 # Both are 3-component paths; Starlette matches in declaration order, so the
 # generic 2-param route would otherwise capture "/results/{id}/report.pdf" with
 # usecase="report.pdf" and 404 — breaking the study page's Download PDF button.
-@router.get("/results/{result_id}/report.pdf")
+@router.get("/results/{result_id}/report.pdf", dependencies=[require_permission(STUDY_READ)])
 async def download_report_pdf(
     result_id: str,
     request: Request,
@@ -213,7 +221,7 @@ async def download_report_pdf(
     )
 
 
-@router.get("/results/{study_uid}/{usecase}", response_model=ResultResponse)
+@router.get("/results/{study_uid}/{usecase}", response_model=ResultResponse, dependencies=[require_permission(STUDY_READ)])
 async def get_result(
     study_uid: str,
     usecase: str,
@@ -239,7 +247,7 @@ async def get_result(
     return _to_response(result)
 
 
-@router.get("/results/{study_uid}/{usecase}/versions", response_model=ResultListResponse)
+@router.get("/results/{study_uid}/{usecase}/versions", response_model=ResultListResponse, dependencies=[require_permission(STUDY_READ)])
 async def list_result_versions(
     study_uid: str,
     usecase: str,
@@ -250,7 +258,7 @@ async def list_result_versions(
     return ResultListResponse(results=[_to_response(r) for r in results])
 
 
-@router.get("/results/{study_uid}/{usecase}/cpt-suggestions")
+@router.get("/results/{study_uid}/{usecase}/cpt-suggestions", dependencies=[require_permission(STUDY_READ)])
 async def get_cpt_suggestions(
     study_uid: str,
     usecase: str,
@@ -272,10 +280,11 @@ async def get_cpt_suggestions(
     return {"result_id": result.id, "usecase_name": usecase, "suggestions": suggestions}
 
 
-@router.post("/results/{result_id}/share")
+@router.post("/results/{result_id}/share", dependencies=[require_permission("result.export")])
 async def create_share_link(
     result_id: str,
     body: dict,
+    request: Request,
     service: Annotated[ResultService, Depends(get_result_service)],
     session: Annotated["AsyncSession", Depends(get_session)],
 ):
@@ -286,7 +295,7 @@ async def create_share_link(
 
     from app.application.portal_service import PortalService
 
-    portal = PortalService(session)
+    portal = PortalService(session, tenant_id=_request_tenant(request))
     link = await portal.create_share_link(
         result_id=result_id,
         study_instance_uid=result.study_instance_uid,
@@ -298,28 +307,30 @@ async def create_share_link(
     return link
 
 
-@router.get("/results/{result_id}/shares")
+@router.get("/results/{result_id}/shares", dependencies=[require_permission("result.export")])
 async def list_share_links(
     result_id: str,
+    request: Request,
     session: Annotated["AsyncSession", Depends(get_session)],
 ):
     """List existing portal share links for a result (most recent first) — the
     delivery-status view for the one channel actually implemented today."""
     from app.application.portal_service import PortalService
 
-    portal = PortalService(session)
+    portal = PortalService(session, tenant_id=_request_tenant(request))
     return {"shares": await portal.list_links_for_result(result_id)}
 
 
-@router.post("/portal/shares/{link_id}/revoke")
+@router.post("/portal/shares/{link_id}/revoke", dependencies=[require_permission("result.export")])
 async def revoke_share_link(
     link_id: str,
+    request: Request,
     session: Annotated["AsyncSession", Depends(get_session)],
 ):
     """Revoke a portal share link immediately."""
     from app.application.portal_service import PortalService
 
-    portal = PortalService(session)
+    portal = PortalService(session, tenant_id=_request_tenant(request))
     revoked = await portal.revoke_link(link_id)
     if not revoked:
         raise HTTPException(404, "Share link not found")
@@ -327,7 +338,7 @@ async def revoke_share_link(
     return {"status": "ok", "link_id": link_id}
 
 
-@router.get("/portal/{token}")
+@router.get("/portal/{token}", dependencies=[require_permission(STUDY_READ)])
 async def get_portal_result(
     token: str,
     request: Request,
@@ -337,7 +348,7 @@ async def get_portal_result(
     """Read-only portal endpoint for referring physicians. Validates the share token."""
     from app.application.portal_service import PortalService
 
-    portal = PortalService(session)
+    portal = PortalService(session, tenant_id=_request_tenant(request))
     link = await portal.resolve_token(token)
     if not link:
         raise HTTPException(403, "Invalid or expired share link")
@@ -381,7 +392,7 @@ async def get_portal_result(
     }
 
 
-@router.get("/results/{study_uid}", response_model=ResultListResponse)
+@router.get("/results/{study_uid}", response_model=ResultListResponse, dependencies=[require_permission(STUDY_READ)])
 async def list_study_results(
     study_uid: str,
     service: Annotated[ResultService, Depends(get_result_service)],
@@ -390,7 +401,7 @@ async def list_study_results(
     return ResultListResponse(results=[_to_response(r) for r in results])
 
 
-@router.get("/preview/{study_uid}/{usecase}/{view}")
+@router.get("/preview/{study_uid}/{usecase}/{view}", dependencies=[require_permission(STUDY_READ)])
 async def get_preview(
     study_uid: str,
     usecase: str,
@@ -539,7 +550,7 @@ async def get_preview(
 # NOTE: declared before "/fused/{study_uid}/{usecase}/{view}" so the literal
 # "meta" segment isn't captured as a view by the generic route (Starlette matches
 # in declaration order).
-@router.get("/fused/{study_uid}/{usecase}/meta")
+@router.get("/fused/{study_uid}/{usecase}/meta", dependencies=[require_permission(STUDY_READ)])
 async def get_fused_meta(
     study_uid: str,
     usecase: str,
@@ -556,7 +567,7 @@ async def get_fused_meta(
     }
 
 
-@router.get("/fused/{study_uid}/{usecase}/{view}/{slice_index}")
+@router.get("/fused/{study_uid}/{usecase}/{view}/{slice_index}", dependencies=[require_permission(STUDY_READ)])
 async def get_fused_slice(
     study_uid: str,
     usecase: str,
@@ -598,7 +609,7 @@ async def get_fused_slice(
     )
 
 
-@router.get("/fused/{study_uid}/{usecase}/{view}")
+@router.get("/fused/{study_uid}/{usecase}/{view}", dependencies=[require_permission(STUDY_READ)])
 async def get_fused_image(
     study_uid: str,
     usecase: str,
@@ -671,7 +682,7 @@ async def get_fused_image(
         raise HTTPException(500, f"Fused image generation failed: {exc}")
 
 
-@router.get("/artifacts/{study_uid}/{usecase}/{path:path}")
+@router.get("/artifacts/{study_uid}/{usecase}/{path:path}", dependencies=[require_permission(STUDY_READ)])
 async def get_artifact(
     study_uid: str,
     usecase: str,
@@ -697,7 +708,7 @@ async def get_artifact(
         raise HTTPException(status_code=404, detail=f"Artifact not found: {str(e)}")
 
 
-@router.post("/results/{result_id}/export-dicom")
+@router.post("/results/{result_id}/export-dicom", dependencies=[require_permission("result.export")])
 async def export_dicom(
     result_id: str,
     service: Annotated[ResultService, Depends(get_result_service)],
@@ -741,6 +752,7 @@ async def export_dicom(
             study_instance_uid=result.study_instance_uid,
             usecase_name=result.usecase_name,
             result_data=result_data,
+            tenant_id=result.tenant_id,
             export_sr=sr and settings.dicom_sr_enabled,
             export_seg=seg and settings.dicom_seg_enabled,
         )

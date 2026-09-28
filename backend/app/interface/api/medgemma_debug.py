@@ -39,6 +39,8 @@ from app.interface.api.dependencies import get_result_service, get_session
 
 logger = structlog.get_logger(__name__)
 
+from app.interface.middleware.auth import require_permission
+
 router = APIRouter(prefix="/debug/medgemma", tags=["debug"])
 
 # A recipe reconstructs (prompt, images, force_json, parser) for one use case,
@@ -153,7 +155,7 @@ def _build_client(force_json: bool):
 
 # ── endpoints ────────────────────────────────────────────────────────────────────
 
-@router.get("/status")
+@router.get("/status", dependencies=[require_permission("config.manage")])
 async def medgemma_status() -> dict[str, Any]:
     """MedGemma configuration + live Ollama reachability and model inventory."""
     s = get_settings()
@@ -212,7 +214,7 @@ async def _gather_all_image_artifacts(
     return images, types
 
 
-@router.get("/{usecase}/{study_uid}")
+@router.get("/{usecase}/{study_uid}", dependencies=[require_permission("config.manage")])
 async def medgemma_debug(
     usecase: str,
     study_uid: str,

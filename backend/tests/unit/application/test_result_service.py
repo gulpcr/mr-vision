@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -70,17 +71,32 @@ class TestListResults:
 class TestArtifacts:
     @pytest.mark.asyncio
     async def test_get_artifact_data(self, result_service):
-        svc, _, store = result_service
+        svc, repo, store = result_service
+        repo.list_by_study.return_value = [SimpleNamespace(usecase_name="brain_mri")]
+        store.exists.return_value = True
         store.get.return_value = b"binary-data"
 
         data = await svc.get_artifact_data("1.2.3", "brain_mri", "seg.nii.gz")
 
         assert data == b"binary-data"
+        # Stored under the caller's tenant prefix.
+        store.get.assert_called_once_with("default/1.2.3/brain_mri/seg.nii.gz")
+
+    @pytest.mark.asyncio
+    async def test_get_artifact_falls_back_to_legacy_key(self, result_service):
+        """Objects written before tenant prefixes still resolve."""
+        svc, repo, store = result_service
+        repo.list_by_study.return_value = [SimpleNamespace(usecase_name="brain_mri")]
+        store.exists.return_value = False
+        store.get.return_value = b"old"
+
+        assert await svc.get_artifact_data("1.2.3", "brain_mri", "seg.nii.gz") == b"old"
         store.get.assert_called_once_with("1.2.3/brain_mri/seg.nii.gz")
 
     @pytest.mark.asyncio
     async def test_get_artifact_url(self, result_service):
-        svc, _, store = result_service
+        svc, repo, store = result_service
+        repo.list_by_study.return_value = [SimpleNamespace(usecase_name="brain_mri")]
         store.get_presigned_url.return_value = "https://example.com/presigned"
 
         url = await svc.get_artifact_url("1.2.3", "brain_mri", "seg.nii.gz")
@@ -88,15 +104,29 @@ class TestArtifacts:
         assert url == "https://example.com/presigned"
 
     @pytest.mark.asyncio
+    async def test_artifact_denied_without_visible_result(self, result_service):
+        """The object store is shared across tenants: no result visible in the caller's
+        (tenant-scoped) repository means no artifact, whatever the path."""
+        svc, repo, store = result_service
+        repo.list_by_study.return_value = []
+
+        with pytest.raises(ValueError):
+            await svc.get_artifact_url("1.2.3", "brain_mri", "seg.nii.gz")
+        with pytest.raises(ValueError):
+            await svc.get_artifact_data("1.2.3", "brain_mri", "seg.nii.gz")
+        store.get.assert_not_called()
+        store.get_presigned_url.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_store_artifact(self, result_service):
         svc, _, store = result_service
-        store.put.return_value = "1.2.3/brain_mri/report.json"
+        store.put.return_value = "default/1.2.3/brain_mri/report.json"
 
         path = await svc.store_artifact(
             "1.2.3", "brain_mri", "report.json", b"data", "application/json"
         )
 
-        assert path == "1.2.3/brain_mri/report.json"
+        assert path == "default/1.2.3/brain_mri/report.json"
         store.put.assert_called_once_with(
-            "1.2.3/brain_mri/report.json", b"data", "application/json"
+            "default/1.2.3/brain_mri/report.json", b"data", "application/json"
         )

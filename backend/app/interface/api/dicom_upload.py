@@ -8,6 +8,7 @@ from app.application.dicom_upload_service import DicomUploadService
 from app.application.tenant_api_key_service import TenantApiKeyService
 from app.application.tenant_service import TenantService
 from app.config import get_settings
+from app.infrastructure.tenant.db_scope import bind_platform_scope
 from app.infrastructure.ratelimit.redis_limiter import check_rate_limit
 from app.interface.api.dependencies import (
     get_dicom_upload_service,
@@ -55,6 +56,14 @@ async def upload_dicom(
             status_code=403,
             detail=f"This API key does not have the '{REQUIRED_SCOPE}' scope",
         )
+
+    # RBACMiddleware gives this self-authenticating route a platform DB scope so the key
+    # could be validated before its tenant was known. It stays cross-tenant on purpose:
+    # DicomUploadService must see a StudyInstanceUID owned by ANOTHER tenant to refuse
+    # it (Row-Level Security would otherwise hide that row and let this tenant's
+    # instances be merged into the other tenant's study). Every write here names
+    # key.tenant_id explicitly; binding it as the default also makes row stamping use it.
+    bind_platform_scope(key.tenant_id)
 
     tenant = await tenant_service.get_tenant(key.tenant_id)
     if tenant is None:

@@ -80,8 +80,17 @@ class RetentionService:
         await self._session.flush()
         return result.rowcount > 0
 
-    async def apply_policies(self) -> dict[str, int]:
-        """Apply all active retention policies. Returns counts of affected records."""
+    async def apply_policies(self, tenant_id: str | None = None) -> dict[str, int]:
+        """Apply active retention policies. Returns counts of affected records.
+
+        Each policy only ever purges rows of *its own* tenant. Previously a policy's
+        delete had no tenant predicate, so one tenant's policy deleted matching studies,
+        jobs and results of every tenant. ``tenant_id`` limits which policies run
+        (None = all tenants' policies — the Celery beat job, under a platform DB scope).
+
+        ``audit`` policies are reported but never purge: the audit log is one global hash
+        chain (alembic 040/044), and deleting rows from it breaks chain verification.
+        """
         from app.infrastructure.database.models import (
             RetentionPolicyRecord,
             StudyRecord,
@@ -93,6 +102,8 @@ class RetentionService:
         stmt = select(RetentionPolicyRecord).where(
             RetentionPolicyRecord.is_active == True
         )
+        if tenant_id:
+            stmt = stmt.where(RetentionPolicyRecord.tenant_id == tenant_id)
         result = await self._session.execute(stmt)
         policies = result.scalars().all()
 
@@ -112,14 +123,19 @@ class RetentionService:
             cutoff = utcnow() - timedelta(days=policy.max_age_days)
 
             if hasattr(model, "created_at"):
-                count_stmt = select(func.count()).select_from(model).where(
-                    model.created_at < cutoff
-                )
+                in_scope = (model.created_at < cutoff, model.tenant_id == policy.tenant_id)
+                count_stmt = select(func.count()).select_from(model).where(*in_scope)
                 count_result = await self._session.execute(count_stmt)
                 count = count_result.scalar_one()
 
-                if policy.action == "delete" and count > 0:
-                    del_stmt = delete(model).where(model.created_at < cutoff)
+                if policy.action == "delete" and policy.entity_type == "audit":
+                    logger.warning(
+                        "retention_audit_purge_skipped",
+                        policy=policy.name,
+                        reason="audit_log is a hash chain; deleting rows breaks verification",
+                    )
+                elif policy.action == "delete" and count > 0:
+                    del_stmt = delete(model).where(*in_scope)
                     await self._session.execute(del_stmt)
                     logger.info(
                         "retention_purged",

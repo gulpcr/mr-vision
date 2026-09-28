@@ -36,6 +36,8 @@ export async function startImpersonation(userId: string): Promise<void> {
   localStorage.setItem(ORIGIN_KEY, JSON.stringify(origin));
 
   localStorage.setItem("auth_token", result.access_token);
+  // Switch the viewer cookie to the impersonated user's tenant too.
+  await api.auth.refreshViewerSession().catch(() => {});
   localStorage.setItem("user", JSON.stringify({
     id: result.user_id,
     username: result.username,
@@ -57,5 +59,6 @@ export async function stopImpersonation(): Promise<void> {
       localStorage.setItem("user", origin.user);
     }
     localStorage.removeItem(ORIGIN_KEY);
+    await api.auth.refreshViewerSession().catch(() => {});
   }
 }

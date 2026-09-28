@@ -22,8 +22,17 @@ _DEFAULT_TTL_DAYS = 7
 
 
 class PortalService:
-    def __init__(self, session: AsyncSession):
+    def __init__(self, session: AsyncSession, tenant_id: str | None = None):
         self._session = session
+        # Share links are confined to this tenant (None = unscoped, internal use).
+        self._tenant_id = tenant_id
+
+    def _scope(self, stmt):
+        from app.infrastructure.database.models import ShareLinkRecord
+
+        if self._tenant_id:
+            stmt = stmt.where(ShareLinkRecord.tenant_id == self._tenant_id)
+        return stmt
 
     async def create_share_link(
         self,
@@ -47,6 +56,7 @@ class PortalService:
             created_by=created_by,
             expires_at=expires_at,
             is_active=True,
+            tenant_id=self._tenant_id,
         )
         self._session.add(record)
         await self._session.flush()
@@ -70,7 +80,7 @@ class PortalService:
             ShareLinkRecord.token == token,
             ShareLinkRecord.is_active == True,
         )
-        result = await self._session.execute(stmt)
+        result = await self._session.execute(self._scope(stmt))
         record = result.scalar_one_or_none()
         if record is None:
             return None
@@ -94,7 +104,7 @@ class PortalService:
         from app.infrastructure.database.models import ShareLinkRecord
 
         stmt = select(ShareLinkRecord).where(ShareLinkRecord.id == link_id)
-        result = await self._session.execute(stmt)
+        result = await self._session.execute(self._scope(stmt))
         record = result.scalar_one_or_none()
         if record is None:
             return False
@@ -110,7 +120,7 @@ class PortalService:
             .where(ShareLinkRecord.result_id == result_id)
             .order_by(ShareLinkRecord.created_at.desc())
         )
-        result = await self._session.execute(stmt)
+        result = await self._session.execute(self._scope(stmt))
         return [
             {
                 "id": r.id,

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
+
 import io
 from typing import Any
 
@@ -429,6 +432,28 @@ def _reading_status_line(patient_info: dict[str, Any]) -> tuple[str, bool]:
     return (f"PRELIMINARY · {label}", False)
 
 
+_report_profile: ContextVar[dict[str, str] | None] = ContextVar("report_profile", default=None)
+
+
+@contextmanager
+def report_profile(overrides: dict[str, str] | None):
+    """Render reports with a tenant's own institution name / signatories (from
+    tenant_settings) instead of the platform-wide defaults in config.py."""
+    token = _report_profile.set(overrides or None)
+    try:
+        yield
+    finally:
+        _report_profile.reset(token)
+
+
+def _rs(name: str):
+    """Report setting: the tenant override if one is set, else the platform default."""
+    from app.config import get_settings
+
+    overrides = _report_profile.get() or {}
+    return overrides.get(name) or getattr(get_settings(), name)
+
+
 class PDFReportGenerator:
     """Generate PDF reports from AI results using reportlab."""
 
@@ -691,9 +716,9 @@ class PDFReportGenerator:
         clinical_indication = g("clinical_history") or g("indication")
         findings_lines = _build_mri_findings(summary, measurements)
         impression = _build_mri_impression(summary)
-        doctor = settings.mri_report_signatory_name
-        doctor_title = settings.mri_report_signatory_title
-        doctor_quals = settings.mri_report_signatory_qualifications
+        doctor = _rs("mri_report_signatory_name")
+        doctor_title = _rs("mri_report_signatory_title")
+        doctor_quals = _rs("mri_report_signatory_qualifications")
 
         prn = g("patient_id", "—")
 
@@ -920,11 +945,11 @@ class PDFReportGenerator:
 
         story.append(Spacer(1, 1.6 * cm))
         story.append(Paragraph("_______________________________", cell))
-        story.append(Paragraph(settings.mri_report_signatory_name, sig))
-        if settings.mri_report_signatory_title:
-            story.append(Paragraph(settings.mri_report_signatory_title, sig))
-        if settings.mri_report_signatory_qualifications:
-            story.append(Paragraph(settings.mri_report_signatory_qualifications, sig))
+        story.append(Paragraph(_rs("mri_report_signatory_name"), sig))
+        if _rs("mri_report_signatory_title"):
+            story.append(Paragraph(_rs("mri_report_signatory_title"), sig))
+        if _rs("mri_report_signatory_qualifications"):
+            story.append(Paragraph(_rs("mri_report_signatory_qualifications"), sig))
 
         story.append(Spacer(1, 1.0 * cm))
         story.append(Paragraph(
@@ -988,7 +1013,7 @@ class PDFReportGenerator:
         report_date = g("study_date")
 
         # ── Page-numbering canvas + running header ─────────────────────────────
-        institution = settings.report_institution_name
+        institution = _rs("report_institution_name")
 
         class NumberedCanvas(canvas.Canvas):
             def __init__(self, *a, **kw):
@@ -1221,8 +1246,8 @@ class PDFReportGenerator:
         story.append(Spacer(1, 1.4 * cm))
         sig_style = ParagraphStyle("Sig", parent=styles["Normal"], fontName="Helvetica-Bold", fontSize=10)
         sig_table = Table(
-            [[Paragraph(settings.report_signatory_primary, sig_style),
-              Paragraph(settings.report_signatory_secondary, sig_style)]],
+            [[Paragraph(_rs("report_signatory_primary"), sig_style),
+              Paragraph(_rs("report_signatory_secondary"), sig_style)]],
             colWidths=[7.5 * cm, 7.5 * cm],
         )
         sig_table.setStyle(TableStyle([

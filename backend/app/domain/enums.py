@@ -92,6 +92,9 @@ class AuditAction(str, enum.Enum):
     IMPERSONATION_STOPPED = "impersonation_stopped"
     MFA_ENABLED = "mfa_enabled"
     MFA_DISABLED = "mfa_disabled"
+    USER_ROLE_CHANGED = "user_role_changed"
+    USER_DEACTIVATED = "user_deactivated"
+    STUDY_DELETED = "study_deleted"
 
 
 class ObservationStatus(str, enum.Enum):
@@ -212,6 +215,18 @@ AUDIT_ACTION_TO_CRUDE: dict[str, str] = {
     "user_login": "E",
     "user_logout": "E",
     "user_created": "C",
+    "user_role_changed": "U",
+    "user_deactivated": "U",
+    "user_invited": "C",
+    "invitation_accepted": "U",
+    "password_reset_issued": "U",
+    "sessions_revoked": "U",
+    "tenant_provisioned": "C",
+    "tenant_purged": "D",
+    "tenant_settings_updated": "U",
+    "dashboard_created": "C",
+    "dashboard_updated": "U",
+    "dashboard_deleted": "D",
     "batch_started": "E",
     "batch_completed": "E",
     "review_submitted": "U",

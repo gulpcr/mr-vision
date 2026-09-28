@@ -11,6 +11,8 @@ from app.interface.api.dependencies import get_session as get_async_session, req
 
 logger = structlog.get_logger(__name__)
 
+from app.interface.middleware.auth import require_permission
+
 router = APIRouter(prefix="/critical-alerts", tags=["critical-alerts"])
 
 
@@ -18,7 +20,7 @@ class AcknowledgeRequest(BaseModel):
     acknowledged_by: str
 
 
-@router.get("")
+@router.get("", dependencies=[require_permission("alert.view")])
 async def list_critical_alerts(
     tenant_id: Annotated[str, Depends(request_tenant_id)],
     status: str | None = Query(None, description="pending|acknowledged|escalated|resolved"),
@@ -44,7 +46,7 @@ async def list_critical_alerts(
     return {"alerts": alerts, "count": len(alerts)}
 
 
-@router.get("/stats")
+@router.get("/stats", dependencies=[require_permission("alert.view")])
 async def get_critical_alert_stats(
     tenant_id: Annotated[str, Depends(request_tenant_id)],
     session: AsyncSession = Depends(get_async_session),
@@ -55,7 +57,7 @@ async def get_critical_alert_stats(
     return await svc.get_critical_alert_stats(tenant_id=tenant_id)
 
 
-@router.get("/{alert_id}")
+@router.get("/{alert_id}", dependencies=[require_permission("alert.view")])
 async def get_critical_alert(
     alert_id: str,
     tenant_id: Annotated[str, Depends(request_tenant_id)],
@@ -70,7 +72,7 @@ async def get_critical_alert(
     return alert
 
 
-@router.post("/{alert_id}/acknowledge")
+@router.post("/{alert_id}/acknowledge", dependencies=[require_permission("alert.acknowledge")])
 async def acknowledge_critical_alert(
     alert_id: str,
     body: AcknowledgeRequest,

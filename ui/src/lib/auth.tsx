@@ -1,8 +1,8 @@
 "use client";
 
-import { createContext, useContext, useEffect, useState } from "react";
-import { api } from "@/lib/api";
-import { type Permission, roleHasPermission } from "@/lib/permissions";
+import { createContext, useCallback, useContext, useEffect, useState } from "react";
+import { api, type MyPermissions, type WorkspaceInfo } from "@/lib/api";
+import { hasPermission, type Permission } from "@/lib/permissions";
 
 export interface StoredUser {
   id: string;
@@ -15,7 +15,14 @@ interface AuthContextValue {
   user: StoredUser | null;
   role: string | null;
   isPlatformAdmin: boolean;
+  /** Live effective permissions of the caller's role in their workspace. */
+  permissions: string[];
+  /** Referring Doctor: sees only studies of patients they referred. */
+  referralScoped: boolean;
+  workspace: WorkspaceInfo | null;
   can: (permission: Permission) => boolean;
+  /** Re-fetch permissions (e.g. after a role edit) without reloading the page. */
+  refresh: () => void;
   isLoading: boolean;
 }
 
@@ -23,17 +30,19 @@ const AuthContext = createContext<AuthContextValue>({
   user: null,
   role: null,
   isPlatformAdmin: false,
+  permissions: [],
+  referralScoped: false,
+  workspace: null,
   can: () => false,
+  refresh: () => {},
   isLoading: true,
 });
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<StoredUser | null>(null);
+  const [me, setMe] = useState<MyPermissions | null>(null);
+  const [workspace, setWorkspace] = useState<WorkspaceInfo | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  // is_platform_admin isn't in the cached login response (see StoredUser above) —
-  // it can change server-side without the user re-logging in, so it's fetched live
-  // from /auth/me rather than cached, same rationale as useCurrentUser().
-  const [isPlatformAdmin, setIsPlatformAdmin] = useState(false);
 
   useEffect(() => {
     try {
@@ -41,29 +50,59 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setUser(raw ? (JSON.parse(raw) as StoredUser) : null);
     } catch {
       setUser(null);
-    } finally {
-      setIsLoading(false);
     }
+  }, []);
+
+  const load = useCallback(() => {
+    // Permissions and platform flags are read live from the server (never from the
+    // cached login response): an admin can change a role, or revoke a session, at any time.
+    api.auth
+      .myPermissions()
+      .then(setMe)
+      .catch(() => setMe(null))
+      .finally(() => setIsLoading(false));
+    api.tenant
+      .current()
+      .then(setWorkspace)
+      .catch(() => setWorkspace(null));
   }, []);
 
   useEffect(() => {
     if (!user) return;
-    api.auth
-      .me()
-      .then((me) => setIsPlatformAdmin(!!me.is_platform_admin))
-      .catch(() => setIsPlatformAdmin(false));
-  }, [user]);
+    load();
+    // A session restored from localStorage predates (or outlived) the viewer cookie set
+    // at login — reissue it so OHIF and the WebSocket are authorised for this tenant.
+    api.auth.refreshViewerSession().catch(() => {});
+  }, [user, load]);
+
+  // Pick up role / permission changes made while the tab stays open.
+  useEffect(() => {
+    if (!user) return;
+    const onFocus = () => load();
+    window.addEventListener("focus", onFocus);
+    const timer = window.setInterval(load, 60_000);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      window.clearInterval(timer);
+    };
+  }, [user, load]);
+
+  const permissions = me?.permissions ?? [];
+  const isPlatformAdmin = !!me?.is_platform_admin;
 
   const value: AuthContextValue = {
     user,
-    role: user?.role ?? null,
+    role: me?.role ?? user?.role ?? null,
     isPlatformAdmin,
-    // "tenant.manage" is a cross-tenant capability gated on is_platform_admin, not a
-    // per-tenant role permission — every other permission still goes through the
-    // role->permission table.
+    permissions,
+    referralScoped: !!me?.referral_scoped,
+    workspace,
+    // "tenant.manage" is the cross-tenant platform-admin capability, not a workspace
+    // role permission.
     can: (permission) =>
-      permission === "tenant.manage" ? isPlatformAdmin : roleHasPermission(user?.role, permission),
-    isLoading,
+      permission === "tenant.manage" ? isPlatformAdmin : hasPermission(permissions, permission),
+    refresh: load,
+    isLoading: isLoading && !!user,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

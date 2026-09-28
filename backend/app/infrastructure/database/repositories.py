@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select, func, update, delete
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.enums import AuditAction, AuditActorType, JobStatus, QAFlag, audit_action_to_crude
@@ -47,6 +47,15 @@ from app.infrastructure.database.models import (
 )
 
 
+def _referral_scope() -> str | None:
+    """The referral-scoped user bound for this request (the referring Doctor), if any.
+    RLS (alembic 046) enforces the same restriction in the database; this is the
+    application-level half, effective even when the app connects as the table owner."""
+    from app.infrastructure.tenant.db_scope import current_referring_user_id
+
+    return current_referring_user_id()
+
+
 class PgStudyRepository(StudyRepository):
     def __init__(self, session: AsyncSession, tenant_id: str | None = None):
         self._session = session
@@ -55,6 +64,9 @@ class PgStudyRepository(StudyRepository):
     def _scope(self, stmt):
         if self._tenant_id:
             stmt = stmt.where(StudyRecord.tenant_id == self._tenant_id)
+            referring = _referral_scope()
+            if referring:
+                stmt = stmt.where(StudyRecord.referring_user_id == referring)
         return stmt
 
     async def save(self, study: Study) -> Study:
@@ -138,6 +150,31 @@ class PgStudyRepository(StudyRepository):
         await self._session.execute(stmt)
         await self._session.flush()
         return study
+
+    async def delete(self, study_instance_uid: str) -> bool:
+        stmt = delete(StudyRecord).where(StudyRecord.study_instance_uid == study_instance_uid)
+        stmt = self._scope(stmt)
+        result = await self._session.execute(stmt)
+        await self._session.flush()
+        return (result.rowcount or 0) > 0
+
+    async def owner_tenant_of(self, study_instance_uid: str) -> str | None:
+        # SECURITY DEFINER (alembic 045): sees past Row-Level Security, returns only the
+        # owning tenant id.
+        result = await self._session.execute(
+            text("SELECT study_owner_tenant(:uid)"), {"uid": study_instance_uid}
+        )
+        return result.scalar_one_or_none()
+
+    async def existing_uids(self, study_instance_uids: list[str]) -> set[str]:
+        if not study_instance_uids:
+            return set()
+        stmt = select(StudyRecord.study_instance_uid).where(
+            StudyRecord.study_instance_uid.in_(study_instance_uids)
+        )
+        stmt = self._scope(stmt)
+        result = await self._session.execute(stmt)
+        return {row[0] for row in result.all()}
 
     def _apply_filters(self, stmt, filters: dict[str, Any] | None):
         if not filters:
@@ -396,6 +433,14 @@ class PgResultRepository(ResultRepository):
     def _scope(self, stmt):
         if self._tenant_id:
             stmt = stmt.where(ResultRecord.tenant_id == self._tenant_id)
+            referring = _referral_scope()
+            if referring:
+                stmt = stmt.where(ResultRecord.study_instance_uid.in_(
+                    select(StudyRecord.study_instance_uid).where(
+                        StudyRecord.tenant_id == self._tenant_id,
+                        StudyRecord.referring_user_id == referring,
+                    )
+                ))
         return stmt
 
     async def save(self, result: Result) -> Result:
@@ -636,14 +681,15 @@ class PgAuditRepository(AuditRepository):
         # the chain instead of extending it linearly. The chain is global across tenants
         # (one linear sequence); tenant_id lives inside each row's hash payload, so
         # cross-tenant tampering is still detectable even though writes serialize here.
-        tail_stmt = (
-            select(AuditLogRecord.seq, AuditLogRecord.row_hash)
-            .where(AuditLogRecord.seq.isnot(None))
-            .order_by(AuditLogRecord.seq.desc())
-            .limit(1)
-            .with_for_update()
-        )
-        tail = (await self._session.execute(tail_stmt)).first()
+        #
+        # audit_chain_tail() (alembic 044) is SECURITY DEFINER: under Row-Level Security a
+        # tenant-scoped writer can only SELECT its own tenant's audit rows, so reading the
+        # tail directly would return that tenant's last row — not the global tail — and
+        # fork the chain. The function returns only (seq, row_hash), with the same
+        # FOR UPDATE lock, regardless of the caller's scope.
+        tail = (
+            await self._session.execute(text("SELECT seq, row_hash FROM audit_chain_tail()"))
+        ).first()
         next_seq = (tail.seq + 1) if tail else 1
         prev_hash = tail.row_hash if tail else None
 

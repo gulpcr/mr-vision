@@ -3,12 +3,13 @@ from __future__ import annotations
 import secrets
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, EmailStr, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.auth_service import AuthService
 from app.application.tenant_service import TenantService
-from app.interface.api.dependencies import get_auth_service, get_tenant_service
+from app.interface.api.dependencies import get_auth_service, get_session, get_tenant_service
 from app.interface.middleware.auth import require_platform_admin
 
 router = APIRouter(
@@ -29,9 +30,12 @@ class TenantResponse(BaseModel):
 
 class CreatedTenantResponse(TenantResponse):
     admin_username: str
-    admin_temp_password: str = Field(
-        ..., description="Shown once — the admin should change it on first login"
+    # Deprecated: provisioning no longer generates passwords (always None).
+    admin_temp_password: str | None = None
+    admin_invite_link: str | None = Field(
+        default=None, description="One-time link (72h) for the first admin to set a password"
     )
+    called_aet: str | None = None
 
 
 class CreateTenantRequest(BaseModel):
@@ -42,6 +46,9 @@ class CreateTenantRequest(BaseModel):
     admin_username: str = Field(..., min_length=3, max_length=128)
     admin_email: EmailStr
     admin_full_name: str = ""
+    # Optional DICOM called AE title for the tenant's scanners, and a seat limit.
+    called_aet: str | None = Field(default=None, max_length=16)
+    max_users: int | None = Field(default=None, ge=1, le=100_000)
 
 
 class UpdatePlanRequest(BaseModel):
@@ -80,42 +87,40 @@ async def list_tenants(
 @router.post("", response_model=CreatedTenantResponse, status_code=201)
 async def create_tenant(
     body: CreateTenantRequest,
+    request: Request,
+    actor: Annotated[str, Depends(require_platform_admin)],
+    session: Annotated[AsyncSession, Depends(get_session)],
     service: Annotated[TenantService, Depends(get_tenant_service)],
     auth_service: Annotated[AuthService, Depends(get_auth_service)],
 ):
-    """Creates the tenant and its first admin user together.
+    """Provision a workspace: tenant + system roles (incl. Doctor) + settings + branding
+    + role-default dashboards + optional DICOM AE title + seat limit + an *invited* first
+    admin, all in the request's single transaction (any failure rolls everything back).
+    Returns a one-time invitation link for the admin — no password is ever shown."""
+    from app.application.dicom_endpoint_service import InvalidAETitleError
+    from app.application.tenant_provisioning_service import TenantProvisioningService
 
-    Both go through the same request-scoped session (get_tenant_service and
-    get_auth_service both resolve to it via Depends(get_session)), so if creating
-    the admin user fails after the tenant row was already flushed, the whole
-    session rolls back at the request boundary — the tenant is never left behind
-    half-provisioned with no way to log in.
-    """
     try:
-        tenant = await service.create_tenant(
+        result = await TenantProvisioningService(session, service, auth_service).provision(
             name=body.name, slug=body.slug, plan=body.plan, features=body.features,
+            admin_username=body.admin_username, admin_email=body.admin_email,
+            admin_full_name=body.admin_full_name, called_aet=body.called_aet,
+            max_users=body.max_users, actor=actor,
         )
+    except InvalidAETitleError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except ValueError as e:
         status_code = 409 if "already exists" in str(e) else 400
         raise HTTPException(status_code=status_code, detail=str(e))
 
-    temp_password = secrets.token_urlsafe(12)
-    try:
-        admin_user = await auth_service.create_user(
-            username=body.admin_username,
-            email=body.admin_email,
-            password=temp_password,
-            full_name=body.admin_full_name,
-            role="admin",
-            tenant_id=tenant.id,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=409, detail=str(e))
+    from app.interface.api.auth import _invite_link
 
     return CreatedTenantResponse(
-        **_to_response(tenant).model_dump(),
-        admin_username=admin_user.username,
-        admin_temp_password=temp_password,
+        **_to_response(result.tenant).model_dump(),
+        admin_username=result.admin_user.username,
+        admin_temp_password=None,
+        admin_invite_link=await _invite_link(request, result.invite_token, result.tenant.id),
+        called_aet=(result.dicom_endpoint or {}).get("called_aet"),
     )
 
 
@@ -167,3 +172,80 @@ async def update_tenant_status(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return _to_response(tenant)
+
+
+# ── DICOM endpoints (AE titles) ─────────────────────────────────────────────
+
+
+class DicomEndpointCreateRequest(BaseModel):
+    called_aet: str = Field(..., min_length=1, max_length=16)
+    calling_aet: str | None = Field(default=None, max_length=16)
+    description: str | None = Field(default=None, max_length=256)
+
+
+@router.get("/{tenant_id}/dicom-endpoints")
+async def list_dicom_endpoints(
+    tenant_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """AE titles whose C-STORE studies are attributed to this tenant."""
+    from app.application.dicom_endpoint_service import DicomEndpointService
+
+    return await DicomEndpointService(session).list_for_tenant(tenant_id)
+
+
+@router.post("/{tenant_id}/dicom-endpoints", status_code=201)
+async def create_dicom_endpoint(
+    tenant_id: str,
+    body: DicomEndpointCreateRequest,
+    actor: Annotated[str, Depends(require_platform_admin)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    tenant_service: Annotated[TenantService, Depends(get_tenant_service)],
+):
+    """Assign a called AE title to this tenant (optionally only from one calling AE)."""
+    from app.application.dicom_endpoint_service import DicomEndpointService, InvalidAETitleError
+    from app.domain.enums import AuditAction
+    from app.domain.models import AuditEntry
+    from app.infrastructure.database.repositories import PgAuditRepository
+
+    if await tenant_service.get_tenant(tenant_id) is None:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    try:
+        endpoint = await DicomEndpointService(session).create(
+            tenant_id, body.called_aet, body.calling_aet, body.description
+        )
+    except InvalidAETitleError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    await PgAuditRepository(session, tenant_id=tenant_id).save(AuditEntry(
+        action=AuditAction.CONFIG_CHANGED,
+        entity_type="dicom_endpoint",
+        entity_id=endpoint["id"],
+        actor=actor,
+        details={"called_aet": endpoint["called_aet"], "calling_aet": endpoint["calling_aet"]},
+        tenant_id=tenant_id,
+    ))
+    return endpoint
+
+
+@router.delete("/{tenant_id}/dicom-endpoints/{endpoint_id}", status_code=204)
+async def delete_dicom_endpoint(
+    tenant_id: str,
+    endpoint_id: str,
+    actor: Annotated[str, Depends(require_platform_admin)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    from app.application.dicom_endpoint_service import DicomEndpointService
+    from app.domain.enums import AuditAction
+    from app.domain.models import AuditEntry
+    from app.infrastructure.database.repositories import PgAuditRepository
+
+    if not await DicomEndpointService(session).delete(tenant_id, endpoint_id):
+        raise HTTPException(status_code=404, detail="DICOM endpoint not found")
+    await PgAuditRepository(session, tenant_id=tenant_id).save(AuditEntry(
+        action=AuditAction.CONFIG_CHANGED,
+        entity_type="dicom_endpoint",
+        entity_id=endpoint_id,
+        actor=actor,
+        details={"deleted": True},
+        tenant_id=tenant_id,
+    ))

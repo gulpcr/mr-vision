@@ -42,6 +42,10 @@ def _actor(request: Request) -> tuple[str, str, bool, str]:
     )
 
 
+def _tenant_of(request: Request) -> str:
+    return getattr(request.state, "tenant_id", "default") or "default"
+
+
 def _map_errors(exc: Exception):
     if isinstance(exc, StudyNotFoundError):
         return HTTPException(404, "Study not found")
@@ -61,7 +65,7 @@ async def claim_study(
     validate_dicom_uid(study_uid)
     uid, username, _is_admin, _tenant = _actor(request)
     try:
-        result = await ReadingService(session).claim(study_uid, uid, username)
+        result = await ReadingService(session, tenant_id=_tenant_of(request)).claim(study_uid, uid, username)
     except Exception as exc:
         mapped = _map_errors(exc)
         if mapped:
@@ -81,12 +85,12 @@ async def assign_study(
     validate_dicom_uid(study_uid)
     _uid, actor, _is_admin, _tenant = _actor(request)
     assignee = await AuthService(session).get_user_by_id(assignee_id)
-    if not assignee or not assignee.is_active:
+    if not assignee or not assignee.is_active or assignee.tenant_id != _tenant_of(request):
         raise HTTPException(404, "Assignee not found or inactive")
     if assignee.role != "radiologist":
         raise HTTPException(422, "Studies can only be assigned to a radiologist")
     try:
-        result = await ReadingService(session).assign(
+        result = await ReadingService(session, tenant_id=_tenant_of(request)).assign(
             study_uid, assignee.id, assignee.username, actor=actor
         )
     except Exception as exc:
@@ -107,7 +111,7 @@ async def auto_assign_study(
     validate_dicom_uid(study_uid)
     _uid, actor, _is_admin, tenant = _actor(request)
     try:
-        result = await ReadingService(session).auto_assign(study_uid, actor=actor, tenant_id=tenant)
+        result = await ReadingService(session, tenant_id=_tenant_of(request)).auto_assign(study_uid, actor=actor, tenant_id=tenant)
     except Exception as exc:
         mapped = _map_errors(exc)
         if mapped:
@@ -126,7 +130,7 @@ async def unclaim_study(
     validate_dicom_uid(study_uid)
     uid, actor, is_admin, _tenant = _actor(request)
     try:
-        result = await ReadingService(session).unclaim(study_uid, uid, actor, is_admin)
+        result = await ReadingService(session, tenant_id=_tenant_of(request)).unclaim(study_uid, uid, actor, is_admin)
     except Exception as exc:
         mapped = _map_errors(exc)
         if mapped:
@@ -145,7 +149,7 @@ async def report_study(
     validate_dicom_uid(study_uid)
     uid, actor, is_admin, _tenant = _actor(request)
     try:
-        result = await ReadingService(session).report(study_uid, uid, actor, is_admin)
+        result = await ReadingService(session, tenant_id=_tenant_of(request)).report(study_uid, uid, actor, is_admin)
     except Exception as exc:
         mapped = _map_errors(exc)
         if mapped:
@@ -164,7 +168,7 @@ async def sign_study(
     validate_dicom_uid(study_uid)
     uid, actor, is_admin, _tenant = _actor(request)
     try:
-        result = await ReadingService(session).sign(study_uid, uid, actor, is_admin)
+        result = await ReadingService(session, tenant_id=_tenant_of(request)).sign(study_uid, uid, actor, is_admin)
     except Exception as exc:
         mapped = _map_errors(exc)
         if mapped:
