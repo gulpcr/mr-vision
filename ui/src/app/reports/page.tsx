@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import { useStudies, useUsecases } from "@/lib/hooks";
 import { api, Result, Study } from "@/lib/api";
-import { formatDate, formatDateTime, formatPatientName } from "@/lib/format";
+import { formatDate, formatDateTime, formatPatientName, labelIsMrn } from "@/lib/format";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import Link from "next/link";
 import { FileText, Search, Filter, ArrowLeftRight } from "lucide-react";
@@ -183,9 +183,11 @@ export default function ReportsPage() {
                     </td>
                     <td className="px-5 py-3">
                       <p className="font-medium text-gray-900 dark:text-gray-100">
-                        {formatPatientName(e.study.patient_name)}
+                        {labelIsMrn(e.study) ? e.study.patient_id || "—" : formatPatientName(e.study.patient_name)}
                       </p>
-                      <p className="text-xs text-gray-500 dark:text-gray-400 dark:text-gray-500">{e.study.patient_id}</p>
+                      {!labelIsMrn(e.study) && (
+                        <p className="text-xs text-gray-500 dark:text-gray-400 dark:text-gray-500">{e.study.patient_id}</p>
+                      )}
                     </td>
                     <td className="px-3 py-3 text-gray-600 dark:text-gray-400 dark:text-gray-500">
                       {formatDate(e.study.study_date)}

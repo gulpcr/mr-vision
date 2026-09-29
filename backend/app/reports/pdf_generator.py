@@ -9,6 +9,8 @@ from typing import Any
 import structlog
 
 from app.application.dicom_demographics import format_person_name
+from app.config import get_settings
+from app.domain.patient_identity import displayed_patient_name
 
 logger = structlog.get_logger(__name__)
 
@@ -396,7 +398,10 @@ def build_petct_patient_info(study_rec: Any) -> dict[str, Any]:
     return {
         # DICOM PN → display ("DOE^JOHN^A" → "DOE JOHN A"); previously printed raw,
         # carets and all, into every PDF header.
-        "patient_name": format_person_name(study_rec.patient_name),
+        # MRN in place of the name unless DISPLAY_PATIENT_NAMES (domain/patient_identity.py).
+        "patient_name": format_person_name(displayed_patient_name(
+            study_rec.patient_name, study_rec.patient_id, get_settings().display_patient_names
+        )),
         "patient_id": study_rec.patient_id or "",
         "study_date": study_rec.study_date.strftime("%d/%m/%Y") if study_rec.study_date else "",
         "referring_physician": study_rec.referring_physician or "",
@@ -434,6 +439,21 @@ def _reading_status_line(patient_info: dict[str, Any]) -> tuple[str, bool]:
         "reported": f"Reported{(' — ' + by) if by else ''}",
     }.get(rs, rs)
     return (f"PRELIMINARY · {label}", False)
+
+
+def _names_hidden() -> bool:
+    """MRN replaces the patient name on reports (see domain/patient_identity.py). The
+    templates' own PRN / MR / Patient ID field already carries the MRN, so their name
+    cell is dropped rather than printing the MRN twice."""
+    return not get_settings().display_patient_names
+
+
+def _reflow(cells: list, ncols: int) -> list[list]:
+    """Re-pack a template's cells (row-major) into rows of ``ncols``, padding the last."""
+    rows = [list(cells[i:i + ncols]) for i in range(0, len(cells), ncols)]
+    if rows and len(rows[-1]) < ncols:
+        rows[-1] += [""] * (ncols - len(rows[-1]))
+    return rows
 
 
 def _esc(text: Any) -> str:
@@ -674,14 +694,17 @@ class PDFReportGenerator:
              Paragraph(f"<b>Contact:</b> {rv('contact', '—')}", cell)],
             [Paragraph(f"<b>Entry Date:</b> {g('study_date', '—')}", cell), "", ""],
         ]
+        span_last = True
+        if _names_hidden():
+            info = [info[0], info[1][1:] + [info[2][0]]]
+            span_last = False
         tbl = Table(info, colWidths=[6 * cm, 5.5 * cm, 5.5 * cm])
         tbl.setStyle(TableStyle([
             ("BOX", (0, 0), (-1, -1), 0.75, colors.HexColor("#333333")),
             ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#cccccc")),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
             ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-            ("SPAN", (0, 2), (2, 2)),
-        ]))
+        ] + ([("SPAN", (0, 2), (2, 2))] if span_last else [])))
         story.append(tbl)
 
         laterality = (r.get("laterality") or "bilateral").lower()
@@ -842,6 +865,8 @@ class PDFReportGenerator:
             [Paragraph(f"<b>GENDER</b> : {g('patient_sex', '—')}", cell),
              Paragraph(f"<b>REF</b> : {g('referring_physician', '')}", cell)],
         ]
+        if _names_hidden():
+            info_data = _reflow([c for row in info_data for c in row][1:], 2)
         info_table = Table(info_data, colWidths=[9.6 * cm, 7.0 * cm])
         info_table.setStyle(TableStyle([
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
@@ -985,6 +1010,8 @@ class PDFReportGenerator:
             [Paragraph(f"<b>GENDER</b> : {g('patient_sex', '—')}", cell),
              Paragraph(f"<b>REF</b> : {g('referring_physician', '')}", cell)],
         ]
+        if _names_hidden():
+            info_data = _reflow([c for row in info_data for c in row][1:], 2)
         info_table = Table(info_data, colWidths=[9.6 * cm, 7.0 * cm])
         info_table.setStyle(TableStyle([
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
@@ -1156,7 +1183,9 @@ class PDFReportGenerator:
             return Paragraph(t, cell_v)
 
         info_data = [
-            [lbl("Name:"), val(g("patient_name")), lbl("PRN:"), val(prn), lbl("Date:"), val(report_date)],
+            [lbl("Name:"), val(g("patient_name")), lbl("PRN:"), val(prn), lbl("Date:"), val(report_date)]
+            if not _names_hidden() else
+            [lbl("PRN:"), val(prn), lbl("Date:"), val(report_date), "", ""],
             [lbl("Ref. Dr / Hosp:"), val(g("referring_physician")), lbl("Age:"), val(g("patient_age")), lbl("Sex:"), val(g("patient_sex"))],
         ]
         info_table = Table(
@@ -1442,6 +1471,7 @@ class PDFReportGenerator:
             info_data = [
                 ["Patient Name:", patient_info.get("patient_name", "N/A")],
                 ["Patient ID:", patient_info.get("patient_id", "N/A")],
+            ][1 if _names_hidden() else 0:] + [
                 ["Study Date:", patient_info.get("study_date", "N/A")],
                 ["Study UID:", study_uid[:40] + "..." if len(study_uid) > 40 else study_uid],
             ]
@@ -1760,7 +1790,8 @@ class PDFReportGenerator:
         lines.append("")
 
         if patient_info:
-            lines.append(f"Patient: {patient_info.get('patient_name', 'N/A')}")
+            if not _names_hidden():
+                lines.append(f"Patient: {patient_info.get('patient_name', 'N/A')}")
             lines.append(f"ID: {patient_info.get('patient_id', 'N/A')}")
             lines.append(f"Study: {study_uid}")
             lines.append("")

@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { api, Study, Result, ClinicalForStudy } from "@/lib/api";
 import { ctRegionMeta } from "@/lib/ctReport";
 import { fmtAge, fmtSex, fmtDate } from "@/lib/reportFormat";
-import { formatPatientName } from "@/lib/format";
+import { formatPatientName, labelIsMrn } from "@/lib/format";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { AIProvenanceBanner } from "@/components/ui/AIProvenanceBanner";
 import { ReportShell } from "@/components/reports/ReportShell";
@@ -174,7 +174,9 @@ export function AbdomenCtContent({ study, result, onSignedOff }: AbdomenCtConten
 
       {/* Demographics */}
       <div className="grid grid-cols-2 gap-x-10 gap-y-1.5 mb-5">
-        <div><span className="font-bold">PATIENT :</span> {study.patient_name ? formatPatientName(study.patient_name) : "—"}</div>
+        {!labelIsMrn(study) && (
+          <div><span className="font-bold">PATIENT :</span> {study.patient_name ? formatPatientName(study.patient_name) : "—"}</div>
+        )}
         <div><span className="font-bold">MR :</span> {study.patient_id || "—"}</div>
         <div><span className="font-bold">DATE :</span> {fmtDate(study.study_date)}</div>
         <div><span className="font-bold">AGE :</span> {ageDisplay}</div>

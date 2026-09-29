@@ -35,6 +35,8 @@ from app.domain.signature_statements import (
     STATEMENTS,
     render_statement,
 )
+from app.config import get_settings
+from app.domain.patient_identity import displayed_patient_name
 
 logger = structlog.get_logger(__name__)
 
@@ -200,7 +202,9 @@ class ReviewSignoffService:
             signer = signers.get(s.study_instance_uid)
             items.append({
                 "study_instance_uid": s.study_instance_uid,
-                "patient_name": s.patient_name,
+                "patient_name": displayed_patient_name(
+                    s.patient_name, s.patient_id, get_settings().display_patient_names
+                ),
                 "patient_id": s.patient_id,
                 "modality": s.modality,
                 "body_part_examined": s.body_part_examined,

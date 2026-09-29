@@ -11,7 +11,7 @@ import { useAuth } from "@/lib/auth";
 import { ReportView } from "@/components/ReportView";
 import { FusedViewer } from "@/components/FusedViewer";
 import { ComparePanel } from "@/components/ComparePanel";
-import { formatDate, formatPatientName } from "@/lib/format";
+import { formatDate, formatPatientName, labelIsMrn } from "@/lib/format";
 import { isCtReportUsecase } from "@/lib/ctReport";
 import Link from "next/link";
 import {
@@ -397,8 +397,11 @@ export default function StudyPage() {
         const rs = study.reading_status || "unread";
         const btn = "press px-3 py-1.5 text-xs font-medium rounded-lg transition-colors disabled:opacity-50";
         const grad = heroModalityGrad(study.modality);
-        const initials =
-          formatPatientName(study.patient_name).split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join("").toUpperCase() || "?";
+        // With patient names hidden the title is the MRN: no initials, a person icon.
+        const mrnOnly = labelIsMrn(study);
+        const initials = mrnOnly
+          ? null
+          : formatPatientName(study.patient_name).split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join("").toUpperCase() || "?";
 
         // Demographic line sits right under the name — the scannable pattern used
         // in PACS/EHR patient banners — so the chip strip below doesn't repeat it.
@@ -415,7 +418,7 @@ export default function StudyPage() {
         // fetch above for why.
         const referring = clinical?.referrer || study.referring_physician;
         const chips: { icon: typeof Hash; label: string; value: string }[] = [
-          { icon: Hash, label: "MRN", value: study.patient_id || "—" },
+          ...(mrnOnly ? [] : [{ icon: Hash, label: "MRN", value: study.patient_id || "—" }]),
           { icon: FileText, label: "Accession", value: study.accession_number || "—" },
           ...(study.body_part_examined ? [{ icon: Stethoscope, label: "Body Part", value: study.body_part_examined }] : []),
           ...(referring ? [{ icon: User, label: "Referring", value: referring }] : []),
@@ -432,12 +435,16 @@ export default function StudyPage() {
             <div className="px-5 sm:px-6 pt-5 pb-4 flex items-start justify-between gap-5 flex-wrap">
               <div className="flex items-start gap-4 min-w-0">
                 <div className={`relative grid place-items-center w-16 h-16 rounded-2xl bg-gradient-to-br ${grad} text-white text-xl font-bold shrink-0 shadow-glow ring-4 ring-black/[0.03] dark:ring-white/[0.06]`}>
-                  {initials}
+                  {initials ?? <User className="w-7 h-7" aria-hidden="true" />}
                 </div>
                 <div className="min-w-0">
                   <div className="flex items-center gap-3 flex-wrap">
                     <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100 truncate">
-                      {formatPatientName(study.patient_name)}
+                      {mrnOnly ? (
+                        <><span className="text-base font-semibold text-gray-400 dark:text-gray-500 mr-2">MRN</span>{study.patient_id || "—"}</>
+                      ) : (
+                        formatPatientName(study.patient_name)
+                      )}
                     </h1>
                     <StatusBadge variant="reading" status={rs} assignedTo={study.assigned_to_username} />
                   </div>

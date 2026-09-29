@@ -41,6 +41,7 @@ router = APIRouter(tags=["results"])
 # a fast 2-D matplotlib render. Bounded LRU so memory stays under control.
 import asyncio
 from collections import OrderedDict
+from app.domain.patient_identity import displayed_patient_name
 
 _FUSED_VOL_CACHE: "OrderedDict[tuple[str, str], dict]" = OrderedDict()
 _FUSED_VOL_CACHE_MAX = 2
@@ -208,7 +209,9 @@ async def download_report_pdf(
     qa_flags = [f.value if hasattr(f, "value") else f for f in result.qa_flags]
     pdf_bytes = generate_report_pdf(
         study_uid=result.study_instance_uid,
-        patient_name=study_rec.patient_name if study_rec else None,
+        patient_name=displayed_patient_name(
+            study_rec.patient_name, study_rec.patient_id, get_settings().display_patient_names
+        ) if study_rec else None,
         patient_id=study_rec.patient_id if study_rec else None,
         study_date=study_rec.study_date if study_rec else None,
         study_description=study_rec.study_description if study_rec else None,
@@ -422,7 +425,9 @@ async def get_portal_result(
         "expires_at": link["expires_at"],
         "result": _to_response(result),
         "study": {
-            "patient_name": study_rec.patient_name if study_rec else None,
+            "patient_name": displayed_patient_name(
+                study_rec.patient_name, study_rec.patient_id, get_settings().display_patient_names
+            ) if study_rec else None,
             "patient_id": study_rec.patient_id if study_rec else None,
             "study_date": study_rec.study_date.isoformat() if study_rec and study_rec.study_date else None,
             "study_description": study_rec.study_description if study_rec else None,

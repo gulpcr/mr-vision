@@ -16,6 +16,8 @@ from app.domain.interfaces import (
 )
 from app.domain.models import AuditEntry, Series, Study
 from app.infrastructure.dicomweb.client import DICOMwebClient
+from app.config import get_settings
+from app.domain.patient_identity import displayed_patient_name
 
 logger = structlog.get_logger(__name__)
 
@@ -440,7 +442,10 @@ class StudyService:
                 study = await self.ingest_study(uid)
                 studies_ingested.append(
                     {"study_instance_uid": study.study_instance_uid,
-                     "patient_name": study.patient_name,
+                     "patient_name": displayed_patient_name(
+                         study.patient_name, study.patient_id,
+                         get_settings().display_patient_names,
+                     ),
                      "patient_id": study.patient_id,
                      "modality": study.modality,
                      "series_count": len(study.series or [])}

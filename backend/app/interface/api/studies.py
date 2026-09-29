@@ -38,6 +38,7 @@ from app.interface.schemas.study import (
 )
 
 from app.domain.permissions import STUDY_READ
+from app.domain.patient_identity import displayed_patient_name
 
 router = APIRouter(prefix="/studies", tags=["studies"])
 
@@ -376,6 +377,9 @@ async def list_orthanc_studies(
         studies = await client.list_all_studies()
     finally:
         await client.close()
+    show = get_settings().display_patient_names
+    for s in studies:
+        s["patient_name"] = displayed_patient_name(s.get("patient_name"), s.get("patient_id"), show)
     if getattr(request.state, "is_platform_admin", False):
         return studies
     owned = await service.owned_study_uids([s["study_instance_uid"] for s in studies])
@@ -455,7 +459,9 @@ def _to_response(study) -> StudyResponse:
         tat_report_minutes=_tat_minutes(study.created_at, reported_at),
         tat_signoff_minutes=_tat_minutes(study.created_at, signed_at),
         patient_id=study.patient_id,
-        patient_name=study.patient_name,
+        patient_name=displayed_patient_name(
+            study.patient_name, study.patient_id, get_settings().display_patient_names
+        ),
         patient_sex=study.patient_sex,
         patient_age=study.patient_age,
         patient_weight_kg=study.patient_weight_kg,

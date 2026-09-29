@@ -11,7 +11,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { TableSkeleton } from "@/components/ui/TableSkeleton";
 import { Table, Caption, Th, SortableTh } from "@/components/ui/Table";
 import { CountUp } from "@/components/ui/CountUp";
-import { formatDate, formatPatientName, parseUtcDate } from "@/lib/format";
+import { formatDate, formatPatientName, labelIsMrn, parseUtcDate } from "@/lib/format";
 import { useLocale } from "@/lib/i18n";
 import Link from "next/link";
 import {
@@ -841,9 +841,11 @@ export default function WorklistPage() {
                       {/* Patient */}
                       <td className="py-2.5 px-3">
                         <p className="font-semibold text-gray-900 dark:text-gray-100 transition-colors group-hover:text-primary-600 dark:group-hover:text-primary-400">
-                          {formatPatientName(study.patient_name)}
+                          {labelIsMrn(study) ? study.patient_id || "—" : formatPatientName(study.patient_name)}
                         </p>
-                        <p className="text-xs text-gray-400 dark:text-gray-500">{study.patient_id || "—"}</p>
+                        {!labelIsMrn(study) && (
+                          <p className="text-xs text-gray-400 dark:text-gray-500">{study.patient_id || "—"}</p>
+                        )}
                       </td>
 
                       {/* Study */}

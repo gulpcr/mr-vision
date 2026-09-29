@@ -22,6 +22,8 @@ from app.infrastructure.database.models import (
     ResultRecord,
     StudyRecord,
 )
+from app.config import get_settings
+from app.domain.patient_identity import displayed_patient_name
 
 _PERIOD_DAYS = {"1d": 1, "7d": 7, "30d": 30, "90d": 90}
 _OPEN_ALERT_STATUSES = ("pending", "escalated", "notified")
@@ -68,7 +70,9 @@ def _study_uid_scope(ctx: WidgetContext, uid_column):
 def _study_row(r: StudyRecord) -> dict[str, Any]:
     return {
         "study_instance_uid": r.study_instance_uid,
-        "patient_name": r.patient_name,
+        "patient_name": displayed_patient_name(
+            r.patient_name, r.patient_id, get_settings().display_patient_names
+        ),
         "patient_id": r.patient_id,
         "modality": r.modality,
         "description": r.study_description,

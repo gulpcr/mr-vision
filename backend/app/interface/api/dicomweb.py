@@ -1,4 +1,4 @@
-"""DICOMweb QIDO passthroughs for the viewer: tenant filtering + series filtering.
+"""DICOMweb passthroughs for the viewer: tenant filtering, series filtering, MRN display.
 
 Both endpoints authenticate the viewer-session cookie (viewer_access.py) — the PACS is
 shared by every tenant, so the study search returns only studies owned by the viewer's
@@ -12,6 +12,11 @@ nginx routes only that one QIDO endpoint here; every other DICOMweb request (stu
 search, instance metadata, WADO pixels) still goes straight to Orthanc, so pixel
 retrieval is untouched. On any error — or if filtering would remove every series —
 we return Orthanc's response verbatim, so the viewer never breaks because of us.
+
+Patient names: unless DISPLAY_PATIENT_NAMES is on, every DICOM JSON answer the viewer
+gets (study search, series list, series/study metadata — nginx routes metadata here too)
+carries the MRN in PatientName (0010,0010), and a study search cannot filter by name.
+Pixels, bulk data and the DICOM files in the PACS are untouched.
 """
 from __future__ import annotations
 
@@ -36,7 +41,45 @@ router = APIRouter(prefix="/dicomweb", tags=["dicomweb"])
 # DICOM JSON model tag keys (group+element, no comma).
 _SERIES_DESCRIPTION = "0008103E"
 _STUDY_INSTANCE_UID = "0020000D"
+_PATIENT_NAME = "00100010"
+_PATIENT_ID = "00100020"
+_OTHER_PATIENT_NAMES = "00101001"
 _DICOM_JSON = "application/dicom+json"
+# QIDO filters that would let a name search find (and so reveal) a patient.
+_NAME_QUERY_KEYS = {"PatientName", _PATIENT_NAME}
+
+
+def _names_hidden() -> bool:
+    return not get_settings().display_patient_names
+
+
+def _mask_patient_names(node) -> None:
+    """In place: PatientName := the dataset's PatientID (MRN), recursively through
+    sequences; other patient names are dropped."""
+    if isinstance(node, list):
+        for item in node:
+            _mask_patient_names(item)
+        return
+    if not isinstance(node, dict):
+        return
+    if _PATIENT_NAME in node or _PATIENT_ID in node:
+        mrn = _tag_value(node, _PATIENT_ID)
+        node[_PATIENT_NAME] = (
+            {"vr": "PN", "Value": [{"Alphabetic": mrn}]} if mrn else {"vr": "PN"}
+        )
+        node.pop(_OTHER_PATIENT_NAMES, None)
+    for element in node.values():
+        if isinstance(element, dict) and isinstance(element.get("Value"), list):
+            for item in element["Value"]:
+                if isinstance(item, dict):
+                    _mask_patient_names(item)
+
+
+def _query_params(request: Request) -> dict[str, str]:
+    params = dict(request.query_params)
+    if _names_hidden():
+        params = {k: v for k, v in params.items() if k not in _NAME_QUERY_KEYS}
+    return params
 
 
 def _tag_value(item: dict, tag: str) -> str:
@@ -65,7 +108,7 @@ async def filtered_study_search(request: Request) -> Response:
     ) as client:
         upstream = await client.get(
             f"{settings.dicomweb_url}/studies",
-            params=dict(request.query_params),
+            params=_query_params(request),
             headers={"Accept": accept},
         )
     if upstream.status_code != 200:
@@ -79,6 +122,8 @@ async def filtered_study_search(request: Request) -> Response:
 
     owned = await owned_study_uids(viewer, [_tag_value(s, _STUDY_INSTANCE_UID) for s in studies])
     kept = [s for s in studies if _tag_value(s, _STUDY_INSTANCE_UID) in owned]
+    if _names_hidden():
+        _mask_patient_names(kept)
     return Response(content=json.dumps(kept).encode(), media_type=_DICOM_JSON)
 
 
@@ -105,7 +150,7 @@ async def filtered_series(study_uid: str, request: Request) -> Response:
             timeout=httpx.Timeout(60.0, connect=15.0),
         ) as client:
             upstream = await client.get(
-                url, params=dict(request.query_params), headers={"Accept": accept}
+                url, params=_query_params(request), headers={"Accept": accept}
             )
     except Exception as exc:
         logger.error("dicomweb_series_proxy_failed", study_uid=study_uid, error=str(exc))
@@ -138,4 +183,54 @@ async def filtered_series(study_uid: str, request: Request) -> Response:
         except Exception as exc:
             logger.warning("dicomweb_series_filter_failed", study_uid=study_uid, error=str(exc))
 
+    if _names_hidden() and upstream.status_code == 200:
+        content, media_type = _masked_json(content, media_type, study_uid)
     return Response(content=content, media_type=media_type, status_code=upstream.status_code)
+
+
+def _masked_json(content: bytes, media_type: str, study_uid: str) -> tuple[bytes, str]:
+    try:
+        data = json.loads(content or b"[]")
+    except ValueError:
+        # Never pass an unmaskable answer through while names are hidden.
+        logger.warning("dicomweb_mask_unparseable", study_uid=study_uid)
+        raise HTTPException(status_code=502, detail="Unparseable DICOMweb response from PACS")
+    _mask_patient_names(data)
+    return json.dumps(data).encode(), _DICOM_JSON
+
+
+async def _proxy_metadata(request: Request, study_uid: str, path: str) -> Response:
+    viewer = resolve_viewer(request)
+    if viewer is None:
+        raise HTTPException(status_code=401, detail="Viewer session required")
+    if not await viewer_can_access_study(viewer, study_uid):
+        raise HTTPException(status_code=404, detail="Study not found")
+    settings = get_settings()
+    async with httpx.AsyncClient(
+        auth=(settings.orthanc_username, settings.orthanc_password),
+        timeout=httpx.Timeout(120.0, connect=15.0),
+    ) as client:
+        upstream = await client.get(
+            f"{settings.dicomweb_url}{path}",
+            params=dict(request.query_params),
+            headers={"Accept": request.headers.get("accept", _DICOM_JSON)},
+        )
+    content = upstream.content
+    media_type = upstream.headers.get("content-type", _DICOM_JSON)
+    if _names_hidden() and upstream.status_code == 200:
+        content, media_type = _masked_json(content, media_type, study_uid)
+    return Response(content=content, media_type=media_type, status_code=upstream.status_code)
+
+
+@router.get("/studies/{study_uid}/series/{series_uid}/metadata")
+async def series_metadata(study_uid: str, series_uid: str, request: Request) -> Response:
+    """WADO-RS series metadata (what OHIF reads PatientName from) with the MRN shown."""
+    return await _proxy_metadata(
+        request, study_uid, f"/studies/{study_uid}/series/{series_uid}/metadata"
+    )
+
+
+@router.get("/studies/{study_uid}/metadata")
+async def study_metadata(study_uid: str, request: Request) -> Response:
+    """WADO-RS study metadata with the MRN shown."""
+    return await _proxy_metadata(request, study_uid, f"/studies/{study_uid}/metadata")

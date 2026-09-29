@@ -3,7 +3,7 @@
 import { useState, useMemo, useRef, useEffect } from "react";
 import { useOrthancStudies, useStudies } from "@/lib/hooks";
 import { api, DicomUploadResult } from "@/lib/api";
-import { formatDate, formatPatientName } from "@/lib/format";
+import { formatDate, formatPatientName, labelIsMrn } from "@/lib/format";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import {
   Upload,
@@ -508,6 +508,10 @@ export default function UploadPage() {
     );
   });
 
+  // Patient names are hidden (MRN shown) unless the backend's DISPLAY_PATIENT_NAMES is on;
+  // then the Patient column would only repeat the MRN column.
+  const pacsNamesShown = filtered.some((s) => !labelIsMrn(s));
+
   const allFilteredSelected = filtered.length > 0 && filtered.every((s) => selected.has(s.orthanc_id));
 
   function toggleSelected(orthancId: string) {
@@ -808,7 +812,9 @@ export default function UploadPage() {
                       className="accent-primary-600 cursor-pointer"
                     />
                   </th>
-                  <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase tracking-wider">Patient</th>
+                  {pacsNamesShown && (
+                    <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase tracking-wider">Patient</th>
+                  )}
                   <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase tracking-wider">MRN</th>
                   <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase tracking-wider">Date</th>
                   <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase tracking-wider">Description</th>
@@ -838,9 +844,11 @@ export default function UploadPage() {
                           className="accent-primary-600 cursor-pointer"
                         />
                       </td>
-                      <td className="px-3 py-3">
-                        <p className="font-semibold text-gray-900 dark:text-gray-100">{formatPatientName(s.patient_name)}</p>
-                      </td>
+                      {pacsNamesShown && (
+                        <td className="px-3 py-3">
+                          <p className="font-semibold text-gray-900 dark:text-gray-100">{formatPatientName(s.patient_name)}</p>
+                        </td>
+                      )}
                       <td className="px-3 py-3 text-gray-600 dark:text-gray-300 font-mono text-xs">{s.patient_id || "—"}</td>
                       <td className="px-3 py-3 text-gray-600 dark:text-gray-300 whitespace-nowrap">{formatDate(s.study_date)}</td>
                       <td className="px-3 py-3 text-gray-700 dark:text-gray-300 max-w-[200px]">

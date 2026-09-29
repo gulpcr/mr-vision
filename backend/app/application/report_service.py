@@ -22,7 +22,8 @@ from reportlab.platypus import (
     TableStyle,
 )
 
-from app.application.dicom_demographics import format_person_name
+from app.application.dicom_demographics import format_person_name
+from app.config import get_settings
 
 # Brand colours
 _DARK_BLUE = colors.HexColor("#0a6bff")
@@ -107,6 +108,7 @@ def generate_report_pdf(
     result_date_str = (
         result_created_at.strftime("%B %d, %Y %H:%M UTC") if result_created_at else "—"
     )
+    names_shown = get_settings().display_patient_names
     info_data = [
         [
             Paragraph("PATIENT", info_label),
@@ -114,6 +116,12 @@ def generate_report_pdf(
             Paragraph(format_person_name(patient_name, "—"), info_val),
             Paragraph("PATIENT ID", info_label),
             Paragraph(patient_id or "—", info_val),
+        ] if names_shown else [
+            # Names hidden: the MRN (PATIENT ID) is the patient's only identifier here.
+            Paragraph("PATIENT ID", info_label),
+            Paragraph(patient_id or "—", info_val),
+            Paragraph("", info_label),
+            Paragraph("", info_val),
         ],
         [
             Paragraph("STUDY DATE", info_label),

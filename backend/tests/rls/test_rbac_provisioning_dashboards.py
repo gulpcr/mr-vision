@@ -54,6 +54,8 @@ PUBLIC_OR_SELF_AUTH = {
     "/api/auth/mfa/verify", "/api/auth/invitations/accept", "/api/tenant/public-branding",
     "/api/dicom/upload", "/api/orthanc/notify-stable-study", "/api/internal/dicomweb-authz",
     "/api/dicomweb/studies", "/api/dicomweb/studies/{study_uid}/series",
+    "/api/dicomweb/studies/{study_uid}/series/{series_uid}/metadata",
+    "/api/dicomweb/studies/{study_uid}/metadata",
 }
 # Any authenticated user (self-service or shared reference data).
 AUTHENTICATED_ONLY = {

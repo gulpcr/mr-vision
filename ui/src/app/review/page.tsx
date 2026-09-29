@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { api, type ReviewPriority, type ReviewQueueResponse } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
-import { formatDateTime, formatPatientName } from "@/lib/format";
+import { formatDateTime, formatPatientName, labelIsMrn } from "@/lib/format";
 import { PriorityBadge, PRIORITY_META } from "@/components/reports/PriorityBadge";
 import { ErrorBanner } from "@/components/ui/ErrorBanner";
 import { PenLine, RefreshCw } from "lucide-react";
@@ -141,8 +141,14 @@ export default function ReviewQueuePage() {
                   <PriorityBadge priority={i.priority} overridden={i.priority_overridden} />
                 </td>
                 <td className="py-2.5 px-4">
-                  <p className="font-medium text-gray-900 dark:text-gray-100">{formatPatientName(i.patient_name) || "—"}</p>
-                  <p className="text-xs text-gray-500 dark:text-gray-400 font-mono">{i.patient_id || ""}</p>
+                  {labelIsMrn(i) ? (
+                    <p className="font-medium font-mono text-gray-900 dark:text-gray-100">{i.patient_id || "—"}</p>
+                  ) : (
+                    <>
+                      <p className="font-medium text-gray-900 dark:text-gray-100">{formatPatientName(i.patient_name) || "—"}</p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400 font-mono">{i.patient_id || ""}</p>
+                    </>
+                  )}
                 </td>
                 <td className="py-2.5 px-4">
                   <p className="text-gray-800 dark:text-gray-200">

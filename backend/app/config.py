@@ -85,6 +85,13 @@ class Settings(BaseSettings):
     # for legacy OR-matching (modality OR any region condition).
     routing_require_region_match: bool = True
 
+    # Patient identity on screen: False (default) shows the MRN (DICOM PatientID) wherever
+    # a patient name would appear — UI, PDF reports, the OHIF viewer (DICOMweb responses
+    # are rewritten). Stored data is untouched, and machine interfaces (DICOM SR/SEG
+    # written back to the PACS, modality worklist, FHIR) keep the real name so the PACS
+    # files objects under the right patient. True restores patient names on screen.
+    display_patient_names: bool = False
+
     # Viewer: hide non-diagnostic series (localizers, shim/calibration, field
     # maps, scouts) from the OHIF series list by filtering the QIDO /series
     # response. OHIF builds its thumbnails/viewports from whatever that query

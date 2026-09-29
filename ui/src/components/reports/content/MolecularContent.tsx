@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { api, Study, Result, ClinicalForStudy } from "@/lib/api";
 import { fmtAge, fmtSex, fmtDate as fmtReportDate } from "@/lib/reportFormat";
+import { labelIsMrn } from "@/lib/format";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { AIProvenanceBanner } from "@/components/ui/AIProvenanceBanner";
 import { ReportShell } from "@/components/reports/ReportShell";
@@ -273,7 +274,7 @@ export function MolecularContent({ study, result, onSignedOff }: MolecularConten
 
       {/* Patient table */}
       <div className="grid grid-cols-3 gap-x-6 gap-y-1 border border-gray-800 rounded p-3 mb-4">
-        <Field label="Name" value={study.patient_name || "—"} />
+        {!labelIsMrn(study) && <Field label="Name" value={study.patient_name || "—"} />}
         <Field label="PRN" value={study.patient_id || "—"} />
         <Field label="Date" value={fmtReportDate(study.study_date)} />
         <Field label="Ref. Dr / Hosp" value={refDr} />

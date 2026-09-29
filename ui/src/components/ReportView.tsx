@@ -13,6 +13,7 @@ import {
   formatDateTime,
   formatPatientName,
   getNestedValue,
+  labelIsMrn,
 } from "@/lib/format";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { AIProvenanceBanner } from "@/components/ui/AIProvenanceBanner";
@@ -101,12 +102,14 @@ export function ReportView({ study, result, uiSchema, compact = false, reportHre
 
         {/* Patient & Study Info Grid */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-x-8 gap-y-2 mt-5 text-sm">
-          <div>
-            <span className="text-gray-400 dark:text-gray-500 text-xs uppercase tracking-wider">Patient</span>
-            <p className="font-semibold text-gray-900 dark:text-gray-100">
-              {formatPatientName(study.patient_name)}
-            </p>
-          </div>
+          {!labelIsMrn(study) && (
+            <div>
+              <span className="text-gray-400 dark:text-gray-500 text-xs uppercase tracking-wider">Patient</span>
+              <p className="font-semibold text-gray-900 dark:text-gray-100">
+                {formatPatientName(study.patient_name)}
+              </p>
+            </div>
+          )}
           <div>
             <span className="text-gray-400 dark:text-gray-500 text-xs uppercase tracking-wider">MRN</span>
             <p className="font-semibold text-gray-900 dark:text-gray-100">{study.patient_id || "-"}</p>

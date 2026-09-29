@@ -89,3 +89,13 @@ export function formatPatientName(name: string | null | undefined): string {
   if (!name) return "Unknown";
   return name.replace(/\^/g, " ").replace(/\s+/g, " ").trim();
 }
+
+/**
+ * True when a patient's displayed label already IS their MRN. Unless the backend's
+ * DISPLAY_PATIENT_NAMES is on, it sends the MRN in `patient_name`, so views that show
+ * "name + MRN" show the MRN once instead of twice.
+ */
+export function labelIsMrn(p: { patient_name?: string | null; patient_id?: string | null }): boolean {
+  const mrn = (p.patient_id ?? "").trim();
+  return !p.patient_name || (!!mrn && formatPatientName(p.patient_name) === mrn);
+}
