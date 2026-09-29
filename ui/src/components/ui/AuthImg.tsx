@@ -9,6 +9,7 @@ interface AuthImgProps {
   fallback?: React.ReactNode;
   loadingClassName?: string;
   errorClassName?: string;
+  onLoad?: (e: React.SyntheticEvent<HTMLImageElement>) => void;
 }
 
 // Renders a JWT-protected image (artifact/preview/fused-render) via the shared
@@ -21,11 +22,12 @@ export function AuthImg({
   fallback = "Image not available",
   loadingClassName = "h-48 bg-gray-900 rounded-lg animate-pulse motion-reduce:animate-none",
   errorClassName = "flex items-center justify-center h-48 text-gray-500 dark:text-gray-400 text-xs bg-black rounded-lg",
+  onLoad,
 }: AuthImgProps) {
   const { objectUrl, loading, error } = useAuthenticatedImage(src);
 
   if (error) return <div className={errorClassName}>{fallback}</div>;
   if (loading || !objectUrl) return <div className={loadingClassName} />;
   /* eslint-disable-next-line @next/next/no-img-element */
-  return <img src={objectUrl} alt={alt} className={className} />;
+  return <img src={objectUrl} alt={alt} className={className} onLoad={onLoad} />;
 }

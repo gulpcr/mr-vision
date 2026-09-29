@@ -67,21 +67,42 @@ class SliceWindow(BaseModel):
     width: float
 
 
+class SlicePanel(BaseModel):
+    """One sequence panel of an MRI montage tile, resolved to its own series' image."""
+
+    sequence: str
+    rect: list[float]  # [x0, y0, x1, y1] as fractions of the tile image
+    is_reference: bool = False
+    clickable: bool = False
+    reason: str | None = None  # why the panel is not linked
+    series_instance_uid: str | None = None
+    sop_instance_uid: str | None = None
+    instance_number: int | None = None
+    stack_position: int | None = None
+    n_images: int | None = None
+    slice_offset: float | None = None  # fraction of a slice between the panel and the image
+
+
 class SliceLinkTile(BaseModel):
     artifact_name: str
     z: int
     window: SliceWindow | None = None
-    sop_instance_uid: str
+    # CT: the tile's image. MRI: the montage's primary (reference) panel, if linked.
+    sop_instance_uid: str | None = None
+    series_instance_uid: str | None = None  # MRI only (CT uses the response's series)
     instance_number: int | None = None
     stack_position: int | None = None
     reported: bool = False  # got the detailed (Pass-2) read; appears in the report
     overview: bool = False  # evenly-spread preview tile, stored flagged or not
     screen_flagged: bool = False  # flagged by the Pass-1 screening scan
     finding: str | None = None
+    plane: str | None = None  # MRI only
+    panels: list[SlicePanel] = []  # MRI only
 
 
 class FlaggedImage(BaseModel):
     z: int
+    series_instance_uid: str | None = None  # MRI only (each panel's own series)
     sop_instance_uid: str
     instance_number: int | None = None
     stack_position: int | None = None
@@ -90,7 +111,7 @@ class FlaggedImage(BaseModel):
 
 
 class FlaggedSlicesResponse(BaseModel):
-    """CT-report slice tiles resolved to the exact DICOM images the viewer shows."""
+    """CT/MRI report slice tiles resolved to the exact DICOM images the viewer shows."""
 
     supported: bool
     resolved: bool

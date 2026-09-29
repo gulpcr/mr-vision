@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useParams } from "next/navigation";
-import { api, Study, Job, Result, CptSuggestion, ProtocolCheckResult, ComparisonData, ClinicalForStudy, FlaggedSlices, SliceLinkTile } from "@/lib/api";
+import { api, Study, Job, Result, CptSuggestion, ProtocolCheckResult, ComparisonData, ClinicalForStudy, FlaggedSlices, SliceJumpTarget } from "@/lib/api";
 import { attachFlagHighlight, jumpToImage, waitForOhif, type FlagInfo } from "@/lib/ohifBridge";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { ReportSignoffPanel } from "@/components/reports/ReportSignoffPanel";
@@ -363,19 +363,24 @@ export default function StudyPage() {
   const petResult = results.find((r) => r.usecase_name.startsWith("pet_ct"));
   const showNativeFused = hasPetSeries && !!petResult;
 
-  const handleSliceClick = async (tile: SliceLinkTile) => {
-    const seriesUid = flaggedSlices?.series_instance_uid;
-    if (!seriesUid || showNativeFused) return;
+  const handleSliceClick = async (target: SliceJumpTarget) => {
+    if (showNativeFused) return;
     viewerSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     setViewerNotice(null);
     const outcome = await jumpToImage(
       viewerRef.current,
-      { seriesInstanceUID: seriesUid, sopInstanceUID: tile.sop_instance_uid, window: tile.window },
+      {
+        seriesInstanceUID: target.seriesInstanceUID,
+        sopInstanceUID: target.sopInstanceUID,
+        window: target.window,
+      },
       viewerUrl,
     );
     if (outcome === "reloaded") {
       setViewerNotice(
-        `Viewer reopened at image ${tile.instance_number ?? ""} — the tile's W/L could not be applied.`,
+        target.window
+          ? `Viewer reopened at ${target.label} — the tile's W/L could not be applied.`
+          : `Viewer reopened at ${target.label}.`,
       );
     }
   };

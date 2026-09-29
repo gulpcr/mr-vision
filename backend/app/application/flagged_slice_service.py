@@ -17,8 +17,13 @@ as a viewer VOI range. Works for results produced before the pipelines started r
 ``series_instance_uid``/``window_settings`` (series then resolved by description + slice
 count, windows from the plugin's config).
 
-MRI report plugins are deliberately unsupported: their tiles are multi-sequence montages
-resampled onto a canonical reference grid, so a tile is not a single DICOM image.
+MRI report plugins render multi-sequence montages resampled onto a reference grid, so a
+tile is not one DICOM image. Their pipelines record, per montage panel, its position in the
+image, its source series and the source-volume slice its pixels came from, plus how far
+that index varies across the panel (``summary.tile_geometry``). A panel drawn from a single
+source slice resolves to that native image (by the same stacking order); a panel whose
+index varies by a slice or more was reformatted from a series acquired in another plane
+and is left unlinked. Results that predate ``tile_geometry`` are not linked (re-run).
 """
 
 import asyncio
@@ -43,6 +48,11 @@ CT_SLICE_LINK_USECASES: frozenset[str] = frozenset(
 )
 
 _TILE_RE = re.compile(r"^slc_(\d+)_z(\d+)_(.+)\.png$")
+# MRI montage tiles: ``{window}_{order}_z{z}_montage.png`` (pipeline._render_plane).
+_MRI_TILE_RE = re.compile(r"^(.+)_(\d+)_z(\d+)_montage\.png$")
+# A panel whose source slice index varies by at least this much across the panel samples
+# several native slices: it is a reformat from another plane, not one native image.
+_MAX_SLICE_SPREAD = 1.0
 _WINDOW_TAG_RE = re.compile(r"^\s*\[[^\]]*\]\s*")
 _USECASES_DIR = Path(__file__).resolve().parent.parent / "usecases"
 # Consecutive slice gaps beyond this multiple of the median gap count as "irregular".
@@ -72,10 +82,13 @@ def _slice_normal(iop: tuple[float, ...] | None) -> tuple[float, float, float]:
 
 def order_like_volume(instances: list[InstanceGeometry]) -> list[tuple[float, InstanceGeometry]]:
     """Instances in volume-index order (index == pipeline ``z``), with each one's
-    position along the slice normal. Mirrors GDCM's IPP ordering: ascending distance."""
+    position along the slice normal. Mirrors GDCM's IPP ordering: ascending distance along
+    the normal of the lowest-InstanceNumber image — also for series whose images do not
+    share one orientation (multi-slab), verified against the pipeline's SimpleITK volumes."""
     if not instances:
         return []
-    n = _slice_normal(instances[0].image_orientation)
+    first = min(instances, key=lambda g: (g.instance_number is None, g.instance_number or 0))
+    n = _slice_normal(first.image_orientation)
     keyed = [
         (sum(p * q for p, q in zip(g.image_position, n)), g) for g in instances
     ]
@@ -145,7 +158,7 @@ class FlaggedSliceService:
             return None
 
         base: dict[str, Any] = {
-            "supported": usecase in CT_SLICE_LINK_USECASES,
+            "supported": usecase in CT_REPORT_USECASES,
             "resolved": False,
             "reason": None,
             "series_instance_uid": None,
@@ -155,8 +168,10 @@ class FlaggedSliceService:
             "flagged_images": [],
         }
         if not base["supported"]:
-            base["reason"] = "Viewer links are available for CT report use cases only."
+            base["reason"] = "Viewer links are available for the CT and MRI report use cases only."
             return base
+        if usecase not in CT_SLICE_LINK_USECASES:
+            return await self._mri_slice_links(study_uid, usecase, result, base)
 
         summary = result.summary or {}
         dims = summary.get("image_dimensions") or []
@@ -248,6 +263,139 @@ class FlaggedSliceService:
         base.update(resolved=True, tiles=tiles, flagged_images=flagged_images)
         return base
 
+    # -- MRI montages -------------------------------------------------------------
+
+    async def _mri_slice_links(
+        self, study_uid: str, usecase: str, result: Any, base: dict[str, Any]
+    ) -> dict[str, Any]:
+        summary = result.summary or {}
+        geometry = summary.get("tile_geometry")
+        if not isinstance(geometry, dict) or not geometry:
+            base["reason"] = (
+                "This MRI result predates viewer links; re-run the analysis to make its "
+                "slices clickable."
+            )
+            return base
+
+        findings_by_z = self._findings_by_z(summary.get("anomaly_findings"))
+        plugin_cfg = await asyncio.to_thread(_load_plugin_config, usecase)
+
+        z_of: dict[str, int] = {}
+        for name in geometry:
+            m = _MRI_TILE_RE.match(name)
+            if m:
+                z_of[name] = int(m.group(3))
+        slice_tiles: list[tuple[str, int, str]] = [
+            (a.name, z_of[a.name], "")
+            for a in result.artifacts
+            if a.artifact_type == f"{usecase}_slice_png" and a.name in z_of
+        ]
+        preview_z, report_z = self._tile_roles(summary, slice_tiles, findings_by_z, plugin_cfg)
+
+        uids = {
+            p["series_instance_uid"]
+            for g in geometry.values() if isinstance(g, dict)
+            for p in g.get("panels") or [] if p.get("series_instance_uid")
+        }
+
+        async def fetch(uid: str) -> tuple[str, list[InstanceGeometry] | None]:
+            try:
+                return uid, await self._pacs.get_series_instance_geometry(study_uid, uid)
+            except Exception as exc:  # series deleted / PACS unavailable
+                logger.warning("flagged_slices_mri_geometry_failed", series=uid, error=str(exc))
+                return uid, None
+
+        fetched = await asyncio.gather(*(fetch(u) for u in sorted(uids)))
+        index = {uid: _SeriesIndex.build(inst) for uid, inst in fetched if inst}
+
+        def resolve(level: dict[str, Any]) -> list[dict[str, Any]]:
+            ref_seq = level.get("reference_sequence")
+            out = []
+            for p in level.get("panels") or []:
+                uid = p.get("series_instance_uid")
+                panel = {
+                    "sequence": p.get("sequence") or "",
+                    "rect": p.get("rect") or [0.0, 0.0, 1.0, 1.0],
+                    "is_reference": p.get("sequence") == ref_seq,
+                    "clickable": False,
+                    "reason": None,
+                    "series_instance_uid": uid,
+                    "sop_instance_uid": None,
+                    "instance_number": None,
+                    "stack_position": None,
+                    "n_images": None,
+                    "slice_offset": None,
+                }
+                idx = index.get(uid) if uid else None
+                if idx is None:
+                    panel["reason"] = "This sequence's series is not available in the PACS."
+                else:
+                    panel["n_images"] = idx.n_images
+                    hit, why = idx.slice_for(p.get("slice_index"), p.get("slice_spread"), p.get("n_slices"))
+                    if hit is None:
+                        panel["reason"] = why
+                    else:
+                        g, offset = hit
+                        panel.update(
+                            clickable=True,
+                            sop_instance_uid=g.sop_instance_uid,
+                            instance_number=g.instance_number,
+                            stack_position=idx.stack_pos.get(g.sop_instance_uid),
+                            slice_offset=round(offset, 3),
+                        )
+                out.append(panel)
+            return out
+
+        panels_by_name = {n: resolve(g) for n, g in geometry.items() if isinstance(g, dict)}
+
+        def primary(panels: list[dict[str, Any]]) -> dict[str, Any] | None:
+            live = [p for p in panels if p["clickable"]]
+            return next((p for p in live if p["is_reference"]), live[0] if live else None)
+
+        tiles: list[dict[str, Any]] = []
+        for name, z, _ in slice_tiles:
+            panels = panels_by_name.get(name) or []
+            head = primary(panels)
+            tiles.append({
+                "artifact_name": name,
+                "z": z,
+                "window": None,
+                "plane": (geometry.get(name) or {}).get("plane"),
+                "series_instance_uid": head["series_instance_uid"] if head else None,
+                "sop_instance_uid": head["sop_instance_uid"] if head else None,
+                "instance_number": head["instance_number"] if head else None,
+                "stack_position": head["stack_position"] if head else None,
+                "reported": z in report_z,
+                "overview": z in preview_z and z not in report_z,
+                "screen_flagged": z in findings_by_z,
+                "finding": findings_by_z.get(z),
+                "panels": panels,
+            })
+
+        # Every flagged level's native images, in every linked series. SOP UIDs are
+        # globally unique, so the viewer highlights whichever series is on screen.
+        flagged_images = []
+        name_by_z = {z: n for n, z in z_of.items()}
+        for z in sorted(findings_by_z, reverse=True):
+            for p in panels_by_name.get(name_by_z.get(z, ""), []):
+                if p["clickable"]:
+                    flagged_images.append({
+                        "z": z,
+                        "series_instance_uid": p["series_instance_uid"],
+                        "sop_instance_uid": p["sop_instance_uid"],
+                        "instance_number": p["instance_number"],
+                        "stack_position": p["stack_position"],
+                        "finding": findings_by_z[z],
+                        "reported": z in report_z,
+                    })
+
+        if not any(t["sop_instance_uid"] for t in tiles):
+            base["reason"] = "None of this result's slices could be matched to images in the PACS."
+            base["tiles"] = tiles
+            return base
+        base.update(resolved=True, tiles=tiles, flagged_images=flagged_images)
+        return base
+
     async def _resolve_series(
         self, study_uid: str, summary: dict[str, Any], n_slices: int | None
     ) -> tuple[str | None, str | None]:
@@ -330,3 +478,43 @@ class FlaggedSliceService:
             text = _WINDOW_TAG_RE.sub("", str(f.get("finding") or "")).strip()
             out[z] = f"{out[z]}; {text}" if z in out and text else (text or out.get(z, ""))
         return out
+
+
+class _SeriesIndex:
+    """One series' images in the pipeline volume's stacking order."""
+
+    def __init__(self, ordered, stack_pos, n_images) -> None:
+        self.ordered = ordered
+        self.stack_pos = stack_pos
+        self.n_images = n_images
+
+    @classmethod
+    def build(cls, instances: list[InstanceGeometry]) -> "_SeriesIndex":
+        ordered = [g for _, g in order_like_volume(instances)]
+        by_instance = sorted(
+            instances, key=lambda g: (g.instance_number is None, g.instance_number or 0)
+        )
+        stack_pos = {g.sop_instance_uid: i + 1 for i, g in enumerate(by_instance)}
+        return cls(ordered, stack_pos, len(instances))
+
+    def slice_for(
+        self, slice_index: Any, slice_spread: Any, n_slices: Any
+    ) -> tuple[tuple[InstanceGeometry, float] | None, str | None]:
+        """The native image a panel shows, or (None, reason) when it is not one image."""
+        if slice_index is None:
+            return None, "This result does not record which image the panel shows."
+        if slice_spread is not None and float(slice_spread) >= _MAX_SLICE_SPREAD:
+            return None, (
+                "Reformatted from a series acquired in another plane; there is no native "
+                "image at this level."
+            )
+        if n_slices is not None and int(n_slices) != len(self.ordered):
+            return None, (
+                f"The series now has {len(self.ordered)} images but the analysis read "
+                f"{n_slices}; re-run the analysis to relink."
+            )
+        k = int(round(float(slice_index)))
+        if not 0 <= k < len(self.ordered):
+            return None, "This level is outside the part of the body this series covers."
+        return (self.ordered[k], abs(float(slice_index) - k)), None
+

@@ -1393,6 +1393,19 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
                             })
                             existing_names.add(name)
 
+                        # MRI plugins record each montage's geometry (viewer links); keep only
+                        # the montages stored as artifacts plus every flagged level (the viewer
+                        # highlights screening-only flags too, which have no stored tile).
+                        _tile_geo = summ.get("tile_geometry")
+                        if isinstance(_tile_geo, dict):
+                            _flag_z = {int(z) for z in anomaly_z}
+                            _keep = set(existing_names) | {
+                                e.get("name") for e in manifest if int(e["z"]) in _flag_z
+                            }
+                            summ["tile_geometry"] = {
+                                k: v for k, v in _tile_geo.items() if k in _keep
+                            }
+
                         logger.info(
                             "abdomen_ct_ai_report_stored",
                             job_id=job_id, scan_windows=scan_windows,

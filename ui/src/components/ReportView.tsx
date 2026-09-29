@@ -2,7 +2,8 @@
 
 import { useRef, useState } from "react";
 import Link from "next/link";
-import { Study, Result, FlaggedSlices, SliceLinkTile, getPreviewUrl, getArtifactUrl, getFusedUrl } from "@/lib/api";
+import { Study, Result, FlaggedSlices, SliceLinkTile, SliceJumpTarget, SlicePanel, getPreviewUrl, getArtifactUrl, getFusedUrl } from "@/lib/api";
+import { MontagePanelLinks, panelLabel } from "./reports/MontagePanelLinks";
 import { isCtReportUsecase } from "@/lib/ctReport";
 import { QAPanel } from "./QAPanel";
 import { FusedViewer } from "./FusedViewer";
@@ -37,10 +38,10 @@ interface ReportViewProps {
   compact?: boolean;
   /** Link to the full dedicated report (shown as a CTA in compact mode). */
   reportHref?: string;
-  /** CT-report tiles resolved to their DICOM image; enables click-to-view. */
+  /** Report-family tiles resolved to their DICOM images; enables click-to-view. */
   sliceLinks?: FlaggedSlices | null;
-  /** Called with the tile's resolved DICOM image when a linked tile is clicked. */
-  onSliceClick?: (tile: SliceLinkTile) => void;
+  /** Called with the DICOM image to show when a linked tile (or MRI panel) is clicked. */
+  onSliceClick?: (target: SliceJumpTarget) => void;
 }
 
 const VIEWS = ["axial", "coronal", "sagittal"] as const;
@@ -50,6 +51,8 @@ export function ReportView({ study, result, uiSchema, compact = false, reportHre
   const summarySection = uiSchema?.sections?.find((s: any) => s.id === "summary");
   const tumorDetected = result.summary?.tumor_detected;
   const [zoomedView, setZoomedView] = useState<string | null>(null);
+  // Natural aspect ratio of each MRI montage tile, for aligning its panel click targets.
+  const [tileAspect, setTileAspect] = useState<Record<string, number>>({});
   const zoomDialogRef = useRef<HTMLDivElement>(null);
   useFocusTrap(zoomDialogRef, zoomedView !== null, () => setZoomedView(null));
 
@@ -277,15 +280,54 @@ export function ReportView({ study, result, uiSchema, compact = false, reportHre
               sliceLinks?.resolved ? sliceLinks.tiles.map((l) => [l.artifact_name, l]) : [],
             );
             const linkable = !!onSliceClick && linkByName.size > 0;
+            const isMontage = (sliceLinks?.tiles ?? []).some((l) => (l.panels?.length ?? 0) > 0);
+
+            // CT tile -> the one image in the analysed series; MRI panel -> its own series.
+            const ctTarget = (link: SliceLinkTile): SliceJumpTarget | null =>
+              link.sop_instance_uid && sliceLinks?.series_instance_uid
+                ? {
+                    seriesInstanceUID: sliceLinks.series_instance_uid,
+                    sopInstanceUID: link.sop_instance_uid,
+                    window: link.window,
+                    instanceNumber: link.instance_number,
+                    label: `image ${link.instance_number ?? ""}`,
+                  }
+                : null;
+            const panelTarget = (p: SlicePanel): SliceJumpTarget | null =>
+              p.clickable && p.series_instance_uid && p.sop_instance_uid
+                ? {
+                    seriesInstanceUID: p.series_instance_uid,
+                    sopInstanceUID: p.sop_instance_uid,
+                    window: null,
+                    instanceNumber: p.instance_number,
+                    label: panelLabel(p),
+                  }
+                : null;
             const unlinkedReason =
               sliceLinks && sliceLinks.supported && !sliceLinks.resolved ? sliceLinks.reason : null;
 
             const renderTile = (artifact: (typeof slices)[number], small = false) => {
               const link = linkByName.get(artifact.name);
-              const clickable = !!link && !!onSliceClick;
-              const label = link
-                ? `Image ${link.instance_number ?? "?"}${link.window ? ` · ${link.window.name}` : ""}`
-                : artifact.name.replace(/\.[^.]+$/, "").replace(/_/g, " ");
+              const panels = link?.panels ?? [];
+              // A single-panel montage is linked as a whole tile; several panels each get
+              // their own click target over the image.
+              const multiPanel = panels.length > 1;
+              const target: SliceJumpTarget | null = !link
+                ? null
+                : panels.length === 1
+                  ? panelTarget(panels[0])
+                  : panels.length === 0
+                    ? ctTarget(link)
+                    : null;
+              const clickable = !!target && !!onSliceClick;
+              const linkedPanels = panels.filter((p) => p.clickable).length;
+              const label = !link
+                ? artifact.name.replace(/\.[^.]+$/, "").replace(/_/g, " ")
+                : panels.length === 1
+                  ? panels[0].clickable ? panelLabel(panels[0]) : `${panels[0].sequence} · not linked`
+                  : multiPanel
+                    ? `${link.plane ?? "Montage"} · ${linkedPanels} of ${panels.length} sequences linked`
+                    : `Image ${link.instance_number ?? "?"}${link.window ? ` · ${link.window.name}` : ""}`;
               const reportedFlag = !!link?.reported && link.screen_flagged;
               const screeningOnly = !!link && !link.reported && link.screen_flagged;
               const tileClass =
@@ -301,11 +343,33 @@ export function ReportView({ study, result, uiSchema, compact = false, reportHre
                   <AuthImg
                     src={getArtifactUrl(study.study_instance_uid, result.usecase_name, artifact.name)}
                     alt={artifact.name}
-                    className="w-full h-full object-contain transition-transform duration-300 group-hover:scale-105"
+                    className={
+                      "w-full h-full object-contain transition-transform duration-300" +
+                      // Panel click targets must stay aligned with the image: no hover zoom.
+                      (multiPanel ? "" : " group-hover:scale-105")
+                    }
                     loadingClassName="w-full h-full bg-gray-900 animate-pulse motion-reduce:animate-none"
                     errorClassName="w-full h-full flex items-center justify-center text-gray-500 dark:text-gray-400 text-xs bg-black"
                     fallback="Slice not available"
+                    onLoad={
+                      multiPanel
+                        ? (e) => {
+                            const { naturalWidth: w, naturalHeight: h } = e.currentTarget;
+                            if (w && h) setTileAspect((m) => (m[artifact.name] === w / h ? m : { ...m, [artifact.name]: w / h }));
+                          }
+                        : undefined
+                    }
                   />
+                  {multiPanel && onSliceClick && (
+                    <MontagePanelLinks
+                      panels={panels}
+                      aspect={tileAspect[artifact.name] ?? null}
+                      onPanelClick={(p) => {
+                        const t = panelTarget(p);
+                        if (t) onSliceClick(t);
+                      }}
+                    />
+                  )}
                   {reportedFlag && (
                     <span className="absolute top-2 left-2 text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded bg-red-600 text-white">
                       Flagged
@@ -319,21 +383,21 @@ export function ReportView({ study, result, uiSchema, compact = false, reportHre
                       Screened
                     </span>
                   )}
-                  <div className={`absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/40 to-transparent ${small ? "px-2 pt-4 pb-1" : "px-2.5 pt-6 pb-1.5"} text-left`}>
+                  <div className={`pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/40 to-transparent ${small ? "px-2 pt-4 pb-1" : "px-2.5 pt-6 pb-1.5"} text-left`}>
                     <span className={`block ${small ? "text-[10px]" : "text-[11px]"} font-medium text-white/90 capitalize truncate`}>
                       {label}
                     </span>
                   </div>
                 </>
               );
-              if (clickable && link) {
+              if (clickable && link && target) {
                 const wl = link.window ? ` (W ${link.window.width} / L ${link.window.level})` : "";
                 return (
                   <button
                     key={artifact.name}
                     type="button"
-                    onClick={() => onSliceClick?.(link)}
-                    title={`Show image ${link.instance_number ?? ""} in the viewer${wl}${link.finding ? ` — ${link.finding}` : ""}`}
+                    onClick={() => onSliceClick?.(target)}
+                    title={`Show ${target.label} in the viewer${wl}${link.finding ? ` — ${link.finding}` : ""}`}
                     aria-label={`Show ${label} in the viewer`}
                     className={tileClass}
                   >
@@ -341,8 +405,14 @@ export function ReportView({ study, result, uiSchema, compact = false, reportHre
                   </button>
                 );
               }
+              const unlinkedTitle =
+                panels.length === 1 && !panels[0].clickable
+                  ? panels[0].reason ?? undefined
+                  : multiPanel
+                    ? link?.finding ?? undefined
+                    : unlinkedReason ?? undefined;
               return (
-                <div key={artifact.name} className={tileClass} title={unlinkedReason ?? undefined}>
+                <div key={artifact.name} className={tileClass} title={unlinkedTitle}>
                   {body}
                 </div>
               );
@@ -375,8 +445,10 @@ export function ReportView({ study, result, uiSchema, compact = false, reportHre
                       : "Nothing was flagged by the screening pass; the report was written from this representative sample (superior→inferior)."}
                   </p>
                   <p className="text-xs text-gray-500 dark:text-gray-400 mb-3.5">
-                    Click a slice to open it in the viewer above
-                    {sliceLinks?.series_description ? ` (series “${sliceLinks.series_description}”)` : ""}.
+                    {isMontage
+                      ? "Click a sequence panel to open that image in the viewer above. Panels reformatted from a series acquired in another plane have no matching native image and are not linked."
+                      : <>Click a slice to open it in the viewer above
+                        {sliceLinks?.series_description ? ` (series “${sliceLinks.series_description}”)` : ""}.</>}
                     {screeningOnly > 0 &&
                       ` While scrolling, reported levels are outlined in red; ${screeningOnly} further level${screeningOnly === 1 ? "" : "s"} flagged only by the fast screening pass ${screeningOnly === 1 ? "is" : "are"} outlined in dashed amber.`}
                     {sliceLinks?.spacing_irregular &&

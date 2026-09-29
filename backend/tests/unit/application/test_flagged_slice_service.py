@@ -261,12 +261,106 @@ async def test_old_result_roles_fall_back_to_stored_order_when_config_changed():
 # ── scope ─────────────────────────────────────────────────────────────────────
 
 
-async def test_mri_usecase_is_not_supported():
+async def test_mri_result_without_geometry_asks_for_a_rerun():
     svc = FlaggedSliceService(
         FakeResults(_result({}, [], usecase="brain_mri")), FakePACS([])
     )
     out = await svc.get_slice_links("1.2.3", "brain_mri")
-    assert out["supported"] is False and out["resolved"] is False
+    assert out["supported"] is True and out["resolved"] is False
+    assert "re-run" in out["reason"]
+
+
+def test_order_uses_normal_of_lowest_instance_number_for_multi_slab_series():
+    # Two slabs with different angles in ONE series (disc-angled lumbar axials). The
+    # reader stacks along the normal of the lowest-InstanceNumber image, whatever order
+    # the PACS lists the instances in.
+    tilted = (1.0, 0.0, 0.0, 0.0, 0.8, 0.6)  # normal (0, -0.6, 0.8)
+    geo = [
+        InstanceGeometry("b2", 4, (0.0, 0.0, 40.0), tilted),
+        InstanceGeometry("a1", 1, (0.0, 0.0, 10.0), AXIAL),
+        InstanceGeometry("b1", 3, (0.0, 0.0, 30.0), tilted),
+        InstanceGeometry("a2", 2, (0.0, 0.0, 20.0), AXIAL),
+    ]
+    assert [g.sop_instance_uid for _, g in order_like_volume(geo)] == ["a1", "a2", "b1", "b2"]
+
+
+def _mri_result(panels_by_name: dict[str, list[dict[str, Any]]], flagged_z: list[int]) -> Result:
+    geometry = {
+        name: {"plane": "sagittal", "reference_sequence": "T2", "panels": panels}
+        for name, panels in panels_by_name.items()
+    }
+    return _result(
+        {
+            "tile_geometry": geometry,
+            "report_z": flagged_z,
+            "anomaly_findings": [{"z": z, "finding": "disc bulge"} for z in flagged_z],
+        },
+        list(panels_by_name),
+        usecase="lumbar_spine_mri",
+    )
+
+
+class FakeMultiSeriesPACS:
+    def __init__(self, by_series):
+        self.by_series = by_series
+
+    async def get_series_instance_geometry(self, study_uid, series_uid):
+        if series_uid not in self.by_series:
+            raise LookupError(series_uid)
+        return list(self.by_series[series_uid])
+
+
+async def test_mri_panels_resolve_to_their_own_series_or_explain_why_not():
+    sag = (0.0, 1.0, 0.0, 0.0, 0.0, -1.0)  # sagittal, normal along x
+    t2 = [InstanceGeometry(f"t2-{i}", i + 1, (float(i * 4), 0.0, 0.0), sag) for i in range(5)]
+    t1 = [InstanceGeometry(f"t1-{i}", 5 - i, (float(i * 4), 0.0, 0.0), sag) for i in range(5)]
+    name = "sagittal_003_z00002_montage.png"
+    panels = [
+        {"sequence": "T2", "series_instance_uid": "T2S", "rect": [0, 0, 0.5, 1],
+         "slice_index": 2.0, "slice_spread": 0.0, "n_slices": 5},
+        {"sequence": "T1", "series_instance_uid": "T1S", "rect": [0.5, 0, 1, 1],
+         "slice_index": 1.9, "slice_spread": 0.05, "n_slices": 5},
+        {"sequence": "STIR", "series_instance_uid": "COR", "rect": [0, 0, 1, 1],
+         "slice_index": 3.0, "slice_spread": 7.5, "n_slices": 5},
+        {"sequence": "PD", "series_instance_uid": "GONE", "rect": [0, 0, 1, 1],
+         "slice_index": 1.0, "slice_spread": 0.0, "n_slices": 5},
+    ]
+    pacs = FakeMultiSeriesPACS({"T2S": t2, "T1S": t1, "COR": t2})
+    svc = FlaggedSliceService(FakeResults(_mri_result({name: panels}, [2])), pacs)
+    out = await svc.get_slice_links("1.2.3", "lumbar_spine_mri")
+
+    assert out["resolved"] is True
+    (tile,) = out["tiles"]
+    p = {x["sequence"]: x for x in tile["panels"]}
+    assert p["T2"]["clickable"] and p["T2"]["sop_instance_uid"] == "t2-2" and p["T2"]["is_reference"]
+    # Nearest slice of its OWN series; stack position follows that series' numbering.
+    assert p["T1"]["sop_instance_uid"] == "t1-2" and p["T1"]["stack_position"] == 3
+    assert p["T1"]["slice_offset"] == 0.1
+    assert not p["STIR"]["clickable"] and "another plane" in p["STIR"]["reason"]
+    assert not p["PD"]["clickable"] and "not available" in p["PD"]["reason"]
+    # The tile's primary image is the reference panel's.
+    assert tile["sop_instance_uid"] == "t2-2" and tile["series_instance_uid"] == "T2S"
+    # Flagged level highlighted in every linked series.
+    assert {f["sop_instance_uid"] for f in out["flagged_images"]} == {"t2-2", "t1-2"}
+
+
+async def test_mri_panel_outside_the_series_or_after_it_changed_is_not_linked():
+    sag = (0.0, 1.0, 0.0, 0.0, 0.0, -1.0)
+    t2 = [InstanceGeometry(f"t2-{i}", i + 1, (float(i * 4), 0.0, 0.0), sag) for i in range(5)]
+    name = "sagittal_001_z00000_montage.png"
+    panels = [
+        {"sequence": "T2", "series_instance_uid": "T2S", "rect": [0, 0, 0.5, 1],
+         "slice_index": 6.0, "slice_spread": 0.0, "n_slices": 5},
+        {"sequence": "T1", "series_instance_uid": "T2S", "rect": [0.5, 0, 1, 1],
+         "slice_index": 1.0, "slice_spread": 0.0, "n_slices": 9},
+    ]
+    svc = FlaggedSliceService(
+        FakeResults(_mri_result({name: panels}, [])), FakeMultiSeriesPACS({"T2S": t2})
+    )
+    out = await svc.get_slice_links("1.2.3", "lumbar_spine_mri")
+    p = {x["sequence"]: x for x in out["tiles"][0]["panels"]}
+    assert "outside" in p["T2"]["reason"] and "re-run" in p["T1"]["reason"]
+    assert out["resolved"] is False
 
 
 async def test_no_result_returns_none():

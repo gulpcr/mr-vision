@@ -206,14 +206,17 @@ class Pipeline(BasePipeline):
         # (planes == ["axial"]) behave exactly as before (plane=None → no plane restriction).
         downloaded: dict[str, str] = {}
         plane_volumes: dict[str, dict[str, str]] = {}
+        plane_series: dict[str, dict[str, str]] = {}   # plane -> sequence -> SeriesInstanceUID
         plane_classified: dict[str, dict[str, str]] = {}
         for plane in planes:
             classified = self._classify_sequences(series, plane=plane if multi else None)
             vp: dict[str, str] = {}
+            vs: dict[str, str] = {}
             for seq_name, s in classified.items():
                 uid = s.series_instance_uid
                 if uid in downloaded:
                     vp[seq_name] = downloaded[uid]
+                    vs[seq_name] = uid
                     continue
                 out = str(nifti_dir / f"{self._slug(plane)}_{self._slug(seq_name)}.nii.gz")
                 try:
@@ -222,12 +225,14 @@ class Pipeline(BasePipeline):
                     )
                     downloaded[uid] = out
                     vp[seq_name] = out
+                    vs[seq_name] = uid
                 except Exception as exc:
                     logger.warning(
                         f"{USECASE_NAME}_sequence_download_failed", plane=plane, seq=seq_name, error=str(exc)
                     )
             if vp:
                 plane_volumes[plane] = vp
+                plane_series[plane] = vs
                 plane_classified[plane] = {k: v.series_description for k, v in classified.items()}
 
         # Nothing classified in any plane — fall back to the largest series as a single panel.
@@ -240,6 +245,7 @@ class Pipeline(BasePipeline):
                 pacs.download_series_as_nifti(study.study_instance_uid, fb.series_instance_uid, out)
             )
             plane_volumes[planes[0]] = {"MR": out}
+            plane_series[planes[0]] = {"MR": fb.series_instance_uid}
             qa_flags.append("series_region_unmatched")
             qa_details["series_region_unmatched"] = (
                 f"No configured sequence matched; read '{fb.series_description}' as a single panel."
@@ -262,6 +268,7 @@ class Pipeline(BasePipeline):
 
         return {
             "plane_volumes": plane_volumes,
+            "plane_series": plane_series,
             "study_uid": study.study_instance_uid,
             "modality": (study.modality or "MR").upper() or "MR",
             "study_description": study.study_description,
@@ -311,6 +318,7 @@ class Pipeline(BasePipeline):
         qa_details: dict[str, Any] = dict(inference_output.get("qa_details", {}))
 
         plane_volumes: dict[str, dict[str, str]] = inference_output["plane_volumes"]
+        plane_series: dict[str, dict[str, str]] = inference_output.get("plane_series") or {}
         planes = list(plane_volumes.keys())
         multi = len(planes) > 1
 
@@ -320,7 +328,10 @@ class Pipeline(BasePipeline):
         planes_info: dict[str, Any] = {}
         scan_windows: list[str] = []
         for p_i, plane in enumerate(planes):
-            info = self._render_plane(plane, plane_volumes[plane], scan_dir, p_i * 100000, multi)
+            info = self._render_plane(
+                plane, plane_volumes[plane], scan_dir, p_i * 100000, multi,
+                series_uids=plane_series.get(plane) or {},
+            )
             if info is None:
                 continue
             scan_slices.extend(info["scan_slices"])
@@ -382,6 +393,15 @@ class Pipeline(BasePipeline):
                 "(co-registered sequence montages → scan → report flagged levels)"
             ),
             "anomaly_slices": [],
+            # Tiles are rendered in the DICOM viewer's orientation (radiological). Absent on
+            # older results, whose stored tiles are corrected when served (tile_orientation.py).
+            "tile_orientation": "dicom",
+            # Per stored montage: each panel's position in the image, source series and the
+            # source slice it shows, so the UI can open that native DICOM image
+            # (application/flagged_slice_service.py). Pruned to stored tiles by the task hook.
+            "tile_geometry": {
+                e["name"]: e["geometry"] for e in scan_slices if e.get("geometry")
+            },
             "processing_notes": (
                 f"Rendered {total_candidates} montage(s) across plane(s) — {planes_desc}; per-sequence "
                 "percentile windows. MedGemma scans every montage to flag potential abnormalities by "
@@ -437,6 +457,7 @@ class Pipeline(BasePipeline):
         scan_dir: Path,
         z_offset: int,
         multi: bool,
+        series_uids: dict[str, str] | None = None,
     ) -> dict[str, Any] | None:
         """Co-register this plane's sequences and render one labeled montage per slice.
 
@@ -473,12 +494,22 @@ class Pipeline(BasePipeline):
             candidates = self._candidate_slices(ref_arr, ref_lo, ref_hi, axis)
 
         window = plane if multi else MONTAGE_WINDOW
+        # Each sequence's source volume as read from the PACS (not reoriented): its voxel
+        # indices are the series' stacking order, which is what viewer links resolve to.
+        source_headers: dict[str, tuple[Any, tuple[int, ...]]] = {}
+        for seq in panel_order:
+            try:
+                hdr = nib.load(volume_paths[seq])
+                source_headers[seq] = (np.asarray(hdr.affine, dtype=np.float64), tuple(int(d) for d in hdr.shape[:3]))
+            except Exception as exc:
+                logger.warning(f"{USECASE_NAME}_source_header_failed", seq=seq, error=str(exc))
         scan_slices: list[dict[str, Any]] = []
         for order_i, sidx in enumerate(candidates, 1):
             z = z_offset + int(sidx)
             name = f"{self._slug(window)}_{order_i:03d}_z{z:05d}_montage.png"
             out_path = scan_dir / name
-            if self._render_montage(seq_arrays, seq_bounds, panel_order, int(sidx), str(out_path), axis):
+            rects = self._render_montage(seq_arrays, seq_bounds, panel_order, int(sidx), str(out_path), axis)
+            if rects:
                 scan_slices.append({
                     "z": z,
                     "window": window,
@@ -486,6 +517,10 @@ class Pipeline(BasePipeline):
                     "local_path": str(out_path),
                     "order": order_i,
                     "plane": plane,
+                    "geometry": self._level_geometry(
+                        ref_img, axis, int(sidx), plane, ref_seq, rects, series_uids or {},
+                        source_headers,
+                    ),
                 })
 
         return {
@@ -551,8 +586,13 @@ class Pipeline(BasePipeline):
         z: int,
         out_path: str,
         axis: int = 2,
-    ) -> bool:
-        """Render a labeled grid of the sequence tiles at slice ``z`` along ``axis``."""
+    ) -> list[tuple[str, list[float]]]:
+        """Render a labeled grid of the sequence tiles at slice ``z`` along ``axis``.
+
+        Returns ``(sequence, [x0, y0, x1, y1])`` per panel -- the panel's cell (label bar +
+        tile) as fractions of the montage size, so the UI can map a click to a panel -- or
+        an empty list if nothing was rendered.
+        """
         try:
             from PIL import Image, ImageDraw, ImageFont
 
@@ -581,13 +621,15 @@ class Pipeline(BasePipeline):
                 tiles.append((seq, canvas))
 
             if not tiles:
-                return False
+                return []
 
             n = len(tiles)
             ncols = min(cols, n)
             nrows = (n + ncols - 1) // ncols
             cell_w, cell_h = tile, tile + label_h
-            montage = Image.new("RGB", (ncols * cell_w, nrows * cell_h), (0, 0, 0))
+            full_w, full_h = ncols * cell_w, nrows * cell_h
+            montage = Image.new("RGB", (full_w, full_h), (0, 0, 0))
+            rects: list[tuple[str, list[float]]] = []
             draw = ImageDraw.Draw(montage)
             try:
                 font = ImageFont.truetype("DejaVuSans-Bold.ttf", max(12, label_h - 6))
@@ -601,6 +643,10 @@ class Pipeline(BasePipeline):
                 draw.rectangle([x0, y0, x0 + cell_w, y0 + label_h], fill=(0, 0, 0))
                 draw.text((x0 + 4, y0 + 1), seq, fill=(255, 255, 255), font=font)
                 montage.paste(timg, (x0, y0 + label_h))
+                rects.append((seq, [
+                    round(x0 / full_w, 5), round(y0 / full_h, 5),
+                    round((x0 + cell_w) / full_w, 5), round((y0 + cell_h) / full_h, 5),
+                ]))
 
             max_size = int(self._cfg_pre.get("montage_max_size", 1536) or 0)
             long_edge = max(montage.size)
@@ -611,10 +657,68 @@ class Pipeline(BasePipeline):
                     Image.BILINEAR,
                 )
             montage.save(out_path, format="PNG")
-            return True
+            return rects
         except Exception as exc:
             logger.warning(f"{USECASE_NAME}_montage_failed", error=str(exc))
-            return False
+            return []
+
+    @staticmethod
+    def _level_geometry(
+        ref_img: Any,
+        axis: int,
+        sidx: int,
+        plane: str,
+        ref_seq: str,
+        rects: list[tuple[str, list[float]]],
+        series_uids: dict[str, str],
+        source_headers: dict[str, tuple[Any, tuple[int, ...]]],
+    ) -> dict[str, Any] | None:
+        """Which native slice each panel of this montage shows.
+
+        A panel is the reference grid's slice ``sidx`` along ``axis``, filled from its own
+        sequence's source volume through ``inv(source.affine) @ ref.affine`` (exactly as
+        ``_resample_to_ref`` samples it). Mapping the level's centre and in-plane corners
+        into the source's voxel space gives the source slice index (last axis = the series'
+        stacking axis) at each point: ``slice_index`` at the centre and ``slice_spread``
+        across the panel. A spread under one slice means the panel IS that native slice
+        (same plane); a larger spread means it was reformatted from another plane. Index
+        space, not patient space, because multi-slab series (e.g. disc-angled lumbar
+        axials) are stacked by the reader as if parallel.
+        """
+        try:
+            ref_aff = np.asarray(ref_img.affine, dtype=np.float64)
+            shape = [int(d) for d in ref_img.shape[:3]]
+            inplane = [a for a in range(3) if a != axis]
+            pts = []
+            for fa in (0.0, 0.5, 1.0):
+                for fb in (0.0, 0.5, 1.0):
+                    v = [0.0, 0.0, 0.0]
+                    v[axis] = float(sidx)
+                    v[inplane[0]] = fa * (shape[inplane[0]] - 1)
+                    v[inplane[1]] = fb * (shape[inplane[1]] - 1)
+                    pts.append(v + [1.0])
+            pts_arr = np.array(pts).T  # 4 x 9; column 4 is the centre
+            panels = []
+            for seq, rect in rects:
+                entry: dict[str, Any] = {
+                    "sequence": seq,
+                    "series_instance_uid": series_uids.get(seq),
+                    "rect": rect,
+                }
+                hdr = source_headers.get(seq)
+                if hdr is not None:
+                    src_aff, src_shape = hdr
+                    k = (np.linalg.inv(src_aff) @ ref_aff @ pts_arr)[2]
+                    entry.update(
+                        slice_index=round(float(k[4]), 3),
+                        slice_spread=round(float(k.max() - k.min()), 3),
+                        n_slices=int(src_shape[2]) if len(src_shape) > 2 else 1,
+                    )
+                panels.append(entry)
+            return {"plane": plane, "reference_sequence": ref_seq, "panels": panels}
+        except Exception as exc:
+            logger.warning(f"{USECASE_NAME}_level_geometry_failed", error=str(exc))
+            return None
 
     # ── volume / slice helpers ─────────────────────────────────────────────────
 
@@ -699,8 +803,12 @@ class Pipeline(BasePipeline):
     def _extract_slice(arr: np.ndarray, idx: int, axis: int = 2) -> np.ndarray | None:
         """Display-oriented 2-D slice at ``idx`` along ``axis`` (superior/anterior up).
 
-        ``np.flipud(sl.T)`` yields the radiological-ish orientation for axial (fixed S/I),
-        sagittal (fixed R/L) and coronal (fixed A/P) alike — superior/anterior toward the top.
+        The volume is closest-canonical (RAS: i→R, j→A, k→S). ``sl.T`` puts the second in-plane
+        axis on rows; ``flipud`` brings superior/anterior to the top and ``fliplr`` gives the
+        radiological convention — patient's RIGHT on image LEFT (axial/coronal), ANTERIOR on
+        image LEFT (sagittal) — which is how the DICOM viewer shows these series. Without the
+        ``fliplr`` every tile was mirrored left↔right (verified: this matches Orthanc's own
+        rendering of the native slice exactly, the unmirrored version did not).
         """
         if arr.ndim == 2:
             sl = arr
@@ -708,4 +816,4 @@ class Pipeline(BasePipeline):
             sl = np.take(arr, idx, axis=axis)
         else:
             return None
-        return np.flipud(np.asarray(sl, dtype=np.float32).T)
+        return np.fliplr(np.flipud(np.asarray(sl, dtype=np.float32).T))

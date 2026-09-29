@@ -408,11 +408,35 @@ export interface SliceWindow {
 }
 
 /** A CT-report slice tile resolved to the exact DICOM image the viewer shows. */
+/** One sequence panel of an MRI montage tile, resolved to its own series' image. */
+export interface SlicePanel {
+  sequence: string;
+  /** [x0, y0, x1, y1] as fractions of the tile image. */
+  rect: [number, number, number, number];
+  is_reference: boolean;
+  clickable: boolean;
+  /** Why the panel is not linked (e.g. reformatted from another plane). */
+  reason: string | null;
+  series_instance_uid: string | null;
+  sop_instance_uid: string | null;
+  instance_number: number | null;
+  stack_position: number | null;
+  n_images: number | null;
+  /** Fraction of a slice between the panel's level and the linked image (0 = exact). */
+  slice_offset: number | null;
+}
+
 export interface SliceLinkTile {
   artifact_name: string;
   z: number;
   window: SliceWindow | null;
-  sop_instance_uid: string;
+  /** CT: the tile's image. MRI: the montage's primary (reference) panel, if linked. */
+  sop_instance_uid: string | null;
+  /** MRI only — CT tiles use the response's series_instance_uid. */
+  series_instance_uid?: string | null;
+  plane?: string | null;
+  /** MRI only: the montage's sequence panels. */
+  panels?: SlicePanel[];
   instance_number: number | null;
   stack_position: number | null;
   /** Got the detailed (Pass-2) read and appears in the report. */
@@ -426,12 +450,23 @@ export interface SliceLinkTile {
 
 export interface FlaggedImage {
   z: number;
+  series_instance_uid?: string | null;
   sop_instance_uid: string;
   instance_number: number | null;
   stack_position: number | null;
   finding: string | null;
   /** false → screening-only flag, not covered by the detailed read. */
   reported: boolean;
+}
+
+/** Where a slice-tile click should take the viewer. */
+export interface SliceJumpTarget {
+  seriesInstanceUID: string;
+  sopInstanceUID: string;
+  window: SliceWindow | null;
+  instanceNumber: number | null;
+  /** e.g. "T2 · image 7 of 17" — for the viewer notice. */
+  label: string;
 }
 
 export interface FlaggedSlices {

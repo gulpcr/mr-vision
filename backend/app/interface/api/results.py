@@ -729,12 +729,24 @@ async def get_artifact(
     service: Annotated[ResultService, Depends(get_result_service)],
     redirect: bool = True,
 ):
+    from app.application import tile_orientation
+
     try:
-        if redirect:
+        # Report-family tiles stored before the orientation fix are re-oriented on the way
+        # out (always streamed, never redirected, so the correction applies).
+        legacy_tile = False
+        if tile_orientation.needs_correction(usecase, path, None):
+            latest = await service.get_result(study_uid, usecase)
+            legacy_tile = tile_orientation.needs_correction(
+                usecase, path, latest.summary if latest else None
+            )
+        if redirect and not legacy_tile:
             url = await service.get_artifact_url(study_uid, usecase, path)
             return RedirectResponse(url=url, status_code=307)
         else:
             data = await service.get_artifact_data(study_uid, usecase, path)
+            if legacy_tile:
+                data = await asyncio.to_thread(tile_orientation.correct_tile, data, usecase)
             content_type = "application/octet-stream"
             if path.endswith(".json"):
                 content_type = "application/json"

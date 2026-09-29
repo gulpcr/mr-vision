@@ -297,6 +297,9 @@ class Pipeline(BasePipeline):
             "inference_method": "medgemma_two_pass (scan whole volume → report flagged slices)",
             # Filled by the task hook when MedGemma runs:
             "anomaly_slices": [],
+            # Tiles are rendered in the DICOM viewer's orientation. Absent on older results,
+            # whose stored (upside-down) tiles are corrected when served (tile_orientation.py).
+            "tile_orientation": "dicom",
             "processing_notes": (
                 f"Rendered {len(candidates)} foreground axial slice(s) across the volume in "
                 f"{len(windows)} HU window(s): {window_desc}. MedGemma scans EVERY slice in "
@@ -448,9 +451,11 @@ class Pipeline(BasePipeline):
             lo = level - width / 2.0
             hi = level + width / 2.0
             norm = np.clip((slice_2d - lo) / max(hi - lo, 1e-6), 0.0, 1.0)
-            # Radiological display convention: rows top-to-bottom (patient anterior
-            # up), so transpose then flip the vertical axis nibabel stores bottom-up.
-            img = Image.fromarray((np.flipud(norm.T) * 255.0).astype(np.uint8), mode="L")
+            # The NIfTI comes from SimpleITK un-reoriented, so its (i, j) axes ARE the DICOM
+            # pixel (column, row) axes: the transpose alone shows the slice exactly as stored
+            # — anterior up, patient's right on image left — i.e. as the DICOM viewer shows
+            # it. (The former extra np.flipud rendered every CT tile upside down.)
+            img = Image.fromarray((norm.T * 255.0).astype(np.uint8), mode="L")
 
             out_size = int(self._cfg_pre.get("out_size", 768) or 0)
             long_edge = max(img.size)
