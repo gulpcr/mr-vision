@@ -1,3 +1,38 @@
+// navigator.clipboard only exists in secure contexts (HTTPS / localhost). Over plain
+// HTTP it is undefined, and OHIF's "Copy" buttons (e.g. on the error notification)
+// crash with "Cannot read properties of undefined (reading 'writeText')". Provide a
+// writeText fallback using a hidden textarea + execCommand('copy'). This file loads
+// before OHIF's bundle, so the fallback is in place before anything uses it.
+(function () {
+  if (typeof navigator === 'undefined' || navigator.clipboard) return;
+  function writeText(text) {
+    return new Promise(function (resolve, reject) {
+      var ta = document.createElement('textarea');
+      ta.value = String(text);
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.top = '0';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = false;
+      try {
+        ok = document.execCommand('copy');
+      } catch (e) {
+        ok = false;
+      }
+      document.body.removeChild(ta);
+      if (ok) resolve();
+      else reject(new Error('Copy to clipboard failed'));
+    });
+  }
+  try {
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText: writeText }, configurable: true });
+  } catch (e) {
+    /* leave clipboard undefined */
+  }
+})();
+
 window.config = {
   // OHIF is served behind the platform nginx under the /ohif/ subpath (see
   // nginx/nginx.conf). React Router must use this basename so that the browser
@@ -38,6 +73,13 @@ window.config = {
         supportsWildcard: true,
         bulkDataURI: {
           enabled: true,
+          // Orthanc (orthanc.json DicomWeb.Host = "0.0.0.0") advertises bulk data —
+          // e.g. overlay graphics (6000,3000) on Siemens "PosDisp" series — as
+          // http://0.0.0.0/dicom-web/..., which the browser cannot reach: scrolling onto
+          // such an image failed with "request failed". Rewrite to a same-origin path so
+          // it goes through the platform nginx (and its DICOMweb authorisation).
+          startsWith: 'http://0.0.0.0/',
+          prefixWith: '/',
         },
       },
     },

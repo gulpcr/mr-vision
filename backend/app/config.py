@@ -94,7 +94,11 @@ class Settings(BaseSettings):
     viewer_nondiagnostic_series_pattern: str = (
         r"(?i)(\bshim|shimming|localiz|localis|\bscout\b|\bloc\b|3[\s-]?axis|"
         r"3[\s-]?plane|\bsurvey\b|calibration|field\s*map|fieldmap|b0\s*map|"
-        r"b1\s*map|map\(|aascout|aahead|smartbrain|pre[\s_-]?scan)"
+        r"b1\s*map|map\(|aascout|aahead|smartbrain|pre[\s_-]?scan|"
+        # Siemens non-image objects: the scanner protocol dump (PhoenixZIPReport / CSA
+        # report) and syngo "Evidence Documents" SRs — no pixel data, nothing to read,
+        # and their frames return 500 from Orthanc if requested.
+        r"phoenix\s*zip|csa\s*report|evidence\s*doc)"
     )
     # Viewer: link CT-report flagged-slice tiles to their exact DICOM image
     # (GET /api/results/{uid}/{usecase}/flagged-slices) so the study page can jump
