@@ -120,13 +120,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return null;
   }
 
+  // Public pages (login, accept-invite…) have no session, so no realtime socket: the
+  // toast there opened /ws without a viewer cookie and retried it forever.
   if (isPublic) {
-    return (
-      <>
-        {children}
-        <NotificationToast />
-      </>
-    );
+    return <>{children}</>;
   }
 
   return (

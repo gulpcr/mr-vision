@@ -164,9 +164,10 @@ def test_websocket_requires_viewer_session_and_is_tenant_addressed(client, seede
     from app.interface.api.ws import manager
 
     client.cookies.clear()
-    with pytest.raises(WebSocketDisconnect):
+    with pytest.raises(WebSocketDisconnect) as closed:
         with client.websocket_connect("/ws") as ws:
             ws.receive_text()
+    assert closed.value.code == 4401  # the client stops retrying on this code
 
     for k, v in _viewer_cookie(seeded["rad_a"], TA).items():
         client.cookies.set(k, v)

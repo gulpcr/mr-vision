@@ -1,6 +1,11 @@
 "use client";
 
+import { api } from "@/lib/api";
+
 type WSMessageHandler = (message: any) => void;
+
+// Server close code for "no valid viewer session" (backend/app/interface/api/ws.py).
+const WS_UNAUTHORIZED = 4401;
 
 class WebSocketClient {
   private ws: WebSocket | null = null;
@@ -8,6 +13,10 @@ class WebSocketClient {
   private handlers: Map<string, Set<WSMessageHandler>> = new Map();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectDelay = 2000;
+  // Set after the server refused the session once and a cookie renewal was tried; a
+  // second refusal stops reconnecting until connect() is called again (next subscribe).
+  private sessionRenewed = false;
+  private stopped = false;
 
   constructor() {
     const protocol = typeof window !== "undefined" && window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -17,7 +26,8 @@ class WebSocketClient {
 
   connect(): void {
     if (typeof window === "undefined") return;
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
+    this.stopped = false;
+    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return;
 
     try {
       this.ws = new WebSocket(this.url);
@@ -25,6 +35,7 @@ class WebSocketClient {
       this.ws.onopen = () => {
         console.log("[WS] Connected");
         this.reconnectDelay = 2000;
+        this.sessionRenewed = false;
       };
 
       this.ws.onmessage = (event) => {
@@ -43,7 +54,26 @@ class WebSocketClient {
         }
       };
 
-      this.ws.onclose = () => {
+      this.ws.onclose = (event) => {
+        // Ignore a late close from a socket that has already been replaced.
+        if (this.ws !== event.target) return;
+        this.ws = null;
+        if (this.stopped || this.handlers.size === 0) return;
+        if (event.code === WS_UNAUTHORIZED) {
+          if (this.sessionRenewed) {
+            console.warn("[WS] No valid session; realtime updates paused");
+            this.stopped = true;
+            return;
+          }
+          // The viewer cookie expired or is missing — reissue it once, then retry.
+          this.sessionRenewed = true;
+          api.auth
+            .refreshViewerSession()
+            .then(() => this.scheduleReconnect())
+            .catch(() => { this.stopped = true; });
+          return;
+        }
+        this.sessionRenewed = false;
         console.log("[WS] Disconnected, reconnecting...");
         this.scheduleReconnect();
       };
@@ -66,6 +96,7 @@ class WebSocketClient {
   }
 
   disconnect(): void {
+    this.stopped = true;
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -91,6 +122,8 @@ class WebSocketClient {
       if (this.handlers.get(type)?.size === 0) {
         this.handlers.delete(type);
       }
+      // Nobody listening any more (e.g. after logout) — close instead of reconnecting.
+      if (this.handlers.size === 0) this.disconnect();
     };
   }
 

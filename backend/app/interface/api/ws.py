@@ -14,7 +14,11 @@ logger = structlog.get_logger(__name__)
 router = APIRouter(tags=["websocket"])
 
 # Close code for a rejected handshake (RFC 6455 1008 = policy violation).
-_WS_POLICY_VIOLATION = 1008
+# Application close code for "no valid viewer session". The socket is accepted and then
+# closed with it: a handshake rejected before accept() reaches the browser only as an
+# HTTP 403 / close code 1006, indistinguishable from a network drop, so the client kept
+# retrying every 30 s forever. 4401 tells it to stop until the session is renewed.
+_WS_UNAUTHORIZED = 4401
 
 
 class ConnectionManager:
@@ -76,7 +80,8 @@ async def websocket_endpoint(websocket: WebSocket):
     """
     viewer = resolve_viewer(websocket)
     if viewer is None:
-        await websocket.close(code=_WS_POLICY_VIOLATION)
+        await websocket.accept()
+        await websocket.close(code=_WS_UNAUTHORIZED, reason="viewer session required")
         return
 
     await manager.connect(websocket, viewer.tenant_id)
