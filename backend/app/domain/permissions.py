@@ -45,6 +45,9 @@ PERMISSIONS: dict[str, str] = {
     "config.manage": "Manage AI use cases, routing, alerts and experiments",
     "audit.view": "View the audit log and QA / capacity metrics",
     "data.purge": "Destructive data operations (reset / retention purge)",
+    "break_glass.invoke": "Emergency access to a patient outside your referrals (reason required, time-limited, audited)",
+    "break_glass.review": "Review and revoke emergency (break-glass) access",
+    "patient.rights": "Fulfil patient right-of-access requests and produce access / disclosure reports",
 }
 
 ALL_PERMISSIONS: frozenset[str] = frozenset(PERMISSIONS)
@@ -79,6 +82,7 @@ SYSTEM_ROLE_PERMISSIONS: dict[str, list[str]] = {
         "report.comment",
         "result.export",
         "study.view.referred",
+        "break_glass.invoke",
     ],
     "technician": [
         "dashboard.manage",

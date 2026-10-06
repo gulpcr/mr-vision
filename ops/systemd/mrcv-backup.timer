@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the MRCV encrypted backup daily at 02:30 (host local time)
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+# Run at next boot if the VM was down at 02:30.
+Persistent=true
+Unit=mrcv-backup.service
+
+[Install]
+WantedBy=timers.target

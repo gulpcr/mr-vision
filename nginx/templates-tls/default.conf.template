@@ -1,6 +1,75 @@
+# PRODUCTION (TLS) nginx config — used ONLY by docker-compose.prod.yml.
+# The HTTP-only dev/live config stays in nginx/templates/default.conf.template.
+#
+# Rendered by the nginx image's envsubst at start-up into /etc/nginx/conf.d/default.conf.
+# NGINX_ENVSUBST_FILTER="ORTHANC_|PUBLIC_DOMAIN|TLS_": only ${ORTHANC_*}, ${PUBLIC_DOMAIN}
+# and ${TLS_*} are substituted; nginx's own lowercase $variables are left alone. Secrets
+# come from the env file, never from this file.
+#
+# Everything from `client_max_body_size` down to the last location is a copy of the HTTP
+# template (keep the two in sync when a location changes) with three differences:
+#   * the security-header include after the two location-level add_header lines;
+#   * the backend and Orthanc are reached over HTTPS, verified against the internal CA
+#     (HIPAA 164.312(e): no plaintext hop carrying PHI inside the host either). UI and
+#     OHIF stay plain HTTP: they serve only static application code, no patient data;
+#   * the client address is taken from a trusted load balancer when one is configured
+#     (TRUSTED_PROXY_CIDRS, rendered by tls-entrypoint.sh into /tmp/nginx-gen/).
+# nginx/tls-entrypoint.sh serves nginx/templates-bootstrap instead until a certificate
+# exists (Let's Encrypt, or the operator's own at TLS_CERT_FILE / TLS_KEY_FILE).
+
+# ── :80 — ACME http-01 challenge + permanent redirect to HTTPS ───────────────
 server {
-    listen 80;
+    listen 80 default_server;
     server_name _;
+    server_tokens off;
+
+    # certbot (webroot) writes challenge files here; must stay reachable over plain HTTP.
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+        default_type "text/plain";
+        try_files $uri =404;
+    }
+
+    location / {
+        return 301 https://${PUBLIC_DOMAIN}$request_uri;
+    }
+}
+
+# ── :443 — the platform ──────────────────────────────────────────────────────
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name ${PUBLIC_DOMAIN};
+    server_tokens off;
+
+    # Let's Encrypt (certbot) by default; a hospital/commercial certificate by pointing
+    # TLS_CERT_FILE / TLS_KEY_FILE at it (docker-compose.prod.yml, ops/deploy/README.md).
+    ssl_certificate     ${TLS_CERT_FILE};
+    ssl_certificate_key ${TLS_KEY_FILE};
+    # Mozilla "intermediate" profile, ECDHE-only (no DHE → no dhparam file needed).
+    # TLS_PROTOCOLS (default "TLSv1.3"; "TLSv1.2 TLSv1.3" only if a client really needs 1.2).
+    ssl_protocols ${TLS_PROTOCOLS};
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
+    ssl_prefer_server_ciphers off;
+    ssl_session_timeout 1d;
+    ssl_session_cache shared:MozSSL:10m;
+    ssl_session_tickets off;
+    # No OCSP stapling: Let's Encrypt ended its OCSP service in 2025.
+
+    # HSTS, nosniff, Referrer-Policy, CSP frame-ancestors 'self' (the OHIF viewer is
+    # framed same-origin by the UI — keep 'self').
+    include /etc/nginx/snippets/security-headers.conf;
+
+    # real_ip directives for a load balancer in front of nginx (empty when none).
+    include /tmp/nginx-gen/*.conf;
+
+    # Upstream TLS to the backend and Orthanc: verify their internal-PKI certificates.
+    proxy_ssl_verify              on;
+    proxy_ssl_verify_depth        2;
+    proxy_ssl_trusted_certificate /etc/nginx/pki/ca.crt;
+    proxy_ssl_server_name         on;
+    proxy_ssl_protocols           TLSv1.3;
+    proxy_ssl_session_reuse       on;
 
     client_max_body_size 2G;
     proxy_read_timeout 600s;
@@ -28,7 +97,7 @@ server {
     # the Next.js UI. The backend page is fully self-contained (inline CSS/JS,
     # no external assets), so no sub-path rewriting is needed.
     location = /sales {
-        proxy_pass http://$backend_host:8000/api/cortex;
+        proxy_pass https://$backend_host:8000/api/cortex;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -74,7 +143,7 @@ server {
     # Backend API. location /api/ + proxy_pass .../api/ was an identity map, so
     # forwarding the original URI verbatim preserves the path.
     location /api/ {
-        proxy_pass http://$backend_host:8000$request_uri;
+        proxy_pass https://$backend_host:8000$request_uri;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -83,7 +152,7 @@ server {
 
     # WebSocket endpoint (F16)
     location /ws {
-        proxy_pass http://$backend_host:8000$request_uri;
+        proxy_pass https://$backend_host:8000$request_uri;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -126,6 +195,8 @@ server {
         # — otherwise an app.bundle.js cached during an earlier/broken deploy keeps
         # its old publicPath and requests chunks from "/" (→ 404, blank viewer).
         add_header Cache-Control "no-cache" always;
+        # add_header here replaces the server-level headers; re-add them.
+        include /etc/nginx/snippets/security-headers.conf;
 
         sub_filter_types application/javascript;
         sub_filter_once off;
@@ -154,6 +225,8 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header Accept-Encoding "";
         add_header Cache-Control "no-cache" always;
+        # add_header here replaces the server-level headers; re-add them.
+        include /etc/nginx/snippets/security-headers.conf;
 
         sub_filter_types text/css;
         sub_filter_once off;
@@ -162,7 +235,7 @@ server {
 
     # Health check
     location /health {
-        proxy_pass http://$backend_host:8000$request_uri;
+        proxy_pass https://$backend_host:8000$request_uri;
     }
 
     # Orthanc Explorer / REST is DELIBERATELY NOT exposed here. It is an
@@ -186,7 +259,7 @@ server {
     # (they used to reflect any Origin).
     location = /_dicomweb_authz {
         internal;
-        proxy_pass http://$backend_host:8000/api/internal/dicomweb-authz;
+        proxy_pass https://$backend_host:8000/api/internal/dicomweb-authz;
         proxy_pass_request_body off;
         proxy_set_header Content-Length "";
         proxy_set_header X-Original-URI $request_uri;
@@ -199,7 +272,10 @@ server {
     # QIDO study search (OHIF study list) → backend, filtered to the viewer's tenant.
     location ~ ^/dicom-web/studies/?$ {
         auth_request /_dicomweb_authz;
-        proxy_pass http://$backend_host:8000/api/dicomweb/studies$is_args$args;
+        # Patient images must not persist in the browser's disk cache (TEC-03).
+        add_header Cache-Control "no-store" always;
+        include /etc/nginx/snippets/security-headers.conf;
+        proxy_pass https://$backend_host:8000/api/dicomweb/studies$is_args$args;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }
@@ -212,7 +288,10 @@ server {
     # prefix location, so this wins for the series path.
     location ~ ^/dicom-web/studies/([^/]+)/series/?$ {
         auth_request /_dicomweb_authz;
-        proxy_pass http://$backend_host:8000/api/dicomweb/studies/$1/series$is_args$args;
+        # Patient images must not persist in the browser's disk cache (TEC-03).
+        add_header Cache-Control "no-store" always;
+        include /etc/nginx/snippets/security-headers.conf;
+        proxy_pass https://$backend_host:8000/api/dicomweb/studies/$1/series$is_args$args;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }
@@ -222,14 +301,64 @@ server {
     # frames and bulk data below still go straight to Orthanc.
     location ~ ^/dicom-web/studies/([^/]+)/series/([^/]+)/metadata/?$ {
         auth_request /_dicomweb_authz;
-        proxy_pass http://$backend_host:8000/api/dicomweb/studies/$1/series/$2/metadata$is_args$args;
+        # Patient images must not persist in the browser's disk cache (TEC-03).
+        add_header Cache-Control "no-store" always;
+        include /etc/nginx/snippets/security-headers.conf;
+        proxy_pass https://$backend_host:8000/api/dicomweb/studies/$1/series/$2/metadata$is_args$args;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }
 
     location ~ ^/dicom-web/studies/([^/]+)/metadata/?$ {
         auth_request /_dicomweb_authz;
-        proxy_pass http://$backend_host:8000/api/dicomweb/studies/$1/metadata$is_args$args;
+        # Patient images must not persist in the browser's disk cache (TEC-03).
+        add_header Cache-Control "no-store" always;
+        include /etc/nginx/snippets/security-headers.conf;
+        proxy_pass https://$backend_host:8000/api/dicomweb/studies/$1/metadata$is_args$args;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    # Whole-file retrievals (WADO-RS study / series / instance, QIDO instance search)
+    # carry the full DICOM header, so they also go through the backend, which writes the
+    # MRN into PatientName (DISPLAY_PATIENT_NAMES=false). Frames, rendered images,
+    # thumbnails and bulk data have no patient header and stay on the Orthanc location.
+    location ~ ^/dicom-web/studies/([^/]+)/?$ {
+        auth_request /_dicomweb_authz;
+        # Patient images must not persist in the browser's disk cache (TEC-03).
+        add_header Cache-Control "no-store" always;
+        include /etc/nginx/snippets/security-headers.conf;
+        proxy_pass https://$backend_host:8000/api/dicomweb/studies/$1$is_args$args;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    location ~ ^/dicom-web/studies/([^/]+)/series/([^/]+)/?$ {
+        auth_request /_dicomweb_authz;
+        # Patient images must not persist in the browser's disk cache (TEC-03).
+        add_header Cache-Control "no-store" always;
+        include /etc/nginx/snippets/security-headers.conf;
+        proxy_pass https://$backend_host:8000/api/dicomweb/studies/$1/series/$2$is_args$args;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    location ~ ^/dicom-web/studies/([^/]+)/series/([^/]+)/instances/?$ {
+        auth_request /_dicomweb_authz;
+        # Patient images must not persist in the browser's disk cache (TEC-03).
+        add_header Cache-Control "no-store" always;
+        include /etc/nginx/snippets/security-headers.conf;
+        proxy_pass https://$backend_host:8000/api/dicomweb/studies/$1/series/$2/instances$is_args$args;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    location ~ ^/dicom-web/studies/([^/]+)/series/([^/]+)/instances/([^/]+)/?$ {
+        auth_request /_dicomweb_authz;
+        # Patient images must not persist in the browser's disk cache (TEC-03).
+        add_header Cache-Control "no-store" always;
+        include /etc/nginx/snippets/security-headers.conf;
+        proxy_pass https://$backend_host:8000/api/dicomweb/studies/$1/series/$2/instances/$3$is_args$args;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }
@@ -238,14 +367,26 @@ server {
     # URI is forwarded verbatim.
     location /dicom-web/ {
         auth_request /_dicomweb_authz;
-        proxy_pass http://$orthanc_host:8042$request_uri;
+        # Patient images must not persist in the browser's disk cache (TEC-03).
+        add_header Cache-Control "no-store" always;
+        include /etc/nginx/snippets/security-headers.conf;
+        proxy_pass https://$orthanc_host:8042$request_uri;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
+        # Orthanc requires its own credentials; the user's token was already checked by
+        # auth_request above and is replaced here so it never reaches Orthanc.
+        proxy_set_header Authorization "Basic ${ORTHANC_BASIC_AUTH}";
+        proxy_set_header Cookie "";
     }
 
+    # WADO-URI can return a whole DICOM file (contentType=application/dicom), so it goes
+    # through the backend too (MRN as patient name); the backend calls Orthanc itself.
     location /wado {
         auth_request /_dicomweb_authz;
-        proxy_pass http://$orthanc_host:8042$request_uri;
+        # Patient images must not persist in the browser's disk cache (TEC-03).
+        add_header Cache-Control "no-store" always;
+        include /etc/nginx/snippets/security-headers.conf;
+        proxy_pass https://$backend_host:8000/api/dicomweb/wado$is_args$args;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }

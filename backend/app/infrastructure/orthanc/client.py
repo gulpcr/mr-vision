@@ -12,6 +12,7 @@ import SimpleITK as sitk
 import structlog
 
 from app.config import get_settings
+from app.infrastructure.tls import httpx_verify
 from app.domain.interfaces import PACSClient
 from app.domain.models import InstanceGeometry
 
@@ -27,6 +28,7 @@ class OrthancPACSClient(PACSClient):
         self._dicomweb_url = settings.dicomweb_url
         self._auth = (settings.orthanc_username, settings.orthanc_password)
         self._client = httpx.AsyncClient(
+            verify=httpx_verify(settings.orthanc_ca_cert),
             base_url=self._base_url,
             auth=self._auth,
             timeout=httpx.Timeout(120.0, connect=30.0),
@@ -320,6 +322,20 @@ class OrthancPACSClient(PACSClient):
         sitk.WriteImage(image, output_path)
         logger.info("converted_dicom_to_nifti", output=output_path)
         return output_path
+
+    async def download_study_archive(self, study_instance_uid: str) -> bytes:
+        orthanc_id = await self.get_orthanc_study_id(study_instance_uid)
+        response = await self._client.get(f"/studies/{orthanc_id}/archive")
+        response.raise_for_status()
+        return response.content
+
+    async def delete_study_by_uid(self, study_instance_uid: str) -> bool:
+        try:
+            orthanc_id = await self.get_orthanc_study_id(study_instance_uid)
+        except ValueError:
+            return False
+        await self.delete_study(orthanc_id)
+        return True
 
     async def get_series_instance_geometry(
         self, study_instance_uid: str, series_instance_uid: str

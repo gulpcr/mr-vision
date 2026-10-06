@@ -1,0 +1,22 @@
+# TLS BOOTSTRAP config — served by nginx/tls-entrypoint.sh only while the Let's Encrypt
+# certificate for ${PUBLIC_DOMAIN} does not exist yet. It answers the ACME http-01
+# challenge (certbot webroot) and nothing else: the platform is NOT served over plain
+# HTTP. As soon as certbot has issued the certificate, the entrypoint's watcher stops
+# nginx, the container restarts (restart: unless-stopped) and comes up with the full TLS
+# config in nginx/templates-tls.
+server {
+    listen 80 default_server;
+    server_name _;
+    server_tokens off;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+        default_type "text/plain";
+        try_files $uri =404;
+    }
+
+    location / {
+        default_type "text/plain";
+        return 503 "TLS certificate for ${PUBLIC_DOMAIN} not issued yet.\n";
+    }
+}

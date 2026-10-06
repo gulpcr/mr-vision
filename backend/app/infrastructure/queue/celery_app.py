@@ -3,6 +3,7 @@ from __future__ import annotations
 import multiprocessing
 
 from celery import Celery
+from celery.schedules import crontab
 
 from app.config import get_settings
 
@@ -28,6 +29,14 @@ celery_app = Celery(
     broker=settings.celery_broker_url,
     backend=settings.celery_result_backend,
 )
+
+# TLS to Redis (rediss:// URLs + REDIS_TLS / REDIS_CA_CERT, see infrastructure/tls.py).
+from app.infrastructure.tls import celery_ssl_options  # noqa: E402
+
+_redis_ssl = celery_ssl_options(settings)
+if _redis_ssl:
+    celery_app.conf.broker_use_ssl = _redis_ssl
+    celery_app.conf.redis_backend_use_ssl = _redis_ssl
 
 celery_app.conf.update(
     task_serializer="json",
@@ -69,6 +78,27 @@ celery_app.conf.update(
         "stale-job-cleanup": {
             "task": "app.infrastructure.queue.tasks.run_stale_job_cleanup",
             "schedule": 600.0,  # every 10 minutes
+        },
+        # HIPAA 164.308(a)(1)(ii)(D): last month's audit-log review, 02:00 UTC on the 1st.
+        "audit-review-monthly": {
+            "task": "app.infrastructure.queue.tasks.run_audit_review_summary",
+            "schedule": (crontab(minute=0, hour=2, day_of_week=1)
+                         if settings.audit_review_cadence == "weekly"
+                         else crontab(minute=0, hour=2, day_of_month=1)),
+        },
+        # ADM-04 / PRV-05: security alert rules over the audit log.
+        "security-alerts": {
+            "task": "app.infrastructure.queue.tasks.run_security_alerts",
+            "schedule": 600.0,
+        },
+        "audit-chain-check": {
+            "task": "app.infrastructure.queue.tasks.run_audit_chain_check",
+            "schedule": 3600.0,
+        },
+        # PRV-06: last month's audit log into WORM storage, 03:00 UTC on the 1st.
+        "audit-archive-monthly": {
+            "task": "app.infrastructure.queue.tasks.run_audit_archive_export",
+            "schedule": crontab(minute=0, hour=3, day_of_month=1),
         },
     },
 )

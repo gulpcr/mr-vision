@@ -78,7 +78,7 @@ async def websocket_endpoint(websocket: WebSocket):
     - alert: Alert triggered
     - batch_progress: Batch upload progress
     """
-    viewer = resolve_viewer(websocket)
+    viewer = await resolve_viewer(websocket)
     if viewer is None:
         await websocket.accept()
         await websocket.close(code=_WS_UNAUTHORIZED, reason="viewer session required")

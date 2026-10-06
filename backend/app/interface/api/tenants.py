@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import secrets
+from datetime import date
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -185,12 +186,24 @@ async def update_tenant_features(
     return _to_response(tenant)
 
 
+async def _require_baa_or_409(session: AsyncSession, tenant_id: str) -> None:
+    from app.application.tenant_baa_service import BAARequired, TenantBAAService
+
+    try:
+        await TenantBAAService(session).require_active(tenant_id)
+    except BAARequired as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
 @router.put("/{tenant_id}/status", response_model=TenantResponse)
 async def update_tenant_status(
     tenant_id: str,
     body: UpdateStatusRequest,
     service: Annotated[TenantService, Depends(get_tenant_service)],
+    session: Annotated[AsyncSession, Depends(get_session)],
 ):
+    if body.status == "active":
+        await _require_baa_or_409(session, tenant_id)
     try:
         tenant = await service.set_status(tenant_id, body.status)
     except ValueError as e:
@@ -234,6 +247,7 @@ async def create_dicom_endpoint(
 
     if await tenant_service.get_tenant(tenant_id) is None:
         raise HTTPException(status_code=404, detail="Tenant not found")
+    await _require_baa_or_409(session, tenant_id)
     try:
         endpoint = await DicomEndpointService(session).create(
             tenant_id, body.called_aet, body.calling_aet, body.description
@@ -273,3 +287,63 @@ async def delete_dicom_endpoint(
         details={"deleted": True},
         tenant_id=tenant_id,
     ))
+
+
+# ── Business associate agreements (ADM-01) ─────────────────────────────────
+
+
+class BAACreateRequest(BaseModel):
+    counterparty: str = Field(..., min_length=2, max_length=256, description="The customer's legal name")
+    signatory_name: str = Field(..., min_length=2, max_length=256)
+    signatory_title: str | None = Field(default=None, max_length=256)
+    signed_on: date
+    effective_from: date
+    expires_on: date | None = None
+    document_name: str = Field(..., min_length=1, max_length=256)
+    document_sha256: str = Field(..., min_length=64, max_length=64)
+
+
+@router.get("/{tenant_id}/baas")
+async def list_tenant_baas(tenant_id: str, session: Annotated[AsyncSession, Depends(get_session)]):
+    from app.application.tenant_baa_service import TenantBAAService
+
+    return await TenantBAAService(session).list(tenant_id)
+
+
+@router.post("/{tenant_id}/baas", status_code=201)
+async def record_tenant_baa(
+    tenant_id: str,
+    body: BAACreateRequest,
+    actor: Annotated[str, Depends(require_platform_admin)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    tenant_service: Annotated[TenantService, Depends(get_tenant_service)],
+):
+    from app.application.tenant_baa_service import InvalidBAA, TenantBAAService
+
+    if await tenant_service.get_tenant(tenant_id) is None:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    try:
+        out = await TenantBAAService(session).record(tenant_id, actor=actor, **body.model_dump())
+    except InvalidBAA as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    await session.commit()
+    return out
+
+
+@router.post("/{tenant_id}/baas/{baa_id}/terminate")
+async def terminate_tenant_baa(
+    tenant_id: str,
+    baa_id: str,
+    actor: Annotated[str, Depends(require_platform_admin)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """Close a BAA (termination / non-renewal). The workspace is not suspended
+    automatically - offboarding follows the contract's return-or-destroy clause."""
+    from app.application.tenant_baa_service import TenantBAAService
+
+    try:
+        out = await TenantBAAService(session).terminate(tenant_id, baa_id, actor)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="BAA not found")
+    await session.commit()
+    return out

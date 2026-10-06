@@ -230,6 +230,16 @@ class PACSClient(abc.ABC):
         ...
 
     @abc.abstractmethod
+    async def download_study_archive(self, study_instance_uid: str) -> bytes:
+        """The whole study as a ZIP of DICOM files (right-of-access exports)."""
+        ...
+
+    @abc.abstractmethod
+    async def delete_study_by_uid(self, study_instance_uid: str) -> bool:
+        """Remove a study from the PACS; False if it was not there (retention purge)."""
+        ...
+
+    @abc.abstractmethod
     async def get_series_instance_geometry(
         self, study_instance_uid: str, series_instance_uid: str
     ) -> list[InstanceGeometry]:

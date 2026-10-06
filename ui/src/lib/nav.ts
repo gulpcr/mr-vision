@@ -1,6 +1,7 @@
 import {
   LayoutDashboard,
   ClipboardList,
+  ClipboardCheck,
   Upload,
   Brain,
   GitBranch,
@@ -25,6 +26,7 @@ import {
   Layers,
   PenLine,
   type LucideIcon,
+  ShieldAlert,
 } from "lucide-react";
 import { STUDY_READ, type Permission } from "@/lib/permissions";
 import type { Strings } from "@/lib/locales/en";
@@ -47,6 +49,7 @@ export const NAV_ITEMS: NavItem[] = [
   { href: "/worklist", label: "Worklist", labelKey: "worklist", icon: ClipboardList, requiredPermission: STUDY_READ },
   { href: "/remote", label: "Remote Reading", labelKey: "remoteReading", icon: Radio, requiredPermission: "study.view" },
   { href: "/onboarding", label: "Patient Intake", icon: UserPlus, requiredPermission: "patient.onboard" },
+  { href: "/emergency-access", label: "Emergency Access", icon: ShieldAlert, requiredPermission: "break_glass.invoke" },
   { href: "/upload", label: "Upload DICOM", labelKey: "uploadDicom", icon: Upload, requiredPermission: "study.upload" },
   // The AI model registry is platform-wide — superadmin only, hidden from tenants.
   { href: "/admin/usecases", label: "AI Models", icon: Brain, requiredPermission: "tenant.manage" },
@@ -59,6 +62,9 @@ export const NAV_ITEMS: NavItem[] = [
   { href: "/admin/metrics", label: "QA Dashboard", icon: BarChart3, requiredPermission: "audit.view" },
   { href: "/admin/capacity", label: "Capacity", icon: BarChart2, requiredPermission: "audit.view" },
   { href: "/admin/audit", label: "Audit Log", icon: Shield, requiredPermission: "audit.view" },
+  { href: "/admin/audit-review", label: "Audit Review", icon: ClipboardCheck, requiredPermission: "audit.view" },
+  { href: "/admin/emergency-access", label: "Emergency Access Review", icon: ShieldAlert, requiredPermission: "break_glass.review" },
+  { href: "/admin/patient-rights", label: "Patient Rights", icon: FileText, requiredPermission: "patient.rights" },
   { href: "/admin/experiments", label: "A/B Testing", icon: FlaskConical, requiredPermission: "config.manage" },
   { href: "/admin/alerts", label: "Alerts", icon: Bell, badgeKey: "alerts", requiredPermission: "alert.view" },
   { href: "/admin/retention", label: "Retention", icon: Database, requiredPermission: "data.purge" },

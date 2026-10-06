@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { useAuth } from "@/lib/auth";
 import { getWSClient } from "@/lib/ws";
 import { X, CheckCircle, XCircle, Bell, Package, AlertTriangle } from "lucide-react";
 
@@ -13,6 +14,9 @@ interface Notification {
 
 export function NotificationToast() {
   const [notifications, setNotifications] = useState<Notification[]>([]);
+  const { can } = useAuth();
+  const canReviewRef = useRef(false);
+  canReviewRef.current = can("break_glass.review");
 
   const addNotification = useCallback((type: string, message: string) => {
     const id = Math.random().toString(36).slice(2);
@@ -52,6 +56,13 @@ export function NotificationToast() {
       addNotification("critical", `ESCALATED (×${msg.escalation_count}): ${msg.title}`);
     });
 
+    // Break-glass emergency access in this workspace (shown to reviewers).
+    const unsubBreakGlass = client.subscribe("break_glass_invoked", (msg) => {
+      if (canReviewRef.current) {
+        addNotification("critical", `Emergency access: ${msg.username} opened patient ${msg.patient_id}`);
+      }
+    });
+
     const unsub4 = client.subscribe("batch_progress", (msg) => {
       if (msg.status === "completed" || msg.status === "partial") {
         addNotification("info", `Batch ${msg.batch_id?.slice(0, 8)} finished: ${msg.completed}/${msg.total}`);
@@ -65,6 +76,7 @@ export function NotificationToast() {
       unsub4();
       unsubCritical();
       unsubEscalated();
+      unsubBreakGlass();
     };
   }, [addNotification]);
 

@@ -52,9 +52,21 @@ def actor_from_request(request: Any) -> tuple[str | None, str | None, str]:
     # actor_type falls through to "system" rather than inventing one.
     actor_id = getattr(state, "user_id", None) or None
     display = getattr(state, "user", None) or None
+    return actor_id, display, client_ip_from(request)
+
+
+def client_ip_from(request: Any) -> str:
+    """The caller's IP. Behind nginx the socket peer is nginx itself, so prefer the
+    X-Real-IP header nginx sets from $remote_addr (clients cannot inject it: nginx
+    overwrites it, and the backend port is bound to localhost)."""
+    if request is None:
+        return ""
+    headers = getattr(request, "headers", None)
+    real_ip = headers.get("x-real-ip", "") if headers is not None else ""
+    if real_ip:
+        return real_ip.strip()
     client = getattr(request, "client", None)
-    ip = getattr(client, "host", "") or "" if client else ""
-    return actor_id, display, ip
+    return (getattr(client, "host", "") or "") if client else ""
 
 
 class AuditService:
@@ -75,24 +87,50 @@ class AuditService:
         source_observer: str = "backend",
         details: dict[str, Any] | None = None,
         commit: bool = False,
+        before: Any = None,
+        after: Any = None,
     ) -> bool:
         """Write one audit entry. Returns True if it was persisted.
 
         ``actor_type`` is inferred when omitted: an ``actor_id`` means a person, its
         absence means the platform acted on its own. A caller representing an algorithm
         passes ``AuditActorType.DEVICE`` explicitly.
+
+        ``before`` / ``after``: the changed record's previous and new state; only their
+        SHA-256 is stored (domain/audit_state.py).
         """
         try:
+            from app.infrastructure.database.repositories import next_audit_chain_link
+            from app.infrastructure.tenant.db_scope import current_scope_tenant_id
+
             resolved_type = actor_type or (
                 AuditActorType.PRACTITIONER if actor_id else AuditActorType.SYSTEM
+            )
+            legacy_actor = actor_id or actor_display or "system"
+            entity = str(entity_id)[:256]
+            # Outcome and client IP go into the hashed payload too, so they are
+            # tamper-evident like the rest of the row.
+            payload = dict(details or {})
+            if before is not None or after is not None:
+                from app.domain.audit_state import state_change_details
+
+                payload.update(state_change_details(before, after))
+            if client_ip:
+                payload.setdefault("client_ip", client_ip)
+            if outcome != OUTCOME_SUCCESS:
+                payload.setdefault("outcome", outcome)
+            tenant_id = current_scope_tenant_id() or "default"
+            seq, prev_hash, row_hash = await next_audit_chain_link(
+                self._session, action=action, entity_type=entity_type, entity_id=entity,
+                actor=legacy_actor, details=payload, tenant_id=tenant_id,
             )
             record = AuditLogRecord(
                 action=action,
                 entity_type=entity_type,
-                entity_id=str(entity_id)[:256],
+                entity_id=entity,
                 # Legacy column still written so /api/audit's existing actor filter and
                 # any current reader keep working.
-                actor=actor_id or actor_display or "system",
+                actor=legacy_actor,
                 actor_type=resolved_type.value,
                 actor_id=actor_id,
                 actor_display=actor_display,
@@ -100,7 +138,11 @@ class AuditService:
                 outcome=outcome,
                 source_observer=source_observer,
                 client_ip=(client_ip or None),
-                details=details or {},
+                details=payload,
+                tenant_id=tenant_id,
+                seq=seq,
+                prev_hash=prev_hash,
+                row_hash=row_hash,
             )
             self._session.add(record)
             await self._session.flush()

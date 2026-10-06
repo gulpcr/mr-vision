@@ -306,10 +306,17 @@ async def generate_pdf_report(
     service: Annotated[ResultService, Depends(get_result_service)],
     llm_service: Annotated[LLMReportService, Depends(get_llm_report_service)],
 ):
-    """Generate and download a PDF report, with AI narrative if LLM is enabled."""
+    """Generate and download a PDF report, with AI narrative if LLM is enabled.
+
+    Once the study is e-signed, the first PDF produced is frozen as the signed copy
+    (alembic 054) and every later download serves that copy, hash-verified."""
     result = await service.get_result(study_uid, usecase)
     if not result:
         raise HTTPException(404, "No result found")
+
+    signed_copy = await _signed_copy(service, study_uid, usecase)
+    if signed_copy is not None:
+        return _pdf_response(signed_copy, study_uid, usecase, signed=True)
 
     settings = get_settings()
     narrative = ""
@@ -355,7 +362,7 @@ async def generate_pdf_report(
     if (
         usecase == "pet_ct"
         and settings.petct_ai_report_enabled
-        and settings.gemini_api_key
+        and settings.external_ai_allowed
         and not (isinstance(summary_for_pdf.get("ai_report"), dict))
     ):
         try:
@@ -511,17 +518,76 @@ async def generate_pdf_report(
             narrative=narrative,
         )
 
-    filename = f"report_{study_uid[:20]}_{usecase}.pdf"
+    if (patient_info.get("e_signature") or {}).get("integrity") == "valid":
+        await _freeze_signed_copy(service, study_uid, usecase, pdf_bytes)
+    return _pdf_response(pdf_bytes, study_uid, usecase, signed=False)
+
+
+async def _require_signed_or_409(service: ResultService, study_uid: str, channel: str) -> None:
+    """AI results leave the platform only after a valid radiologist signature, and never
+    over a channel the patient has restricted (164.522)."""
+    from app.application.export_gate import ExportNotSigned, ExportRestricted, require_signed
+
+    try:
+        await require_signed(
+            service._result_repo._session, service._result_repo._tenant_id or "default", study_uid,
+            channel=channel,
+        )
+    except ExportNotSigned as exc:
+        if isinstance(exc, ExportRestricted):  # keep the audit entry of the refusal
+            await service._result_repo._session.commit()
+        raise HTTPException(status_code=409, detail=exc.detail())
+
+
+def _signoff_service(service: ResultService):
+    from app.application.review_signoff_service import ReviewSignoffService
+    from app.infrastructure.database.repositories import PgAuditRepository
+
+    session = service._result_repo._session
+    tenant_id = service._result_repo._tenant_id or "default"
+    return ReviewSignoffService(
+        session, tenant_id=tenant_id, audit_repo=PgAuditRepository(session, tenant_id=tenant_id),
+    )
+
+
+async def _signed_copy(service: ResultService, study_uid: str, usecase: str) -> bytes | None:
+    from app.application.review_signoff_service import SignedDocumentIntegrityError
+    from app.infrastructure.storage.client import get_artifact_store
+
+    try:
+        return await _signoff_service(service).signed_document(study_uid, usecase, get_artifact_store())
+    except SignedDocumentIntegrityError as exc:
+        await service._result_repo._session.commit()  # keep the integrity-failure audit
+        raise HTTPException(status_code=409, detail=str(exc))
+    except Exception as exc:  # store unavailable: fall back to rendering, never block reading
+        logger.warning("signed_copy_lookup_failed", study_uid=study_uid, error=str(exc))
+        return None
+
+
+async def _freeze_signed_copy(service: ResultService, study_uid: str, usecase: str, pdf: bytes) -> None:
+    from app.infrastructure.storage.client import get_artifact_store
+
+    try:
+        await _signoff_service(service).freeze_signed_document(
+            study_uid, usecase, pdf, get_artifact_store()
+        )
+    except Exception as exc:
+        logger.warning("signed_copy_freeze_failed", study_uid=study_uid, error=str(exc))
+
+
+def _pdf_response(pdf_bytes: bytes, study_uid: str, usecase: str, *, signed: bool) -> Response:
+    filename = f"report_{study_uid[:20]}_{usecase}{'_signed' if signed else ''}.pdf"
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
         headers={
             "Content-Disposition": f'attachment; filename="{filename}"',
-            # Content is regenerated per request from whichever result version is
-            # currently latest — a browser-cached response could silently keep
+            # Unsigned content is regenerated per request from whichever result version
+            # is currently latest — a browser-cached response could silently keep
             # showing a prior version's findings (e.g. before ai_report was cached
             # or after a reprocess), so this response must never be cached.
             "Cache-Control": "no-store",
+            "X-Report-Signed-Copy": "true" if signed else "false",
         },
     )
 
@@ -541,6 +607,7 @@ async def generate_dicom_sr(
     result = await service.get_result(study_uid, usecase)
     if not result:
         raise HTTPException(404, "No result found")
+    await _require_signed_or_409(service, study_uid, "dicom_export")
 
     from app.dicom.sr_generator import SRGenerator
 
@@ -593,6 +660,7 @@ async def export_fhir_report(
     ).scalar_one_or_none()
     if study_rec is None:
         raise HTTPException(404, "Study not found")
+    await _require_signed_or_409(service, study_uid, "fhir")
 
     from app.fhir.fhir_export_service import FHIRExportService
 

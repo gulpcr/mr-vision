@@ -14,7 +14,12 @@ function OnStableStudy(studyId, tags, metadata)
       return
    end
 
-   local url = "http://backend:8000/api/orthanc/notify-stable-study"
+   -- https://backend:8000/... in production (docker-compose.prod.yml); Orthanc verifies
+   -- the backend certificate against HttpsCACertificates (the internal CA).
+   local url = os.getenv("ORTHANC_WEBHOOK_URL")
+   if url == nil or url == "" then
+      url = "http://backend:8000/api/orthanc/notify-stable-study"
+   end
    local body = '{"orthanc_id":"' .. studyId .. '","study_instance_uid":"' .. study_uid .. '"}'
 
    print("on_stable_study: notifying backend for study " .. study_uid)

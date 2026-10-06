@@ -57,7 +57,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxext6 \
     libxrender-dev \
     libgl1-mesa-glx \
+    tesseract-ocr \
     && rm -rf /var/lib/apt/lists/*
+# tesseract-ocr: OCR of burned-in patient text in US / secondary-capture images before
+# inference (app/infrastructure/orthanc/burned_in.py).
 
 # Make python3.11 the default and install pip
 RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 && \

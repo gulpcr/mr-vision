@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import structlog
@@ -35,7 +35,13 @@ class JobOrchestrator:
         routing_service: RoutingService,
         registry: UseCaseRegistry,
         usecase_allowed: Callable[[str], bool] | None = None,
+        shadow_planner: Callable[[str, str], Awaitable[dict[str, Any] | None]] | None = None,
+        shadow_queue: str = "mri_shadow",
     ):
+        # (study_uid, usecase) -> {"experiment_id", "model_version"} for an extra, isolated
+        # shadow run of a candidate model, or None. None = no experiments (default).
+        self._shadow_planner = shadow_planner
+        self._shadow_queue = shadow_queue
         # Tenant entitlement check (plan/feature flags) applied to auto-routed jobs;
         # None = unrestricted (single-tenant deployments).
         self._usecase_allowed = usecase_allowed
@@ -141,8 +147,45 @@ class JobOrchestrator:
                 usecase=uc_name,
             )
             jobs.append(job)
+            await self._maybe_dispatch_shadow(study_instance_uid, uc_name)
 
         return jobs
+
+    async def _maybe_dispatch_shadow(self, study_instance_uid: str, usecase_name: str) -> None:
+        """Add an isolated shadow run of a candidate model. Never affects the clinical
+        job: any failure here is logged and swallowed."""
+        if self._shadow_planner is None:
+            return
+        try:
+            plan = await self._shadow_planner(study_instance_uid, usecase_name)
+            if not plan:
+                return
+            shadow = JobRun(
+                id=str(uuid.uuid4()),
+                study_instance_uid=study_instance_uid,
+                usecase_name=usecase_name,
+                status=JobStatus.PENDING,
+                priority=0,
+                run_mode="shadow",
+                experiment_id=plan.get("experiment_id"),
+                model_version_override=plan.get("model_version"),
+                status_message="Shadow evaluation run (not used clinically)",
+            )
+            await self._job_repo.save(shadow)
+            await self._audit_repo.save(AuditEntry(
+                action=AuditAction.JOB_CREATED, entity_type="job", entity_id=shadow.id,
+                details={"study_uid": study_instance_uid, "usecase": usecase_name,
+                         "run_mode": "shadow", "experiment_id": shadow.experiment_id,
+                         "model_version": shadow.model_version_override},
+            ))
+            run_usecase_pipeline.apply_async(
+                args=[shadow.id, study_instance_uid, usecase_name],
+                task_id=shadow.id, queue=self._shadow_queue,
+            )
+            logger.info("shadow_job_dispatched", job_id=shadow.id, usecase=usecase_name,
+                        experiment_id=shadow.experiment_id)
+        except Exception as exc:
+            logger.warning("shadow_job_dispatch_failed", usecase=usecase_name, error=str(exc))
 
     async def cancel_job(self, job_id: str) -> JobRun:
         """Cancel a pending or running job."""
@@ -201,10 +244,11 @@ class JobOrchestrator:
         job.status_message = f"Retry #{job.retry_count}"
         await self._job_repo.update(job)
 
+        dispatch: dict[str, Any] = {"task_id": job.id, "priority": job.priority}
+        if job.run_mode == "shadow":
+            dispatch["queue"] = self._shadow_queue
         run_usecase_pipeline.apply_async(
-            args=[job.id, job.study_instance_uid, job.usecase_name],
-            task_id=job.id,
-            priority=job.priority,
+            args=[job.id, job.study_instance_uid, job.usecase_name], **dispatch,
         )
 
         await self._audit_repo.save(

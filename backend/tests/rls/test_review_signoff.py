@@ -262,3 +262,179 @@ def test_signed_pdf_block_renders():
     pdf = PDFReportGenerator().generate("1.2.3", "coronary_cta", {"summary": {}, "measurements": {}},
                                         patient_info=info)
     assert pdf[:4] == b"%PDF"
+
+
+@pytest.mark.skipif(not __import__("os").environ.get("MINIO_SECURE") and
+                    not __import__("os").environ.get("RLS_TEST_WITH_MINIO"),
+                    reason="needs a reachable MinIO (artifact store)")
+def test_signed_pdf_is_frozen_served_and_tamper_evident(client, world, as_rad_b):
+    """alembic 054: the first PDF after signing is frozen; later downloads return the
+    same bytes; changing the stored object is detected by verify and on download."""
+    S_PDF = f"{BASE}.54"
+    _owner_exec(
+        "INSERT INTO studies (study_instance_uid, tenant_id, patient_id, patient_name, modality, "
+        "reading_status, created_at, updated_at) VALUES (:s, :t, 'MRN-54', 'Pt 54', 'MR', 'unread', "
+        "now(), now())", {"s": S_PDF, "t": TB},
+    )
+    _add_result(S_PDF, "brain_mri", {"tumor_detected": False})
+    S_NORM = S_PDF  # noqa: N806  (local alias keeps the assertions below readable)
+    r = _sign(client, as_rad_b, S_NORM, comment="No acute intracranial abnormality.")
+    assert r.status_code == 200, r.text
+
+    first = client.get(f"/api/reports/{S_NORM}/brain_mri/pdf", headers=as_rad_b)
+    assert first.status_code == 200, first.text[:300]
+    assert first.headers["x-report-signed-copy"] == "false"
+    second = client.get(f"/api/reports/{S_NORM}/brain_mri/pdf", headers=as_rad_b)
+    assert second.headers["x-report-signed-copy"] == "true"
+    assert second.content == first.content
+
+    verify = client.get(f"/api/studies/{S_NORM}/signoff/verify", headers=as_rad_b).json()
+    assert verify["valid"] is True and verify["documents"][0]["usecase"] == "brain_mri"
+
+    # Append-only for the app role.
+    rows = _owner_exec("SELECT object_path FROM report_signature_documents WHERE study_instance_uid = :s",
+                       {"s": S_NORM})
+    assert len(rows) == 1
+
+    # Tamper with the stored copy.
+    import asyncio
+
+    from app.infrastructure.storage.client import get_artifact_store
+
+    asyncio.new_event_loop().run_until_complete(
+        get_artifact_store().put(rows[0][0], b"%PDF-1.4 forged", "application/pdf")
+    )
+    verify = client.get(f"/api/studies/{S_NORM}/signoff/verify", headers=as_rad_b).json()
+    assert verify["valid"] is False and verify["documents"][0]["valid"] is False
+    assert client.get(f"/api/reports/{S_NORM}/brain_mri/pdf", headers=as_rad_b).status_code == 409
+    hits = _owner_exec("SELECT count(*) FROM audit_log WHERE action = 'signed_document_integrity_failed' "
+                       "AND entity_id = :s", {"s": S_NORM})
+    assert hits[0][0] >= 1
+
+
+def test_ai_results_cannot_be_exported_before_sign_off(client, world, as_rad_b, as_b, monkeypatch):
+    """AI-01: DICOM SR / FHIR / on-demand SR export refuse an unsigned (or since-changed) report."""
+    from app.config import get_settings
+
+    s = get_settings()
+    monkeypatch.setattr(s, "dicom_sr_enabled", True)
+    monkeypatch.setattr(s, "fhir_enabled", True)
+    S_EXP = f"{BASE}.71"
+    _owner_exec(
+        "INSERT INTO studies (study_instance_uid, tenant_id, patient_id, patient_name, modality, "
+        "reading_status, created_at, updated_at) VALUES (:s, :t, 'MRN-71', 'Pt 71', 'MR', 'unread', "
+        "now(), now())", {"s": S_EXP, "t": TB},
+    )
+    _add_result(S_EXP, "brain_mri", {"tumor_detected": False})
+    result_id = _owner_exec("SELECT id FROM results_index WHERE study_instance_uid = :s", {"s": S_EXP})[0][0]
+
+    refused = client.get(f"/api/reports/{S_EXP}/brain_mri/dicom-sr", headers=as_rad_b)
+    assert refused.status_code == 409
+    # The refusal explains itself: what blocked it, how to fix it, where to go.
+    detail = refused.json()["detail"]
+    assert detail["code"] == "not_signed"
+    assert "not been signed" in detail["message"] and "DICOM" in detail["message"]
+    assert "sign" in detail["remedy"].lower()
+    assert detail["action"] == {"label": "Open report sign-off", "path": f"/study/{S_EXP}#signoff"}
+    assert client.get(f"/api/reports/{S_EXP}/brain_mri/fhir", headers=as_rad_b).status_code == 409
+    assert client.post(f"/api/results/{result_id}/export-dicom", headers=as_rad_b).status_code == 409
+    # A portal link would show the unsigned AI findings to an outside physician.
+    share = client.post(f"/api/results/{result_id}/share", headers=as_b, json={})
+    assert share.status_code == 409 and share.json()["detail"]["code"] == "not_signed"
+    assert "portal link" in share.json()["detail"]["message"]
+
+    assert _sign(client, as_rad_b, S_EXP, comment="Normal study.").status_code == 200
+    sr = client.get(f"/api/reports/{S_EXP}/brain_mri/dicom-sr", headers=as_rad_b)
+    assert sr.status_code == 200, sr.text[:200]
+
+    # A re-run after signing changes the signed content: exports are refused again.
+    _owner_exec("UPDATE results_index SET summary = CAST(:j AS json) WHERE id = :i",
+                {"j": json.dumps({"tumor_detected": True}), "i": result_id})
+    again = client.get(f"/api/reports/{S_EXP}/brain_mri/dicom-sr", headers=as_rad_b)
+    assert again.status_code == 409
+    assert again.json()["detail"]["code"] == "changed_since_signing"
+    assert "again" in again.json()["detail"]["remedy"]
+
+
+def test_npi_is_validated_and_required_for_sign_off(client, world, as_rad_b, as_b, seeded, monkeypatch):
+    """TEC-08: a valid NPI (Luhn) is required to sign when REQUIRE_NPI_FOR_SIGNING is on,
+    and is recorded on the signature and in the verified SR."""
+    from app.config import get_settings
+
+    npi_system = "http://hl7.org/fhir/sid/us-npi"
+    bad = client.patch(f"/api/practitioners/{seeded['rad_b']}", headers=as_b,
+                       json={"identifier_system": npi_system, "identifier_value": "1234567890"})
+    assert bad.status_code in (400, 422), bad.text
+
+    monkeypatch.setattr(get_settings(), "require_npi_for_signing", True)
+    S_NPI = f"{BASE}.81"
+    _owner_exec(
+        "INSERT INTO studies (study_instance_uid, tenant_id, patient_id, patient_name, modality, "
+        "reading_status, created_at, updated_at) VALUES (:s, :t, 'MRN-81', 'Pt 81', 'MR', 'unread', "
+        "now(), now())", {"s": S_NPI, "t": TB},
+    )
+    _add_result(S_NPI, "brain_mri", {"tumor_detected": False})
+    _owner_exec("UPDATE users SET identifier_system = NULL, identifier_value = NULL WHERE id = :u",
+                {"u": seeded["rad_b"]})
+    refused = _sign(client, as_rad_b, S_NPI, comment="Normal.")
+    assert refused.status_code == 422 and "NPI" in refused.text
+
+    ok = client.patch(f"/api/practitioners/{seeded['rad_b']}", headers=as_b,
+                      json={"identifier_system": npi_system, "identifier_value": "1234567893"})
+    assert ok.status_code == 200, ok.text
+    signed = _sign(client, as_rad_b, S_NPI, comment="Normal.")
+    assert signed.status_code == 200, signed.text
+    assert signed.json()["signatures"][0]["signer_npi"] == "1234567893"
+
+
+def test_result_provenance_is_recorded_and_bound_to_the_signature(client, world, as_rad_b):
+    """AI-02: provenance row per result, readable via the API, part of the signed content."""
+    from sqlalchemy.orm import Session
+
+    import sqlalchemy as sa
+    from app.infrastructure.queue.tasks import _save_provenance
+
+    S_PROV = f"{BASE}.91"
+    _owner_exec(
+        "INSERT INTO studies (study_instance_uid, tenant_id, patient_id, patient_name, modality, "
+        "reading_status, created_at, updated_at) VALUES (:s, :t, 'MRN-91', 'Pt 91', 'MR', 'unread', "
+        "now(), now())", {"s": S_PROV, "t": TB},
+    )
+    _add_result(S_PROV, "brain_mri", {"tumor_detected": False})
+    rid = _owner_exec("SELECT id FROM results_index WHERE study_instance_uid = :s", {"s": S_PROV})[0][0]
+    engine = sa.create_engine(OWNER_URL)
+    with Session(engine) as s:
+        _save_provenance(s, rid, None, "brain_mri", {"model_version": "1", "model_checksum": "abc",
+                                                      "summary": {}}, TB,
+                         "2026-10-02T10:00:00+00:00", "2026-10-02T10:00:05+00:00")
+    engine.dispose()
+    prov = client.get(f"/api/provenance/{rid}", headers=as_rad_b)
+    assert prov.status_code == 200, prov.text
+    body = prov.json()
+    assert len(body["record_sha256"]) == 64 and body["model_version"] == "1"
+    assert any(w["path"].endswith("inference_config.yaml") for w in body["weights"])
+
+    r = _sign(client, as_rad_b, S_PROV, comment="Normal.")
+    assert r.status_code == 200, r.text
+    snap = _owner_exec("SELECT content_snapshot FROM report_signatures WHERE study_instance_uid = :s",
+                       {"s": S_PROV})[0][0]
+    assert snap["results"][0]["provenance_sha256"] == body["record_sha256"]
+
+
+def test_signing_records_ai_quality_metrics(client, world, as_rad_b, as_b):
+    """AI-04: one ai_report_reviews row per signed AI result; the dashboard aggregates them."""
+    S_QA = f"{BASE}.95"
+    _owner_exec(
+        "INSERT INTO studies (study_instance_uid, tenant_id, patient_id, patient_name, modality, "
+        "reading_status, created_at, updated_at) VALUES (:s, :t, 'MRN-95', 'Pt 95', 'MR', 'unread', "
+        "now(), now())", {"s": S_QA, "t": TB},
+    )
+    _add_result(S_QA, "brain_mri", {"ai_report": {"impression": "No acute intracranial abnormality."}})
+    assert _sign(client, as_rad_b, S_QA, comment="Agree.").status_code == 200
+    rows = _owner_exec(
+        "SELECT r.outcome, r.similarity, r.usecase_name FROM ai_report_reviews r "
+        "JOIN report_signatures s ON s.id = r.signature_id WHERE s.study_instance_uid = :s", {"s": S_QA})
+    assert rows == [("unchanged", 1.0, "brain_mri")]
+    q = client.get("/api/admin/metrics/ai-quality", headers=as_b)
+    assert q.status_code == 200, q.text
+    assert any(r["usecase_name"] == "brain_mri" and r["signed_results"] >= 1 for r in q.json()["series"])

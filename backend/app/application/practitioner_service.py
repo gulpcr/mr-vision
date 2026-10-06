@@ -68,6 +68,12 @@ class PractitionerService:
                 raise PractitionerValidationError(
                     "identifier_system is required when identifier_value is set"
                 )
+            from app.domain.npi import NPI_SYSTEM, is_valid_npi
+
+            if value and system == NPI_SYSTEM and not is_valid_npi(value):
+                raise PractitionerValidationError(
+                    "Not a valid NPI: 10 digits starting with 1 or 2, with a correct check digit"
+                )
             user.identifier_value = value
             user.identifier_system = system if value else None
 

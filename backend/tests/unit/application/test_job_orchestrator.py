@@ -208,3 +208,55 @@ class TestGetAndListJobs:
         deps["job_repo"].list_by_study.return_value = jobs
         result = await orchestrator.list_jobs_for_study("1.2.3")
         assert len(result) == 2
+
+
+class TestShadowRuns:
+    """AI-05: a candidate model runs only as an isolated shadow job on its own queue."""
+
+    @pytest.mark.asyncio
+    async def test_no_planner_means_no_shadow(self, orchestrator, deps, study, series_list):
+        deps["study_repo"].get_by_uid.return_value = study
+        deps["series_repo"].list_by_study.return_value = series_list
+        deps["registry"].usecases = {"brain_mri": MagicMock()}
+        await orchestrator.create_jobs_for_study("1.2.3.4.5", usecase_names=["brain_mri"])
+        assert _run_pipeline.apply_async.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_shadow_job_is_separate_and_on_the_shadow_queue(self, deps, study, series_list):
+        planner = AsyncMock(return_value={"experiment_id": "exp-1", "model_version": "2.0-candidate"})
+        orch = JobOrchestrator(**deps, shadow_planner=planner, shadow_queue="mri_shadow")
+        deps["study_repo"].get_by_uid.return_value = study
+        deps["series_repo"].list_by_study.return_value = series_list
+        deps["registry"].usecases = {"brain_mri": MagicMock()}
+
+        jobs = await orch.create_jobs_for_study("1.2.3.4.5", usecase_names=["brain_mri"])
+
+        # The caller sees only the clinical job.
+        assert len(jobs) == 1 and jobs[0].run_mode == "clinical"
+        calls = _run_pipeline.apply_async.call_args_list
+        assert len(calls) == 2
+        assert "queue" not in calls[0].kwargs                      # clinical: default queue
+        assert calls[1].kwargs["queue"] == "mri_shadow"            # shadow: isolated queue
+        shadow_job = deps["job_repo"].save.call_args_list[1].args[0]
+        assert shadow_job.run_mode == "shadow"
+        assert shadow_job.experiment_id == "exp-1"
+        assert shadow_job.model_version_override == "2.0-candidate"
+
+    @pytest.mark.asyncio
+    async def test_shadow_failure_never_affects_the_clinical_job(self, deps, study, series_list):
+        planner = AsyncMock(side_effect=RuntimeError("experiments table unavailable"))
+        orch = JobOrchestrator(**deps, shadow_planner=planner)
+        deps["study_repo"].get_by_uid.return_value = study
+        deps["series_repo"].list_by_study.return_value = series_list
+        deps["registry"].usecases = {"brain_mri": MagicMock()}
+        jobs = await orch.create_jobs_for_study("1.2.3.4.5", usecase_names=["brain_mri"])
+        assert len(jobs) == 1 and _run_pipeline.apply_async.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_retrying_a_shadow_job_keeps_it_on_the_shadow_queue(self, deps):
+        orch = JobOrchestrator(**deps, shadow_queue="mri_shadow")
+        job = JobRun(id="j1", study_instance_uid="1.2.3", usecase_name="brain_mri",
+                     status=JobStatus.FAILED, run_mode="shadow")
+        deps["job_repo"].get_by_id.return_value = job
+        await orch.retry_job("j1")
+        assert _run_pipeline.apply_async.call_args.kwargs["queue"] == "mri_shadow"

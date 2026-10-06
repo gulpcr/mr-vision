@@ -163,8 +163,13 @@ class FHIRClient:
     """Client for exporting results as FHIR resources."""
 
     def __init__(self, server_url: str | None = None):
+        from app.domain.outbound_policy import check_outbound_url
+
         settings = get_settings()
         self._server_url = (server_url or settings.fhir_server_url).rstrip("/")
+        if self._server_url:
+            # PHI (reports, identifiers) is only ever sent encrypted.
+            check_outbound_url(self._server_url, **settings.outbound_policy)
         self._client = httpx.AsyncClient(timeout=30.0)
 
     async def close(self):

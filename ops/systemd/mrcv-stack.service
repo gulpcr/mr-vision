@@ -1,0 +1,19 @@
+[Unit]
+Description=MRCV production stack (decrypt secrets to tmpfs, preflight, docker compose up)
+Documentation=file:///opt/mrcv/ops/deploy/README.md
+Requires=docker.service
+After=docker.service network-online.target mrcv-docker-firewall.service
+Wants=network-online.target mrcv-docker-firewall.service
+# Docker's data-root lives on the LUKS volume (ops/deploy/bootstrap.sh).
+RequiresMountsFor=/srv/mrcv
+
+[Service]
+Type=oneshot
+RemainAfterExit=true
+WorkingDirectory=/opt/mrcv
+ExecStart=/bin/bash /opt/mrcv/ops/deploy/up.sh
+ExecStop=/bin/sh -c 'docker compose --env-file /run/mrcv/.env -f docker-compose.yml -f docker-compose.prod.yml stop'
+TimeoutStartSec=30min
+
+[Install]
+WantedBy=multi-user.target

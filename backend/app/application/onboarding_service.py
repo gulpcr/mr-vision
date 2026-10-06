@@ -635,18 +635,18 @@ class OnboardingService:
         await self._session.flush()
         return True
 
-    async def _audit(self, actor: str | None, action: str, entity_id: str, details: dict) -> None:
-        from app.infrastructure.database.models import AuditLogRecord
+    async def _audit(self, actor: str | None, action: str, entity_id: str, details: dict,
+                     before: Any = None, after: Any = None) -> None:
+        """Hash-chained entry (AuditService); before/after state hashed (TEC-07)."""
+        from app.application.audit_service import AuditService
 
-        self._session.add(AuditLogRecord(
-            id=str(uuid.uuid4()),
-            action=action,
-            entity_type="onboarding",
-            entity_id=entity_id,
-            **_audit_actor_fields(actor),
-            action_crude=audit_action_to_crude(action),
-            details=details,
-        ))
+        f = _audit_actor_fields(actor)
+        await AuditService(self._session).record(
+            action, "onboarding", entity_id,
+            actor_id=f["actor_id"], actor_display=f["actor_display"],
+            actor_type=AuditActorType(f["actor_type"]), details=details,
+            before=before, after=after,
+        )
 
     @staticmethod
     def _patient_dict(p) -> dict[str, Any]:

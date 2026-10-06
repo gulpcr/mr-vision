@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import tempfile
 import traceback
+import uuid
+from datetime import datetime, timezone
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -179,7 +182,10 @@ def _report_context_for_study(session: Session, study_uid: str) -> dict[str, Any
         sex = (getattr(st, "patient_sex", None) or (patient.sex if patient else None) or "").strip() or None
         if sex:
             sex = {"m": "male", "f": "female", "o": "other"}.get(sex.lower(), sex)
-        age = _fmt_dicom_age(getattr(st, "patient_age", None)) or (patient.age_band if patient else None)
+        from app.domain.deidentification import cap_age
+
+        # Ages over 89 are reported as 90 (Safe Harbor), also in model prompts.
+        age = _fmt_dicom_age(cap_age(getattr(st, "patient_age", None))) or (patient.age_band if patient else None)
         ctx["sex"], ctx["age"] = sex, age
         ctx["demographics"] = ", ".join(p for p in [sex, age] if p) or None
     except Exception:
@@ -187,7 +193,34 @@ def _report_context_for_study(session: Session, study_uid: str) -> dict[str, Any
     return ctx
 
 
-def _save_result(session: Session, result_data: dict[str, Any], tenant_id: str | None = None):
+def _save_result(
+    session: Session, result_data: dict[str, Any], tenant_id: str | None = None,
+    shadow: bool = False,
+):
+    if shadow:
+        # Shadow (experimental) run: kept for comparison only. It never becomes the
+        # clinical "latest" result and never demotes the one clinicians read (alembic 056;
+        # the database refuses is_shadow AND is_latest).
+        session.add(ResultRecord(
+            id=result_data["id"],
+            study_instance_uid=result_data["study_instance_uid"],
+            tenant_id=tenant_id or "default",
+            usecase_name=result_data["usecase_name"],
+            job_id=result_data["job_id"],
+            summary=result_data["summary"],
+            measurements=result_data["measurements"],
+            qa_flags=result_data["qa_flags"],
+            qa_details=result_data["qa_details"],
+            model_version=result_data["model_version"],
+            model_checksum=result_data["model_checksum"],
+            artifacts=[],
+            version=0,
+            is_latest=False,
+            is_shadow=True,
+        ))
+        session.commit()
+        return
+
     # Mark previous latest as not-latest (scoped, so this can never flip another
     # tenant's "latest" result for the same study/usecase pair).
     existing_stmt = session.query(ResultRecord).filter(
@@ -223,6 +256,31 @@ def _save_result(session: Session, result_data: dict[str, Any], tenant_id: str |
     session.commit()
 
 
+def _save_provenance(
+    session: Session, result_id: str, job_id: str, usecase_name: str,
+    postprocessed: dict[str, Any], tenant_id: str, started_at: str, completed_at: str,
+) -> None:
+    """AI-02: record which model iteration produced the result (never blocks the run)."""
+    try:
+        from app.infrastructure.database.models import AIInferenceMetadataRecord
+        from app.infrastructure.provenance import collect_provenance, provenance_sha256
+
+        record = collect_provenance(
+            usecase_name=usecase_name, postprocessed=postprocessed,
+            started_at=started_at, completed_at=completed_at, settings=get_settings(),
+        )
+        session.add(AIInferenceMetadataRecord(
+            id=str(uuid.uuid4()), tenant_id=tenant_id or "default", result_id=result_id,
+            job_id=job_id, usecase_name=usecase_name, model_name=record["model_name"][:128],
+            model_version=str(record["model_version"])[:64], record=record,
+            record_sha256=provenance_sha256(record),
+        ))
+        session.commit()
+    except Exception as exc:
+        session.rollback()
+        logger.warning("provenance_record_failed", result_id=result_id, error=str(exc))
+
+
 def _write_audit(
     session: Session,
     action: str,
@@ -239,13 +297,11 @@ def _write_audit(
     resolved_tenant_id = tenant_id or "default"
     secret = derive_secret("audit-chain-v1")
 
-    tail = (
-        session.query(AuditLogRecord.seq, AuditLogRecord.row_hash)
-        .filter(AuditLogRecord.seq.isnot(None))
-        .order_by(AuditLogRecord.seq.desc())
-        .with_for_update()
-        .first()
-    )
+    from sqlalchemy import text as _text
+
+    # audit_chain_tail() (alembic 044) returns the GLOBAL tail with a FOR UPDATE lock
+    # whatever the session's RLS scope, so the chain can't fork across writers.
+    tail = session.execute(_text("SELECT seq, row_hash FROM audit_chain_tail()")).first()
     next_seq = (tail.seq + 1) if tail else 1
     prev_hash = tail.row_hash if tail else None
 
@@ -352,23 +408,18 @@ def _run_post_result_hooks(
                         prior_res = await async_session.execute(prior_stmt)
                         prior_result = prior_res.scalar_one_or_none()
                         if prior_result:
-                            # Store auto-comparison reference in audit log
-                            import uuid as _uuid
-                            from app.infrastructure.database.models import AuditLogRecord
-                            audit = AuditLogRecord(
-                                id=str(_uuid.uuid4()),
-                                action="auto_prior_comparison",
-                                entity_type="result",
-                                entity_id=result_id,
-                                actor="celery_worker",
-                                tenant_id=study.tenant_id,
+                            # Store auto-comparison reference in the (hash-chained) audit log
+                            from app.application.audit_service import AuditService
+
+                            await AuditService(async_session).record(
+                                "auto_prior_comparison", "result", result_id,
+                                actor_display="celery_worker",
                                 details={
                                     "prior_result_id": prior_result.id,
                                     "patient_id": study.patient_id,
                                     "usecase": usecase_name,
                                 },
                             )
-                            async_session.add(audit)
                     except Exception as e:
                         logger.warning("prior_comparison_hook_failed", error=str(e))
 
@@ -476,6 +527,18 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
             logger.info("job_already_cancelled", job_id=job_id)
             return {"job_id": job_id, "status": "cancelled"}
 
+        # Shadow run (A/B treatment arm / candidate model): isolated from clinical care —
+        # no external AI, no stored images, no exports, alerts or other post-result hooks,
+        # and its result never becomes the clinical one (see _save_result).
+        _job_row = session.query(JobRunRecord).filter(JobRunRecord.id == job_id).first()
+        is_shadow = bool(_job_row is not None and _job_row.run_mode == "shadow")
+        run_options = {
+            "run_mode": "shadow" if is_shadow else "clinical",
+            "model_version_override": getattr(_job_row, "model_version_override", None),
+            "experiment_id": getattr(_job_row, "experiment_id", None),
+        }
+        external_ai_allowed = get_settings().external_ai_allowed and not is_shadow
+
         logger.info(
             "pipeline_started",
             job_id=job_id,
@@ -493,6 +556,8 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
         module_path = f"app.usecases.{usecase_name}.pipeline"
         pipeline_module = importlib.import_module(module_path)
         pipeline = pipeline_module.Pipeline()
+        # Plugins that support model selection read run_options["model_version_override"].
+        pipeline.run_options = run_options
 
         pacs_client = OrthancPACSClient()
         loop = asyncio.new_event_loop()
@@ -566,9 +631,25 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
 
         with tempfile.TemporaryDirectory(prefix=f"mri_pipeline_{job_id}_") as working_dir:
             pacs_for_pipeline = OrthancPACSClient()
+            pipeline_study = study_domain
+            if get_settings().phi_deidentify_enabled:
+                # Safe Harbor boundary (164.514(b)): the pipeline sees no name, MRN, dates
+                # or staff, and every DICOM file it downloads is de-identified on arrival.
+                # The task keeps study_domain to link the result back to the patient.
+                from app.infrastructure.orthanc.deidentify import (
+                    DeidentifyingPACSClient,
+                    deidentified_study,
+                )
+
+                _salt = get_settings().phi_hash_salt
+                pacs_for_pipeline = DeidentifyingPACSClient(
+                    pacs_for_pipeline, _salt,
+                    check_burned_in_text=get_settings().burned_in_text_check_enabled,
+                )
+                pipeline_study = deidentified_study(study_domain, _salt)
             try:
                 preprocessed = pipeline.preprocess(
-                    study=study_domain,
+                    study=pipeline_study,
                     series=series_domain,
                     working_dir=working_dir,
                     pacs=pacs_for_pipeline,
@@ -580,7 +661,7 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
             # ── VLM Image Quality Assessment (Phase 2) ──────────────────────
             vlm_qa_result: dict = {"flags": [], "details": {}}
             settings = get_settings()
-            if settings.vlm_qa_enabled and settings.gemini_api_key:
+            if settings.vlm_qa_enabled and external_ai_allowed:
                 try:
                     _update_job_status(
                         session, job_id, JobStatus.PREPROCESSING, progress=0.30,
@@ -619,7 +700,9 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
                 message="Running model inference",
             )
 
+            _infer_started = datetime.now(timezone.utc).isoformat()
             inference_output = pipeline.infer(preprocessed, working_dir)
+            _infer_completed = datetime.now(timezone.utc).isoformat()
 
             _update_job_status(
                 session, job_id, JobStatus.POSTPROCESSING, progress=0.75,
@@ -627,6 +710,20 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
             )
 
             postprocessed = pipeline.postprocess(inference_output, working_dir)
+
+            # Burned-in text masked before inference: say so on the result (append-only).
+            _redaction = getattr(pacs_for_pipeline, "redaction", None)
+            if _redaction is not None and _redaction.checked:
+                _flags = postprocessed.setdefault("qa_flags", [])
+                _vals = {f.value if hasattr(f, "value") else f for f in _flags}
+                for _flag in _redaction.qa_flags():
+                    if _flag not in _vals:
+                        _flags.append(_flag)
+                postprocessed.setdefault("qa_details", {})["burned_in_text"] = {
+                    "images_checked": _redaction.checked,
+                    "images_redacted": _redaction.redacted_images,
+                    "text_boxes": _redaction.boxes,
+                }
 
             # Merge VLM QA flags into postprocessed result (non-destructive)
             if vlm_qa_result["flags"]:
@@ -643,7 +740,7 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
                 postprocessed["qa_details"]["vlm_qa"] = vlm_qa_result["details"]
 
             # ── LLM Clinical Decision Support (Phase 3) ──────────────────────
-            if settings.cds_enabled and settings.gemini_api_key:
+            if settings.cds_enabled and external_ai_allowed:
                 try:
                     _update_job_status(
                         session, job_id, JobStatus.POSTPROCESSING, progress=0.80,
@@ -678,7 +775,7 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
                     logger.warning("cds_failed", job_id=job_id, error=str(exc))
 
             # ── LLM Longitudinal Trend Analysis (Phase 4) ─────────────────────
-            if settings.longitudinal_enabled and settings.gemini_api_key and study_domain.patient_id:
+            if settings.longitudinal_enabled and external_ai_allowed and study_domain.patient_id:
                 try:
                     _update_job_status(
                         session, job_id, JobStatus.POSTPROCESSING, progress=0.83,
@@ -755,7 +852,7 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
             if usecase_name == "mammography":
                 narr_summary = postprocessed.get("summary", {})
                 ai_report = None
-                if settings.mammography_ai_report_enabled and settings.gemini_api_key:
+                if settings.mammography_ai_report_enabled and external_ai_allowed:
                     try:
                         _update_job_status(
                             session, job_id, JobStatus.POSTPROCESSING, progress=0.84,
@@ -828,7 +925,7 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
                         )
 
                         narr_client = None
-                        if settings.llm_enabled and settings.gemini_api_key:
+                        if settings.llm_enabled and external_ai_allowed:
                             from app.infrastructure.llm.gemini_client import GeminiClient
 
                             narr_client = GeminiClient(
@@ -864,7 +961,7 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
             # run yet). Non-blocking: any failure leaves the deterministic summary intact.
             petct_ai_wanted = usecase_name == "pet_ct" and (
                 settings.medgemma_enabled
-                or (settings.petct_ai_report_enabled and settings.gemini_api_key)
+                or (settings.petct_ai_report_enabled and external_ai_allowed)
             )
             if petct_ai_wanted:
                 try:
@@ -978,7 +1075,7 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
             if (
                 usecase_name == "coronary_cta"
                 and settings.coronary_cta_ai_report_enabled
-                and settings.gemini_api_key
+                and external_ai_allowed
             ):
                 try:
                     _update_job_status(
@@ -1423,7 +1520,8 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
 
             store = MinIOArtifactStore()
             artifact_records = []
-            for artifact in postprocessed.get("artifacts", []):
+            # Shadow runs persist no images: only the numbers needed for comparison.
+            for artifact in ([] if is_shadow else postprocessed.get("artifacts", [])):
                 artifact_local_path = artifact["local_path"]
                 storage_key = artifact_key(tenant_id, study_instance_uid, usecase_name, artifact["name"])
                 with open(artifact_local_path, "rb") as f:
@@ -1437,6 +1535,8 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
                     "storage_path": storage_key,
                     "content_type": artifact.get("content_type", "application/octet-stream"),
                     "size_bytes": len(artifact_data),
+                    # Verified on every download (HIPAA 164.312(c)).
+                    "sha256": hashlib.sha256(artifact_data).hexdigest(),
                 })
 
             result_id = str(uuid.uuid4())
@@ -1454,10 +1554,14 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
                 "artifacts": artifact_records,
             }
 
-            _save_result(session, result_data, tenant_id=tenant_id)
+            _save_result(session, result_data, tenant_id=tenant_id, shadow=is_shadow)
+            _save_provenance(
+                session, result_id, job_id, usecase_name, postprocessed, tenant_id,
+                _infer_started, _infer_completed,
+            )
 
             # ── DICOM SR/Seg Export (Phase 7) ─────────────────────────────────
-            if settings.dicom_sr_enabled or settings.dicom_seg_enabled:
+            if (settings.dicom_sr_enabled or settings.dicom_seg_enabled) and not is_shadow:
                 try:
                     _update_job_status(
                         session, job_id, JobStatus.POSTPROCESSING, progress=0.90,
@@ -1486,16 +1590,17 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
                 except Exception as exc:
                     logger.warning("dicom_export_failed", job_id=job_id, error=str(exc))
 
-            # ── Post-result hooks ─────────────────────────────────────────────
-            _run_post_result_hooks(
-                session=session,
-                loop=loop,
-                study=study_domain,
-                result_id=result_id,
-                usecase_name=usecase_name,
-                result_data=result_data,
-                postprocessed=postprocessed,
-            )
+            # ── Post-result hooks (clinical runs only) ────────────────────────
+            if not is_shadow:
+                _run_post_result_hooks(
+                    session=session,
+                    loop=loop,
+                    study=study_domain,
+                    result_id=result_id,
+                    usecase_name=usecase_name,
+                    result_data=result_data,
+                    postprocessed=postprocessed,
+                )
 
         _update_job_status(
             session, job_id, JobStatus.COMPLETED, progress=1.0,
@@ -1504,7 +1609,8 @@ def run_usecase_pipeline(self: Task, job_id: str, study_instance_uid: str, useca
 
         _write_audit(
             session, AuditAction.JOB_COMPLETED.value, "job", job_id,
-            {"study_uid": study_instance_uid, "usecase": usecase_name, "result_id": result_id},
+            {"study_uid": study_instance_uid, "usecase": usecase_name, "result_id": result_id,
+             "run_mode": run_options["run_mode"]},
             tenant_id=tenant_id,
         )
 
@@ -1638,7 +1744,10 @@ def run_retention_cleanup():
         with platform_scope():
             async with async_session_factory() as session:
                 try:
-                    service = RetentionService(session)
+                    from app.infrastructure.orthanc.client import OrthancPACSClient
+                    from app.infrastructure.storage.client import get_artifact_store
+
+                    service = RetentionService(session, get_artifact_store(), OrthancPACSClient())
                     totals = await service.apply_policies()
                     await session.commit()
                     logger.info("retention_cleanup_completed", totals=totals)
@@ -1836,3 +1945,178 @@ def run_stale_job_cleanup():
     finally:
         session.close()
         reset_scope(scope_token)
+
+
+@celery_app.task(
+    name="app.infrastructure.queue.tasks.run_audit_review_summary",
+    max_retries=1,
+)
+def run_audit_review_summary():
+    """Celery Beat task (monthly): build each active tenant's audit-log review for the
+    previous calendar month (HIPAA 164.308(a)(1)(ii)(D)) and notify its administrators.
+    Idempotent: an existing review for the period is left as it is."""
+    from app.config import get_settings
+    from app.infrastructure.database.session import async_session_factory
+
+    if not get_settings().audit_review_enabled:
+        return {"skipped": "audit_review_enabled is off"}
+
+    async def _run():
+        from sqlalchemy import select
+
+        from app.application.audit_review_service import (
+            AuditReviewService,
+            previous_month,
+            previous_week,
+        )
+        from app.infrastructure.database.models import TenantRecord
+        from app.infrastructure.realtime.events import publish_tenant_event
+        from app.infrastructure.tenant.db_scope import platform_scope, tenant_scope
+
+        weekly = get_settings().audit_review_cadence == "weekly"
+        start, end = previous_week() if weekly else previous_month()
+        with platform_scope():
+            async with async_session_factory() as session:
+                tenant_ids = (await session.execute(
+                    select(TenantRecord.id).where(
+                        TenantRecord.is_active.is_(True), TenantRecord.deleted_at.is_(None)
+                    )
+                )).scalars().all()
+        generated = 0
+        for tenant_id in tenant_ids:
+            try:
+                with tenant_scope(tenant_id):
+                    async with async_session_factory() as session:
+                        review = await AuditReviewService(session, tenant_id).generate(
+                            start, end, actor="audit_review_beat"
+                        )
+                        await session.commit()
+                generated += 1
+                try:
+                    await publish_tenant_event(tenant_id, {
+                        "type": "audit_review_ready",
+                        "review_id": review["id"],
+                        "period_start": review["period_start"],
+                        "findings": review["findings_count"],
+                    })
+                except Exception as exc:
+                    logger.warning("audit_review_notify_failed", tenant_id=tenant_id, error=str(exc))
+            except Exception as exc:
+                logger.warning("audit_review_failed", tenant_id=tenant_id, error=str(exc))
+        logger.info("audit_review_summary_completed", tenants=generated,
+                    period_start=start.isoformat())
+        return {"tenants": generated, "period_start": start.isoformat()}
+
+    return _run_async_beat_task(_run)
+
+
+
+@celery_app.task(
+    name="app.infrastructure.queue.tasks.run_security_alerts",
+    max_retries=0,
+)
+def run_security_alerts():
+    """Celery Beat task (every 10 min): security alert rules over the audit log
+    (ADM-04 / PRV-05). Each alert once: Redis-de-duplicated for a day."""
+    from app.config import get_settings
+    from app.infrastructure.database.session import async_session_factory
+
+    settings = get_settings()
+    if not settings.security_alerts_enabled:
+        return {"skipped": True}
+
+    async def _run():
+        from datetime import datetime, timedelta, timezone
+
+        from app.application.alerting_service import AlertingService
+        from app.application.security_alert_service import SecurityAlertService
+        from app.infrastructure.realtime.events import publish_tenant_event
+        from app.infrastructure.redis_conn import async_redis
+        from app.infrastructure.tenant.db_scope import platform_scope, tenant_scope
+
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(minutes=11)
+        with platform_scope():
+            async with async_session_factory() as session:
+                alerts = await SecurityAlertService(
+                    session, settings.security_alert_failed_logins,
+                ).evaluate(start, end)
+        redis = async_redis(socket_timeout=3)
+        raised = 0
+        for alert in alerts:
+            try:
+                if not await redis.set(f"secalert:{alert.key}", "1", nx=True, ex=86400):
+                    continue
+            except Exception:
+                pass  # Redis down: better a duplicate alert than a missed one
+            raised += 1
+            logger.warning("security_alert", tenant_id=alert.tenant_id, kind=alert.kind,
+                           severity=alert.severity, title=alert.title, count=alert.count,
+                           details=alert.details)
+            try:
+                await publish_tenant_event(alert.tenant_id, alert.payload())
+            except Exception as exc:
+                logger.warning("security_alert_notify_failed", error=str(exc))
+            try:
+                with tenant_scope(alert.tenant_id):
+                    async with async_session_factory() as session:
+                        await AlertingService(session).trigger_alert("security_alert", alert.payload())
+                        await session.commit()
+            except Exception as exc:
+                logger.warning("security_alert_webhook_failed", error=str(exc))
+        return {"alerts": raised}
+
+    return _run_async_beat_task(_run)
+
+
+@celery_app.task(
+    name="app.infrastructure.queue.tasks.run_audit_chain_check",
+    max_retries=0,
+)
+def run_audit_chain_check():
+    """Celery Beat task (hourly): verify the audit hash chain; a break is a critical
+    security alert (tampering or deletion)."""
+    from app.infrastructure.database.session import async_session_factory
+
+    async def _run():
+        from app.application.audit_integrity_service import AuditIntegrityService
+        from app.infrastructure.tenant.db_scope import platform_scope
+
+        with platform_scope():
+            async with async_session_factory() as session:
+                result = await AuditIntegrityService(session).verify_chain()
+        if not result.get("valid"):
+            logger.error("security_alert", kind="audit_chain_broken", severity="critical",
+                         title="Audit hash chain verification failed", details=result)
+        return result
+
+    return _run_async_beat_task(_run)
+
+
+@celery_app.task(
+    name="app.infrastructure.queue.tasks.run_audit_archive_export",
+    max_retries=1,
+)
+def run_audit_archive_export():
+    """Celery Beat task (monthly): signed audit-log archive of last month into the
+    compliance-mode Object Lock bucket (PRV-06)."""
+    from app.config import get_settings
+    from app.infrastructure.database.session import async_session_factory
+
+    if not get_settings().audit_archive_enabled:
+        return {"skipped": "audit_archive_enabled is off"}
+
+    async def _run():
+        from app.application.audit_archive_service import AuditArchiveService, previous_month_bounds
+        from app.infrastructure.storage.audit_archive import AuditArchiveStore
+        from app.infrastructure.tenant.db_scope import platform_scope
+
+        start, end = previous_month_bounds()
+        with platform_scope():
+            async with async_session_factory() as session:
+                result = await AuditArchiveService(session, AuditArchiveStore()).export_month(start, end)
+                await session.commit()
+        logger.info("audit_archive_export_completed", **result)
+        return result
+
+    return _run_async_beat_task(_run)

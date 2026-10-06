@@ -256,12 +256,13 @@ async def on_stable_study(
     import structlog as _sl
 
     settings = get_settings()
-    if settings.orthanc_webhook_secret:
-        presented = request.headers.get("X-Orthanc-Webhook-Secret", "")
-        if not hmac.compare_digest(presented, settings.orthanc_webhook_secret):
-            raise HTTPException(status_code=401, detail="Invalid webhook secret")
-    else:
-        _sl.get_logger(__name__).warning("orthanc_webhook_secret_not_configured")
+    if not settings.orthanc_webhook_secret:
+        # Unauthenticated ingest would let anyone trigger study import + AI jobs.
+        _sl.get_logger(__name__).error("orthanc_webhook_secret_not_configured")
+        raise HTTPException(status_code=503, detail="Webhook not configured")
+    presented = request.headers.get("X-Orthanc-Webhook-Secret", "")
+    if not hmac.compare_digest(presented, settings.orthanc_webhook_secret):
+        raise HTTPException(status_code=401, detail="Invalid webhook secret")
 
     background_tasks.add_task(
         ingest_stable_study, body.orthanc_id, body.study_instance_uid, registry, routing_service
@@ -422,7 +423,8 @@ async def delete_orthanc_study(
         status = exc.response.status_code if exc.response is not None else 502
         if status == 404:
             raise HTTPException(status_code=404, detail=f"Orthanc study {orthanc_id} not found")
-        raise HTTPException(status_code=502, detail=f"Orthanc delete failed: {exc}")
+        structlog.get_logger(__name__).error("orthanc_delete_failed", error=str(exc))
+        raise HTTPException(status_code=502, detail="The PACS could not delete the study")
     finally:
         await client.close()
 

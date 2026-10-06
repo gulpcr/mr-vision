@@ -11,10 +11,9 @@ const nextConfig = {
         source: "/health",
         destination: `${process.env.BACKEND_URL || "http://backend:8000"}/health`,
       },
-      {
-        source: "/orthanc/:path*",
-        destination: `${process.env.ORTHANC_URL || "http://orthanc:8042"}/:path*`,
-      },
+      // No /orthanc passthrough: it exposed Orthanc's full REST API (list/download/
+      // delete every study) with no authentication. The UI reaches Orthanc only through
+      // the backend (/api/orthanc/*), and the viewer through nginx's gated /dicom-web.
     ];
   },
 };

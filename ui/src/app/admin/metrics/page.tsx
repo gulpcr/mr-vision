@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { api, QaMetrics } from "@/lib/api";
+import { api, QaMetrics, type AiQuality } from "@/lib/api";
 import { ErrorBanner } from "@/components/ui/ErrorBanner";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { CountUp } from "@/components/ui/CountUp";
@@ -341,6 +341,60 @@ export default function QaDashboardPage() {
         </>
       ) : (
         <EmptyState icon={BarChart3} title="No QA metrics available" description="Try refreshing or selecting a different time range." />
+      )}
+      <AiQualityPanel />
+    </div>
+  );
+}
+
+/** AI-04: how much radiologists change AI drafts before signing, per month (drift). */
+function AiQualityPanel() {
+  const [data, setData] = useState<AiQuality | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.metrics.getAiQuality(6).then(setData).catch((e) => setError(e.message));
+  }, []);
+
+  return (
+    <div className="bg-white dark:bg-surface rounded-lg border border-gray-200 dark:border-gray-700 p-5">
+      <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">AI draft vs signed report</h2>
+      <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+        Similarity of the signed report to the AI draft (word-level edit distance) and how often
+        radiologists changed it, per month — a falling similarity or rising edit rate signals drift.
+      </p>
+      {error && <p className="text-sm text-red-600">{error}</p>}
+      {data && data.series.length === 0 && (
+        <p className="text-sm text-gray-500 dark:text-gray-400">No signed AI results in this period.</p>
+      )}
+      {data && data.series.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <caption className="sr-only">AI draft versus signed report by month</caption>
+            <thead>
+              <tr className="text-left text-xs text-gray-500 dark:text-gray-400">
+                <th className="py-1.5 pr-3">Month</th><th className="pr-3">Use case</th><th className="pr-3">Model</th>
+                <th className="pr-3 text-right">Signed</th><th className="pr-3 text-right">Similarity</th>
+                <th className="pr-3 text-right">Edited</th><th className="pr-3 text-right">Major edits</th>
+                <th className="text-right">Slot discrepancy</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.series.map((r, i) => (
+                <tr key={i} className="border-t border-gray-100 dark:border-gray-800 tabular-nums">
+                  <td className="py-1.5 pr-3">{r.month?.slice(0, 7)}</td>
+                  <td className="pr-3">{r.usecase_name}</td>
+                  <td className="pr-3 text-xs">{r.model_version}</td>
+                  <td className="pr-3 text-right">{r.signed_results}</td>
+                  <td className="pr-3 text-right">{(r.mean_similarity * 100).toFixed(1)}%</td>
+                  <td className="pr-3 text-right">{r.edit_rate_pct}%</td>
+                  <td className="pr-3 text-right">{r.major_edit_rate_pct}%</td>
+                  <td className="text-right">{r.slot_discrepancy_rate_pct == null ? "—" : `${r.slot_discrepancy_rate_pct}%`}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );

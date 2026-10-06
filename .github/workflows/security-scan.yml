@@ -1,0 +1,132 @@
+# Security scanning (checklist ADM-02 risk analysis input, TEC controls evidence).
+# Runs on every push / PR and weekly; every report is kept as a build artifact for 400
+# days and is collected by ops/compliance/evidence-pack.sh. High/critical findings fail
+# the build (except npm audit, which is reported - the UI dependency tree is triaged
+# by hand). Third-party actions are pinned to major versions; pin by SHA if your policy
+# requires it.
+name: security-scan
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python-sast:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install scanners
+        run: pip install "bandit[toml]==1.7.9" "pip-audit==2.7.3" "semgrep==1.85.0"
+      - name: bandit (Python SAST)
+        working-directory: backend
+        run: |
+          mkdir -p ../reports
+          bandit -r app -x app/tests -f json -o ../reports/bandit.json --severity-level medium || true
+          bandit -r app -x app/tests --severity-level high --confidence-level high
+      - name: semgrep (OWASP / secrets rules)
+        run: |
+          semgrep scan --config p/python --config p/owasp-top-ten --config p/secrets \
+            --json --output reports/semgrep.json backend/app ui/src || true
+          semgrep scan --config p/secrets --error --quiet backend/app ui/src
+      - name: pip-audit (Python dependencies)
+        working-directory: backend
+        run: |
+          pip install -e . >/dev/null
+          pip-audit --format json --output ../reports/pip-audit.json || true
+          pip-audit --strict --vulnerability-service osv
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: python-security-reports
+          path: reports/
+          retention-days: 400
+
+  ui-dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: npm audit
+        working-directory: ui
+        run: |
+          npm ci --ignore-scripts
+          mkdir -p ../reports
+          npm audit --json > ../reports/npm-audit.json || true
+          npm audit --audit-level=critical --omit=dev
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ui-security-reports
+          path: reports/
+          retention-days: 400
+
+  container-images:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: backend-api
+            context: backend
+            target: api
+          - name: ui
+            context: ui
+            target: ""
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build ${{ matrix.name }}
+        run: |
+          if [ -n "${{ matrix.target }}" ]; then t="--target ${{ matrix.target }}"; else t=""; fi
+          docker build $t -t mrcv/${{ matrix.name }}:scan ${{ matrix.context }}
+      - name: Trivy (OS + library vulnerabilities, misconfig, secrets)
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: mrcv/${{ matrix.name }}:scan
+          format: json
+          output: trivy-${{ matrix.name }}.json
+          scanners: vuln,secret,misconfig
+          ignore-unfixed: true
+      - name: Fail on fixable critical vulnerabilities
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: mrcv/${{ matrix.name }}:scan
+          format: table
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trivy-${{ matrix.name }}
+          path: trivy-${{ matrix.name }}.json
+          retention-days: 400
+
+  iac-config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trivy config scan (compose, Dockerfiles, nginx)
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          scan-type: config
+          scan-ref: .
+          format: json
+          output: trivy-config.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trivy-config
+          path: trivy-config.json
+          retention-days: 400

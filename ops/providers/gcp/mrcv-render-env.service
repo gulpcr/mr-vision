@@ -1,0 +1,18 @@
+[Unit]
+Description=Render /opt/mrcv/.env from Secret Manager
+Documentation=file:///opt/mrcv/ops/providers/gcp/GCP_DEPLOYMENT.md
+After=network-online.target
+Wants=network-online.target
+Before=mrcv-stack.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=true
+# Non-secret settings (PUBLIC_DOMAIN, GCP_PROJECT, feature flags ...): /etc/mrcv/mrcv.env
+ExecStart=/bin/bash /opt/mrcv/ops/providers/gcp/render-env.sh
+# Metadata server / Secret Manager can lag right after boot.
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target

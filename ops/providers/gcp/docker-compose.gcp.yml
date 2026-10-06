@@ -1,0 +1,26 @@
+# Google Cloud overlay on top of the generic production override:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml \
+#                  -f ops/providers/gcp/docker-compose.gcp.yml up -d
+#
+# Only what is specific to GCP: Gemini through Vertex AI (covered by the Google Cloud
+# BAA; credentials are the VM service account via ADC, never an AI Studio key). Set
+# EXTERNAL_AI_BAA_CONFIRMED=true in the env file once the BAA is signed — until then the
+# platform keeps every Gemini feature off (Settings.external_ai_allowed).
+
+x-gcp-env: &gcp-env
+  GEMINI_BACKEND: vertex
+  GCP_PROJECT: ${GCP_PROJECT:?set GCP_PROJECT}
+  GCP_LOCATION: ${GCP_LOCATION:-us-central1}
+  GEMINI_API_KEY: ""
+
+services:
+  backend:
+    environment:
+      <<: *gcp-env
+  worker:
+    environment:
+      <<: *gcp-env
+  beat:
+    environment:
+      <<: *gcp-env

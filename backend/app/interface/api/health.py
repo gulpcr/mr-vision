@@ -4,6 +4,7 @@ import time
 import structlog
 from fastapi import APIRouter
 
+from app.infrastructure.redis_conn import async_redis
 from app.config import get_settings
 
 logger = structlog.get_logger(__name__)
@@ -26,12 +27,11 @@ async def _check_db() -> dict:
 
 async def _check_redis() -> dict:
     """Check Redis connectivity."""
-    import redis.asyncio as aioredis
 
-    settings = get_settings()
+    get_settings()
     start = time.monotonic()
     try:
-        client = aioredis.Redis(host=settings.redis_host, port=settings.redis_port, socket_timeout=3)
+        client = async_redis(socket_timeout=3)
         try:
             await client.ping()
             return {"status": "ok", "latency_ms": round((time.monotonic() - start) * 1000, 1)}

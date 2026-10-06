@@ -5,7 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { mutate } from "swr";
 import { useTenant, useTenantApiKeys, useTenantUsers } from "@/lib/hooks";
-import { api, TenantUser, type DicomEndpoint, type Plan } from "@/lib/api";
+import { api, TenantUser, type DicomEndpoint, type Plan, type TenantBAA } from "@/lib/api";
 import { startImpersonation } from "@/lib/impersonation";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { ErrorBanner } from "@/components/ui/ErrorBanner";
@@ -671,6 +671,93 @@ function LimitsAndPurgeCard({ tenantId, slug, maxUsersNow }: { tenantId: string;
   );
 }
 
+async function sha256Hex(file: File): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
+  return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** ADM-01: the business associate agreement on file. Only the signed document's SHA-256 is
+ * sent (computed here, in the browser); the document stays in the compliance repository. */
+function BaaCard({ tenantId }: { tenantId: string }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const [rows, setRows] = useState<TenantBAA[]>([]);
+  const [err, setErr] = useState<string | null>(null);
+  const [form, setForm] = useState({ counterparty: "", signatory_name: "", signatory_title: "",
+    signed_on: today, effective_from: today, expires_on: "" });
+  const [doc, setDoc] = useState<{ name: string; sha256: string } | null>(null);
+  const load = () => api.tenants.listBaas(tenantId).then(setRows).catch((e) => setErr(e.message));
+  useEffect(() => { load(); }, [tenantId]); // eslint-disable-line react-hooks/exhaustive-deps
+  const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) =>
+    setForm({ ...form, [k]: e.target.value });
+
+  const save = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!doc) return;
+    setErr(null);
+    try {
+      await api.tenants.recordBaa(tenantId, {
+        ...form, signatory_title: form.signatory_title || null, expires_on: form.expires_on || null,
+        document_name: doc.name, document_sha256: doc.sha256,
+      });
+      setDoc(null);
+      load();
+    } catch (e: any) { setErr(e.message); }
+  };
+  const inp = "text-sm border border-gray-200 dark:border-gray-700 dark:bg-surface-raised rounded-lg px-3 py-1.5";
+  const active = rows.some((r) => r.active);
+
+  return (
+    <section className="bg-white dark:bg-surface rounded-lg border border-gray-200 dark:border-gray-700 p-5 mb-6">
+      <h2 className="font-semibold text-gray-900 dark:text-gray-100">Business associate agreement</h2>
+      <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+        No patient data may reach this workspace before a BAA is signed. While required, the workspace
+        cannot be activated or given AE titles / API keys without an active BAA on file.
+      </p>
+      {!active && <p className="text-sm text-amber-700 dark:text-amber-400 mb-2">No active BAA on file.</p>}
+      {err && <p className="text-sm text-red-600 mb-2">{err}</p>}
+      <ul className="divide-y divide-gray-100 dark:divide-gray-800 text-sm mb-3">
+        {rows.map((r) => (
+          <li key={r.id} className="py-2 flex items-start justify-between gap-3">
+            <div>
+              <div className="font-medium">{r.counterparty} · {r.signatory_name}{r.signatory_title ? `, ${r.signatory_title}` : ""}</div>
+              <div className="text-xs text-gray-500">
+                Signed {r.signed_on} · effective {r.effective_from}{r.expires_on ? ` → ${r.expires_on}` : ""}
+                {r.terminated_at ? ` · terminated ${new Date(r.terminated_at).toLocaleDateString()}` : ""}
+              </div>
+              <div className="text-xs font-mono text-gray-400 break-all">{r.document_name} · {r.document_sha256}</div>
+            </div>
+            {r.active ? (
+              <button onClick={async () => {
+                if (!confirm("Mark this BAA terminated? New AE titles and API keys will be refused.")) return;
+                await api.tenants.terminateBaa(tenantId, r.id).catch((e) => setErr(e.message)); load();
+              }} className="text-xs text-red-600 hover:underline whitespace-nowrap">Terminate</button>
+            ) : <span className="text-xs text-gray-400">inactive</span>}
+          </li>
+        ))}
+      </ul>
+      <form onSubmit={save} className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        <input required value={form.counterparty} onChange={set("counterparty")} placeholder="Customer legal name" className={inp} />
+        <input required value={form.signatory_name} onChange={set("signatory_name")} placeholder="Signatory name" className={inp} />
+        <input value={form.signatory_title} onChange={set("signatory_title")} placeholder="Signatory title" className={inp} />
+        <label className="text-xs text-gray-500">Signed on <input type="date" required max={today} value={form.signed_on} onChange={set("signed_on")} className={inp} /></label>
+        <label className="text-xs text-gray-500">Effective from <input type="date" required value={form.effective_from} onChange={set("effective_from")} className={inp} /></label>
+        <label className="text-xs text-gray-500">Expires (optional) <input type="date" value={form.expires_on} onChange={set("expires_on")} className={inp} /></label>
+        <label className="text-xs text-gray-500 sm:col-span-2">Signed BAA (PDF; only its SHA-256 is uploaded)
+          <input type="file" required accept=".pdf,application/pdf" className="block text-sm mt-1"
+            onChange={async (e) => {
+              const f = e.target.files?.[0];
+              setDoc(f ? { name: f.name, sha256: await sha256Hex(f) } : null);
+            }} />
+        </label>
+        {doc && <p className="text-xs font-mono text-gray-500 sm:col-span-2 break-all">SHA-256 {doc.sha256}</p>}
+        <div className="sm:col-span-2">
+          <button type="submit" disabled={!doc} className="px-3 py-1.5 text-sm font-medium rounded-lg bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-50">Record BAA</button>
+        </div>
+      </form>
+    </section>
+  );
+}
+
 export default function TenantDetailPage() {
   const params = useParams();
   const tenantId = params.id as string;
@@ -691,6 +778,7 @@ export default function TenantDetailPage() {
         {tenant && <span className="text-sm text-gray-400 dark:text-gray-500 font-mono">{tenant.slug}</span>}
       </div>
 
+      <BaaCard tenantId={tenantId} />
       <PlanAndFeaturesCard tenantId={tenantId} />
       <DicomEndpointsCard tenantId={tenantId} />
       <ApiKeysCard tenantId={tenantId} />

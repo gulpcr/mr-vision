@@ -15,6 +15,7 @@ from sqlalchemy import select
 
 from app.infrastructure.database.models import RoleRecord, UserRecord
 from app.infrastructure.database.session import async_session_factory
+from app.config import get_settings
 from app.domain.permissions import apply_ceiling
 from app.infrastructure.tenant.db_scope import tenant_scope
 from app.infrastructure.tenant.entitlements import get_tenant_entitlements
@@ -41,6 +42,20 @@ class Principal:
     is_platform_operator: bool
     # AI use cases the tenant's plan includes (None = all).
     allowed_usecases: frozenset[str] | None = None
+    # Sign-in restrictions (alembic 050 / mfa_required_roles): while either is set the
+    # auth middleware only lets the account fix it (change password / enrol MFA).
+    must_change_password: bool = False
+    mfa_enrollment_required: bool = False
+
+
+def mfa_required_for(role: str, is_platform_privileged: bool) -> bool:
+    """Whether policy requires this account to use MFA (settings.mfa_required_roles)."""
+    settings = get_settings()
+    roles = {r.strip().lower() for r in settings.mfa_required_roles.split(",") if r.strip()}
+    # "*" = every account (production: HIPAA 164.312(d), checklist TEC-01).
+    if "*" in roles or (role or "").lower() in roles:
+        return True
+    return is_platform_privileged and settings.mfa_required_for_platform
 
 
 def invalidate_principal(user_id: str) -> None:
@@ -92,6 +107,15 @@ async def load_principal(user_id: str, tenant_id: str) -> Principal | None:
                     token_version=user.token_version or 0,
                     is_platform_admin=bool(user.is_platform_admin) and in_platform_tenant,
                     is_platform_operator=bool(user.is_platform_operator) and in_platform_tenant,
+                    must_change_password=bool(getattr(user, "must_change_password", False)),
+                    mfa_enrollment_required=(
+                        not user.totp_enabled
+                        and mfa_required_for(
+                            user.role,
+                            bool(user.is_platform_admin or user.is_platform_operator)
+                            and in_platform_tenant,
+                        )
+                    ),
                 )
 
     if principal is not None:

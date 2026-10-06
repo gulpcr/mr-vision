@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import redis.asyncio as aioredis
 
-from app.config import get_settings
+from app.infrastructure.redis_conn import async_redis
+
 
 
 def _get_client() -> aioredis.Redis:
@@ -15,8 +16,7 @@ def _get_client() -> aioredis.Redis:
     # work" rather than a visible error. Constructing fresh per call is cheap:
     # redis.asyncio.Redis() does not eagerly open a socket, only the
     # connection pool's first real command does.
-    settings = get_settings()
-    return aioredis.Redis(host=settings.redis_host, port=settings.redis_port, socket_timeout=3)
+    return async_redis(socket_timeout=3)
 
 
 async def check_rate_limit(key: str, limit: int, window_seconds: int = 60) -> bool:

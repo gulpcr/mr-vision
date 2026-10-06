@@ -2,6 +2,7 @@ import asyncio
 import json
 from typing import Annotated
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
@@ -42,7 +43,8 @@ async def create_jobs(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Job creation failed: {e}")
+        structlog.get_logger(__name__).error("job_creation_failed", error=str(e))
+        raise HTTPException(status_code=500, detail="Job creation failed")
 
     if not jobs:
         raise HTTPException(

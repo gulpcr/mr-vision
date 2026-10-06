@@ -8,6 +8,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     Column,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -15,6 +16,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, UUID
@@ -143,6 +145,11 @@ class JobRunRecord(Base):
     completed_at = Column(DateTime(timezone=True), nullable=True)
     error_detail = Column(Text, nullable=True)
     retry_count = Column(Integer, default=0, nullable=False, server_default="0")
+    # 'clinical' | 'shadow' (alembic 056). Shadow runs evaluate a candidate model and can
+    # never produce the result clinicians read.
+    run_mode = Column(String(16), nullable=False, default="clinical", server_default="clinical")
+    experiment_id = Column(String(36), nullable=True)
+    model_version_override = Column(String(64), nullable=True)
     tenant_id = Column(String(36), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(
@@ -175,6 +182,8 @@ class ResultRecord(Base):
     artifacts = Column(JSON, default=list)
     version = Column(Integer, nullable=False, default=1, server_default="1")
     is_latest = Column(Boolean, nullable=False, default=True, server_default="true")
+    # Result of a shadow (experimental) run: comparison only, never is_latest (alembic 056).
+    is_shadow = Column(Boolean, nullable=False, default=False, server_default="false")
     tenant_id = Column(String(36), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
@@ -466,6 +475,10 @@ class UserRecord(Base):
     invitation_expires_at = Column(DateTime(timezone=True), nullable=True)
     # Embedded in every access token ("tv"); bumping it revokes all issued tokens.
     token_version = Column(Integer, nullable=False, default=0, server_default="0")
+    # alembic 050: forced password change + login bookkeeping.
+    must_change_password = Column(Boolean, nullable=False, default=False, server_default="false")
+    password_changed_at = Column(DateTime(timezone=True), nullable=True)
+    last_login_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
@@ -488,6 +501,46 @@ class MfaRecoveryCodeRecord(Base):
     code_hash = Column(String(64), nullable=False)
     used_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class RefreshSessionRecord(Base):
+    """One issued refresh token (alembic 051). Only its SHA-256 is stored; rotated and
+    revoked tokens are kept (revoked_at) for reuse detection and the audit trail."""
+
+    __tablename__ = "refresh_sessions"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = Column(String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    family_id = Column(String(36), nullable=False, index=True)
+    token_hash = Column(String(64), nullable=False, unique=True)
+    token_version = Column(Integer, nullable=False, default=0, server_default="0")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    last_used_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    rotated_at = Column(DateTime(timezone=True), nullable=True)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+    revoke_reason = Column(String(32), nullable=True)
+    client_ip = Column(String(64), nullable=True)
+    user_agent = Column(String(256), nullable=True)
+
+
+class BreakGlassGrantRecord(Base):
+    """Time-limited emergency access to one patient outside a referral scope (alembic 053)."""
+
+    __tablename__ = "break_glass_grants"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = Column(String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    username = Column(String(128), nullable=False)
+    patient_id = Column(String(64), nullable=False)
+    reason = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+    revoked_by = Column(String(128), nullable=True)
+    client_ip = Column(String(64), nullable=True)
 
 
 class TenantRecord(Base):
@@ -1134,11 +1187,165 @@ class ReportSignatureRecord(Base):
     comment = Column(Text, nullable=False)
     content_hash = Column(String(64), nullable=False)
     content_snapshot = Column(JSON, nullable=False)
+    # The signer's validated NPI at signing time (alembic 057).
+    signer_npi = Column(String(10), nullable=True)
     priority_at_signing = Column(String(16), nullable=True)
     client_ip = Column(String(64), nullable=True)
     signed_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     __table_args__ = (Index("ix_report_signatures_study", "study_instance_uid", "signed_at"),)
+
+
+class AIInferenceMetadataRecord(Base):
+    """Provenance of one AI result (alembic 057): the exact model iteration, weights
+    hashes, frameworks, LLM digest, prompt hash, GPU and windowing. Append-only."""
+
+    __tablename__ = "ai_inference_metadata"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = Column(String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    result_id = Column(String(36), ForeignKey("results_index.id", ondelete="CASCADE"),
+                       nullable=False, unique=True)
+    job_id = Column(String(36), nullable=True)
+    usecase_name = Column(String(128), nullable=False)
+    model_name = Column(String(128), nullable=False)
+    model_version = Column(String(64), nullable=False)
+    record = Column(JSON, nullable=False)
+    record_sha256 = Column(String(64), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class AIReportReviewRecord(Base):
+    """How much the radiologist changed one AI result before signing (alembic 057)."""
+
+    __tablename__ = "ai_report_reviews"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = Column(String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    signature_id = Column(String(36), ForeignKey("report_signatures.id", ondelete="CASCADE"), nullable=False)
+    result_id = Column(String(36), nullable=False)
+    usecase_name = Column(String(128), nullable=False)
+    modality = Column(String(16), nullable=True)
+    model_version = Column(String(64), nullable=True)
+    draft_tokens = Column(Integer, nullable=False)
+    final_tokens = Column(Integer, nullable=False)
+    edit_distance = Column(Integer, nullable=False)
+    similarity = Column(Float, nullable=False)
+    slots_compared = Column(Integer, nullable=False, default=0)
+    slots_mismatched = Column(Integer, nullable=False, default=0)
+    outcome = Column(String(16), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class PatientRequestRecord(Base):
+    """An individual-rights request and its 30-day clock (alembic 057, PRV-04)."""
+
+    __tablename__ = "patient_requests"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = Column(String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    mrn = Column(String(64), nullable=False)
+    request_type = Column(String(32), nullable=False)
+    requester = Column(String(256), nullable=False)
+    details = Column(Text, nullable=True)
+    received_at = Column(DateTime(timezone=True), nullable=False)
+    due_at = Column(DateTime(timezone=True), nullable=False)
+    extended_at = Column(DateTime(timezone=True), nullable=True)
+    extension_reason = Column(Text, nullable=True)
+    status = Column(String(16), nullable=False, default="open")
+    closed_at = Column(DateTime(timezone=True), nullable=True)
+    closed_by = Column(String(128), nullable=True)
+    outcome_notes = Column(Text, nullable=True)
+    created_by = Column(String(128), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class PatientRestrictionRecord(Base):
+    """An agreed 164.522 restriction on one disclosure channel (alembic 057)."""
+
+    __tablename__ = "patient_restrictions"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = Column(String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    mrn = Column(String(64), nullable=False)
+    channel = Column(String(32), nullable=False)
+    reason = Column(Text, nullable=False)
+    request_id = Column(String(36), ForeignKey("patient_requests.id", ondelete="SET NULL"), nullable=True)
+    agreed_by = Column(String(128), nullable=False)
+    agreed_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+    revoked_by = Column(String(128), nullable=True)
+
+
+class TenantBAARecord(Base):
+    """The business associate agreement on file for a tenant (alembic 057, ADM-01)."""
+
+    __tablename__ = "tenant_baas"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = Column(String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    counterparty = Column(String(256), nullable=False)
+    signatory_name = Column(String(256), nullable=False)
+    signatory_title = Column(String(256), nullable=True)
+    signed_on = Column(Date, nullable=False)
+    effective_from = Column(Date, nullable=False)
+    expires_on = Column(Date, nullable=True)
+    document_name = Column(String(256), nullable=False)
+    document_sha256 = Column(String(64), nullable=False)
+    recorded_by = Column(String(128), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    terminated_at = Column(DateTime(timezone=True), nullable=True)
+    terminated_by = Column(String(128), nullable=True)
+
+
+class ReportSignatureDocumentRecord(Base):
+    """The frozen PDF of a signed report (alembic 054): stored once, served thereafter
+    after re-verifying ``sha256``. Append-only for the app role."""
+
+    __tablename__ = "report_signature_documents"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = Column(String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    signature_id = Column(
+        String(36), ForeignKey("report_signatures.id", ondelete="CASCADE"), nullable=False
+    )
+    study_instance_uid = Column(
+        String(128), ForeignKey("studies.study_instance_uid", ondelete="CASCADE"), nullable=False
+    )
+    usecase = Column(String(64), nullable=False)
+    sha256 = Column(String(64), nullable=False)
+    object_path = Column(String(512), nullable=False)
+    size_bytes = Column(Integer, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("signature_id", "usecase", name="uq_signature_document_usecase"),
+        Index("ix_report_signature_documents_study", "study_instance_uid"),
+    )
+
+
+class AuditReviewRecord(Base):
+    """One tenant's audit-log review for one period (alembic 055)."""
+
+    __tablename__ = "audit_reviews"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = Column(String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    period_start = Column(DateTime(timezone=True), nullable=False)
+    period_end = Column(DateTime(timezone=True), nullable=False)
+    summary = Column(JSON, nullable=False)
+    findings_count = Column(Integer, nullable=False, default=0)
+    generated_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    reviewed_by = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    reviewed_by_username = Column(String(128), nullable=True)
+    reviewed_at = Column(DateTime(timezone=True), nullable=True)
+    review_notes = Column(Text, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "period_start", name="uq_audit_review_period"),
+        Index("ix_audit_reviews_tenant_period", "tenant_id", "period_start"),
+    )
 
 
 class ReportCommentRecord(Base):

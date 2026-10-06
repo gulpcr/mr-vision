@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { authFetch } from "@/lib/session";
 import { api, getFusedSliceUrl, FusedMeta, FusedMode } from "@/lib/api";
 import { Loader2, ChevronLeft, ChevronRight } from "lucide-react";
 
@@ -47,8 +48,7 @@ function FusedPane({
     const cached = cache.get(url);
     if (cached) return cached;
     try {
-      const token = typeof window !== "undefined" ? localStorage.getItem("auth_token") : null;
-      const r = await fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+      const r = await authFetch(url);
       if (!r.ok) return null;
       const obj = URL.createObjectURL(await r.blob());
       cache.set(url, obj);

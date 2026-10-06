@@ -113,9 +113,10 @@ class RoleService:
         if name is not None:
             role.name = name
         await self._session.flush()
+        after = {"name": role.name, "permissions": role.permissions}
         await self._audit(
-            actor, "role_updated", role.id,
-            {"before": before, "after": {"name": role.name, "permissions": role.permissions}},
+            actor, "role_updated", role.id, {"before": before, "after": after},
+            before=before, after=after,
         )
         return self._to_dict(role)
 
@@ -151,18 +152,18 @@ class RoleService:
         )
         return res.scalar_one_or_none()
 
-    async def _audit(self, actor: str, action: str, entity_id: str, details: dict) -> None:
-        from app.infrastructure.database.models import AuditLogRecord
+    async def _audit(self, actor: str, action: str, entity_id: str, details: dict,
+                     before: Any = None, after: Any = None) -> None:
+        """Hash-chained entry (AuditService); before/after state hashed (TEC-07)."""
+        from app.application.audit_service import AuditService
 
-        self._session.add(AuditLogRecord(
-            id=str(uuid.uuid4()),
-            action=action,
-            entity_type="role",
-            entity_id=entity_id,
-            **_audit_actor_fields(actor),
-            action_crude=audit_action_to_crude(action),
-            details=details,
-        ))
+        f = _audit_actor_fields(actor)
+        await AuditService(self._session).record(
+            action, "role", entity_id,
+            actor_id=f["actor_id"], actor_display=f["actor_display"],
+            actor_type=AuditActorType(f["actor_type"]), details=details,
+            before=before, after=after,
+        )
         await self._session.flush()
 
     @staticmethod

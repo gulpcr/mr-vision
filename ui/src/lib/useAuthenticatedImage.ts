@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { authFetch } from "@/lib/session";
 
 // Module-level, ref-counted, app-wide cache of object URLs for JWT-protected
 // images (a plain <img src> never sends the Authorization header, so every
@@ -70,8 +71,7 @@ export function useAuthenticatedImage(src: string | null): UseAuthenticatedImage
       setObjectUrl(existing.url);
       setLoading(false);
     } else {
-      const token = typeof window !== "undefined" ? localStorage.getItem("auth_token") : null;
-      fetch(src, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+      authFetch(src)
         .then((r) => {
           if (!r.ok) throw new Error(String(r.status));
           return r.blob();

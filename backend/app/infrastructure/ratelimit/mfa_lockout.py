@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import redis.asyncio as aioredis
 
+from app.infrastructure.redis_conn import async_redis
+
 from app.config import get_settings
 
 _ATTEMPTS_PREFIX = "mfa:attempts:"
@@ -13,8 +15,7 @@ def _get_client() -> aioredis.Redis:
     # connection pool to whichever event loop is running when first used,
     # and a cached client reused across a different loop either raises or
     # silently no-ops. Fresh per call is cheap (no eager socket open).
-    settings = get_settings()
-    return aioredis.Redis(host=settings.redis_host, port=settings.redis_port, socket_timeout=3)
+    return async_redis(socket_timeout=3)
 
 
 async def record_failure(user_id: str) -> int:

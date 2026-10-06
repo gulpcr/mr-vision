@@ -1,12 +1,19 @@
+import { authFetch, clearLocalSession } from "@/lib/session";
+
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "/api";
 
-async function fetchBlob(path: string): Promise<Blob> {
-  const headers: Record<string, string> = {};
-  if (typeof window !== "undefined") {
-    const token = localStorage.getItem("auth_token");
-    if (token) headers["Authorization"] = `Bearer ${token}`;
+/** The session could not be renewed (idle / expired / revoked): back to sign-in. */
+function sessionEnded(): void {
+  if (typeof window === "undefined") return;
+  clearLocalSession();
+  if (!window.location.pathname.startsWith("/login")) {
+    window.location.href = "/login?reason=expired";
   }
-  const res = await fetch(`${API_BASE}${path}`, { headers });
+}
+
+async function fetchBlob(path: string): Promise<Blob> {
+  const res = await authFetch(`${API_BASE}${path}`);
+  if (res.status === 401) sessionEnded();
   if (!res.ok) throw new Error(`API error: ${res.status}`);
   return res.blob();
 }
@@ -14,20 +21,9 @@ async function fetchBlob(path: string): Promise<Blob> {
 // Multipart upload — same auth + error handling as fetchAPI, but the browser must
 // set the multipart Content-Type (with boundary) itself, so we never set it here.
 async function fetchUpload<T>(path: string, body: FormData): Promise<T> {
-  const headers: Record<string, string> = {};
-  if (typeof window !== "undefined") {
-    const token = localStorage.getItem("auth_token");
-    if (token) headers["Authorization"] = `Bearer ${token}`;
-  }
-  const res = await fetch(`${API_BASE}${path}`, { method: "POST", headers, body });
+  const res = await authFetch(`${API_BASE}${path}`, { method: "POST", body });
   if (!res.ok) {
-    if (res.status === 401 && typeof window !== "undefined") {
-      localStorage.removeItem("auth_token");
-      localStorage.removeItem("user");
-      if (!window.location.pathname.startsWith("/login")) {
-        window.location.href = "/login";
-      }
-    }
+    if (res.status === 401) sessionEnded();
     const error = await res.json().catch(() => ({ detail: res.statusText }));
     const detail = error.detail;
     const message =
@@ -43,34 +39,239 @@ async function fetchUpload<T>(path: string, body: FormData): Promise<T> {
   return res.json();
 }
 
+/** Where the UI resolves each server-side sign-in restriction (auth middleware codes). */
+export const SIGN_IN_FIX_PAGES: Record<string, string> = {
+  password_change_required: "/change-password",
+  mfa_enrollment_required: "/setup-mfa",
+};
+
+/** AI draft vs signed report, one row per month / use case / model version (AI-04). */
+export interface AiQualityRow {
+  month: string | null;
+  usecase_name: string;
+  model_version: string | null;
+  signed_results: number;
+  mean_similarity: number;
+  edit_rate_pct: number;
+  major_edit_rate_pct: number;
+  slot_discrepancy_rate_pct: number | null;
+}
+
+export interface AiQuality {
+  months: number;
+  series: AiQualityRow[];
+}
+
+/** One event listed in an audit review (audit_log row, reviewer-safe fields only). */
+export interface AuditReviewEvent {
+  timestamp: string | null;
+  action: string;
+  actor: string | null;
+  actor_id: string | null;
+  entity_type: string;
+  entity_id: string;
+  client_ip: string | null;
+  details: Record<string, unknown>;
+}
+
+export interface AuditReviewSummary {
+  period_start: string;
+  period_end: string;
+  timezone: string;
+  business_hours: string;
+  total_events: number;
+  failed_sign_ins: { by_action: Record<string, number>; total: number; top_client_ips: { key: string; count: number }[] };
+  lockouts: AuditReviewEvent[];
+  session_alarms: AuditReviewEvent[];
+  emergency_access: AuditReviewEvent[];
+  integrity_alarms: AuditReviewEvent[];
+  disclosures: Record<string, number>;
+  impersonations: AuditReviewEvent[];
+  phi_reads: number;
+  after_hours_phi_reads: number;
+  top_readers: { key: string; count: number }[];
+  top_after_hours_readers: { key: string; count: number }[];
+  findings: number;
+}
+
+/** A tenant's audit-log review for one period (monthly, HIPAA 164.308(a)(1)(ii)(D)). */
+export interface AuditReview {
+  id: string;
+  period_start: string | null;
+  period_end: string | null;
+  findings_count: number;
+  generated_at: string | null;
+  reviewed_by_username: string | null;
+  reviewed_at: string | null;
+  review_notes: string | null;
+  summary?: AuditReviewSummary;
+}
+
+/** One audited access to / disclosure of a patient's data (access report). */
+export interface PatientAccessEntry {
+  timestamp: string | null;
+  action: string;
+  user: string | null;
+  user_id: string | null;
+  entity_type: string;
+  entity_id: string;
+  route: string | null;
+  client_ip: string | null;
+  details: Record<string, unknown>;
+}
+
+export interface PatientAccessReport {
+  patient_mrn: string;
+  period_days: number;
+  disclosures: PatientAccessEntry[];
+  accesses: PatientAccessEntry[];
+}
+
+export type PatientRequestType =
+  | "access" | "amendment" | "accounting" | "restriction" | "confidential_communication";
+
+/** An individual-rights request and its statutory clock (PRV-04). */
+export interface PatientRequest {
+  id: string;
+  mrn: string;
+  request_type: PatientRequestType;
+  requester: string;
+  details: string | null;
+  received_at: string;
+  due_at: string;
+  extended_at: string | null;
+  extension_reason: string | null;
+  status: "open" | "extended" | "fulfilled" | "denied";
+  closed_at: string | null;
+  closed_by: string | null;
+  outcome_notes: string | null;
+  created_by: string;
+  overdue: boolean;
+}
+
+export type RestrictionChannel = "fhir" | "dicom_export" | "webhooks" | "share_links" | "all";
+
+/** An agreed HIPAA 164.522 restriction on one outbound channel. */
+export interface PatientRestriction {
+  id: string;
+  mrn: string;
+  channel: RestrictionChannel;
+  reason: string;
+  request_id: string | null;
+  agreed_by: string;
+  agreed_at: string | null;
+  expires_at: string | null;
+  revoked_at: string | null;
+  revoked_by: string | null;
+  active: boolean;
+}
+
+/** The BAA on file for a tenant (ADM-01). */
+export interface TenantBAA {
+  id: string;
+  tenant_id: string;
+  counterparty: string;
+  signatory_name: string;
+  signatory_title: string | null;
+  signed_on: string;
+  effective_from: string;
+  expires_on: string | null;
+  document_name: string;
+  document_sha256: string;
+  recorded_by: string;
+  terminated_at: string | null;
+  active: boolean;
+}
+
+/** POST returning a file (right-of-access export). */
+async function postForBlob(path: string, body: unknown): Promise<Blob> {
+  const res = await authFetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (res.status === 401) sessionEnded();
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(typeof err.detail === "string" ? err.detail : `API error: ${res.status}`);
+  }
+  return res.blob();
+}
+
+/** Break-glass emergency access grant (see backend application/break_glass_service.py). */
+export interface BreakGlassGrant {
+  id: string;
+  user_id: string;
+  username: string;
+  patient_id: string;
+  reason: string;
+  created_at: string | null;
+  expires_at: string;
+  revoked_at: string | null;
+  revoked_by: string | null;
+  active: boolean;
+}
+
+/** Login / MFA / change-password response. */
+export interface SessionResponse {
+  mfa_required: boolean;
+  mfa_token: string | null;
+  access_token: string | null;
+  token_type: string;
+  user_id: string | null;
+  username: string | null;
+  role: string | null;
+  tenant_id: string | null;
+  must_change_password?: boolean;
+  mfa_enrollment_required?: boolean;
+  /** Unix time the access cookie expires (the token itself is never readable). */
+  expires_at?: number | null;
+}
+
+/** A failed API call. Refusals the server explains (HTTP 409 from the export gate:
+ * unsigned report, patient restriction, ...) carry a machine-readable ``code``, a
+ * ``remedy`` (how to make it work) and an in-app ``action`` link. */
+export class ApiError extends Error {
+  status: number;
+  code?: string;
+  remedy?: string;
+  action?: { label: string; path: string } | null;
+
+  constructor(message: string, status: number, extra?: {
+    code?: string; remedy?: string; action?: { label: string; path: string } | null;
+  }) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.code = extra?.code;
+    this.remedy = extra?.remedy;
+    this.action = extra?.action;
+  }
+}
+
 async function fetchAPI<T>(path: string, options?: RequestInit): Promise<T> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...(options?.headers as Record<string, string>),
   };
 
-  // Add auth token if available
-  if (typeof window !== "undefined") {
-    const token = localStorage.getItem("auth_token");
-    if (token) {
-      headers["Authorization"] = `Bearer ${token}`;
-    }
-  }
-
-  const res = await fetch(`${API_BASE}${path}`, {
-    headers,
-    ...options,
-  });
+  // authFetch attaches the bearer token and, on 401, renews the session once and retries.
+  const res = await authFetch(`${API_BASE}${path}`, { ...options, headers });
   if (!res.ok) {
-    // Session expired / unauthenticated (jwt mode) → clear token and bounce to login.
-    if (res.status === 401 && typeof window !== "undefined") {
-      localStorage.removeItem("auth_token");
-      localStorage.removeItem("user");
-      if (!window.location.pathname.startsWith("/login")) {
-        window.location.href = "/login";
-      }
+    // Session could not be renewed → clear it and bounce to login (not for a failed
+    // sign-in attempt itself, which is a normal 401 the login page shows).
+    if (res.status === 401 && !path.startsWith("/auth/login") && !path.startsWith("/auth/mfa/verify")) {
+      sessionEnded();
     }
     const error = await res.json().catch(() => ({ detail: res.statusText }));
+    // Sign-in restriction (forced password change / MFA enrolment): send the user to
+    // the page that resolves it; everything else stays blocked server-side meanwhile.
+    if (res.status === 403 && typeof window !== "undefined" && error?.code) {
+      const target = SIGN_IN_FIX_PAGES[error.code as string];
+      if (target && !window.location.pathname.startsWith(target)) {
+        window.location.href = target;
+      }
+    }
     const detail = error.detail;
     let message: string;
     if (!detail) {
@@ -79,10 +280,19 @@ async function fetchAPI<T>(path: string, options?: RequestInit): Promise<T> {
       message = detail;
     } else if (Array.isArray(detail)) {
       message = detail.map((d: any) => d.msg || JSON.stringify(d)).join("; ");
+    } else if (Array.isArray(detail.problems) && detail.problems.length) {
+      message = detail.problems.join(" ");
+    } else if (typeof detail.message === "string") {
+      message = detail.message;
     } else {
       message = JSON.stringify(detail);
     }
-    throw new Error(message);
+    const explained = detail && typeof detail === "object" && !Array.isArray(detail);
+    throw new ApiError(message, res.status, explained ? {
+      code: typeof detail.code === "string" ? detail.code : undefined,
+      remedy: typeof detail.remedy === "string" && detail.remedy ? detail.remedy : undefined,
+      action: detail.action && typeof detail.action.path === "string" ? detail.action : null,
+    } : undefined);
   }
   if (res.status === 204) return undefined as T;
   return res.json();
@@ -516,6 +726,8 @@ export interface MyPermissions {
   is_platform_admin: boolean;
   is_platform_operator: boolean;
   is_admin: boolean;
+  must_change_password?: boolean;
+  mfa_enrollment_required?: boolean;
 }
 
 export interface WorkspaceBranding {
@@ -1051,6 +1263,63 @@ export const api = {
     retry: (jobId: string) =>
       fetchAPI<Job>(`/jobs/${jobId}/retry`, { method: "POST" }),
   },
+  patientRights: {
+    accessReport: (mrn: string, days?: number) =>
+      fetchAPI<PatientAccessReport>(
+        `/patients/${encodeURIComponent(mrn)}/access-report${days ? `?days=${days}` : ""}`,
+      ),
+    accessReportCsv: (mrn: string) =>
+      fetchBlob(`/patients/${encodeURIComponent(mrn)}/access-report?format=csv`),
+    exportRecord: (mrn: string, requestedBy: string, includeImages: boolean, passphrase?: string) =>
+      postForBlob(`/patients/${encodeURIComponent(mrn)}/access-export`, {
+        requested_by: requestedBy,
+        include_images: includeImages,
+        ...(passphrase ? { passphrase } : {}),
+      }),
+    listRequests: (status?: string) =>
+      fetchAPI<PatientRequest[]>(`/patient-rights/requests${status ? `?status=${status}` : ""}`),
+    logRequest: (data: { mrn: string; request_type: PatientRequestType; requester: string;
+      details?: string; received_at?: string }) =>
+      fetchAPI<PatientRequest>("/patient-rights/requests", { method: "POST", body: JSON.stringify(data) }),
+    extendRequest: (id: string, reason: string) =>
+      fetchAPI<PatientRequest>(`/patient-rights/requests/${encodeURIComponent(id)}/extend`, {
+        method: "POST", body: JSON.stringify({ reason }),
+      }),
+    closeRequest: (id: string, outcome: "fulfilled" | "denied", notes: string) =>
+      fetchAPI<PatientRequest>(`/patient-rights/requests/${encodeURIComponent(id)}/close`, {
+        method: "POST", body: JSON.stringify({ outcome, notes }),
+      }),
+    listRestrictions: (mrn?: string) =>
+      fetchAPI<PatientRestriction[]>(`/patient-rights/restrictions${mrn ? `?mrn=${encodeURIComponent(mrn)}` : ""}`),
+    addRestriction: (data: { mrn: string; channel: RestrictionChannel; reason: string; expires_at?: string }) =>
+      fetchAPI<PatientRestriction>("/patient-rights/restrictions", { method: "POST", body: JSON.stringify(data) }),
+    revokeRestriction: (id: string) =>
+      fetchAPI<PatientRestriction>(`/patient-rights/restrictions/${encodeURIComponent(id)}/revoke`, { method: "POST" }),
+  },
+  auditReviews: {
+    list: () => fetchAPI<{ reviews: AuditReview[] }>("/admin/audit-reviews"),
+    get: (id: string) => fetchAPI<AuditReview>(`/admin/audit-reviews/${encodeURIComponent(id)}`),
+    generate: (period?: string) =>
+      fetchAPI<AuditReview>("/admin/audit-reviews", {
+        method: "POST",
+        body: JSON.stringify(period ? { period } : {}),
+      }),
+    markReviewed: (id: string, notes: string) =>
+      fetchAPI<AuditReview>(`/admin/audit-reviews/${encodeURIComponent(id)}/review`, {
+        method: "POST",
+        body: JSON.stringify({ notes }),
+      }),
+  },
+  breakGlass: {
+    invoke: (patientId: string, reason: string) =>
+      fetchAPI<BreakGlassGrant>("/break-glass", {
+        method: "POST",
+        body: JSON.stringify({ patient_id: patientId, reason }),
+      }),
+    mine: () => fetchAPI<{ grants: BreakGlassGrant[] }>("/break-glass/mine"),
+    list: () => fetchAPI<{ grants: BreakGlassGrant[] }>("/break-glass"),
+    revoke: (id: string) => fetchAPI<BreakGlassGrant>(`/break-glass/${id}/revoke`, { method: "POST" }),
+  },
   results: {
     get: (studyUid: string, usecase: string, version?: number) => {
       const qs = version !== undefined ? `?version=${version}` : "";
@@ -1099,16 +1368,7 @@ export const api = {
   },
   auth: {
     login: (username: string, password: string, workspace?: string) =>
-      fetchAPI<{
-        mfa_required: boolean;
-        mfa_token: string | null;
-        access_token: string | null;
-        token_type: string;
-        user_id: string | null;
-        username: string | null;
-        role: string | null;
-        tenant_id: string | null;
-      }>("/auth/login", {
+      fetchAPI<SessionResponse>("/auth/login", {
         method: "POST",
         body: JSON.stringify({ username, password, workspace: workspace || undefined }),
       }),
@@ -1129,6 +1389,13 @@ export const api = {
     // viewer's DICOMweb requests and the realtime WebSocket for the current tenant.
     refreshViewerSession: () => fetchAPI<void>("/auth/viewer-session", { method: "POST" }),
     clearViewerSession: () => fetchAPI<void>("/auth/viewer-session", { method: "DELETE" }),
+    /** End the session server-side (token revoked, viewer cookie dropped, audited). */
+    logout: () => fetchAPI<void>("/auth/logout", { method: "POST" }),
+    changePassword: (currentPassword: string, newPassword: string) =>
+      fetchAPI<SessionResponse>("/auth/change-password", {
+        method: "POST",
+        body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+      }),
     register: (data: { username: string; email: string; password: string; full_name?: string }) =>
       fetchAPI<UserResponse>("/auth/register", {
         method: "POST",
@@ -1166,15 +1433,7 @@ export const api = {
       }>(`/auth/users/${userId}/impersonate`, { method: "POST" }),
     stopImpersonation: () => fetchAPI<{ status: string }>("/auth/impersonate/stop", { method: "POST" }),
     mfaVerify: (mfaToken: string, code: string) =>
-      fetchAPI<{
-        mfa_required: boolean;
-        access_token: string | null;
-        token_type: string;
-        user_id: string | null;
-        username: string | null;
-        role: string | null;
-        tenant_id: string | null;
-      }>("/auth/mfa/verify", {
+      fetchAPI<SessionResponse>("/auth/mfa/verify", {
         method: "POST",
         body: JSON.stringify({ mfa_token: mfaToken, code }),
       }),
@@ -1224,6 +1483,11 @@ export const api = {
       }),
     updateStatus: (id: string, status: string) =>
       fetchAPI<Tenant>(`/admin/tenants/${id}/status`, { method: "PUT", body: JSON.stringify({ status }) }),
+    listBaas: (id: string) => fetchAPI<TenantBAA[]>(`/admin/tenants/${id}/baas`),
+    recordBaa: (id: string, data: Omit<TenantBAA, "id" | "tenant_id" | "recorded_by" | "terminated_at" | "active">) =>
+      fetchAPI<TenantBAA>(`/admin/tenants/${id}/baas`, { method: "POST", body: JSON.stringify(data) }),
+    terminateBaa: (id: string, baaId: string) =>
+      fetchAPI<TenantBAA>(`/admin/tenants/${id}/baas/${baaId}/terminate`, { method: "POST" }),
   },
   tenant: {
     current: () => fetchAPI<WorkspaceInfo>("/tenant/current"),
@@ -1475,6 +1739,8 @@ export const api = {
       if (usecase) params.set("usecase_name", usecase);
       return fetchAPI<QaMetrics>(`/admin/metrics?${params}`);
     },
+    /** AI-04: AI draft vs signed report per month and use case (drift). */
+    getAiQuality: (months = 6) => fetchAPI<AiQuality>(`/admin/metrics/ai-quality?months=${months}`),
     getCapacity: (days?: number) => {
       const params = days ? `?days=${days}` : "";
       return fetchAPI<CapacityMetrics>(`/admin/capacity${params}`);

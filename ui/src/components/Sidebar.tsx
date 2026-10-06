@@ -19,6 +19,7 @@ import { useAuth } from "@/lib/auth";
 import { useTheme } from "@/lib/theme";
 import { useLocale } from "@/lib/i18n";
 import { NAV_ITEMS } from "@/lib/nav";
+import { clearLocalSession } from "@/lib/session";
 
 export function Sidebar() {
   const pathname = usePathname();
@@ -152,9 +153,9 @@ export function Sidebar() {
         {!collapsed && (
           <button
             onClick={async () => {
-              await api.auth.clearViewerSession().catch(() => {});
-              localStorage.removeItem("auth_token");
-              localStorage.removeItem("user");
+              // Revokes the token server-side, drops the viewer cookie, audits the sign-out.
+              await api.auth.logout().catch(() => api.auth.clearViewerSession().catch(() => {}));
+              clearLocalSession();
               window.location.href = "/login";
             }}
             className="press flex items-center gap-2 w-full px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-white/5 rounded-lg transition-colors"

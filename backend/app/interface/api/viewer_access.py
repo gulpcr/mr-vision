@@ -57,31 +57,50 @@ class ViewerIdentity:
     referring_user_id: str | None = None
 
 
-def resolve_viewer(request: HTTPConnection) -> ViewerIdentity | None:
+async def resolve_viewer(request: HTTPConnection) -> ViewerIdentity | None:
     """The viewer-session cookie, or (for API clients) a regular bearer access token.
-    Accepts any HTTP connection, so it serves both HTTP requests and WebSocket handshakes."""
+    Accepts any HTTP connection, so it serves both HTTP requests and WebSocket handshakes.
+
+    The token is checked against the live account (token_version, active, no pending
+    sign-in restriction) — not just its signature — so signing out, a password change, an
+    admin revoke or a deactivation ends image and realtime access immediately."""
     auth = AuthService(session=None)
     token = request.cookies.get(get_settings().viewer_cookie_name)
     if token:
         payload = auth.decode_token(token)
         if payload and payload.get("purpose") == "viewer":
-            return _identity(payload)
+            return await _verified_identity(payload)
     header = request.headers.get("Authorization", "")
     if header.lower().startswith("bearer "):
         payload = auth.decode_token(header[7:].strip())
         if payload and not payload.get("purpose"):
-            return _identity(payload)
+            from app.infrastructure.ratelimit.impersonation_blocklist import is_blocked
+
+            if payload.get("jti") and await is_blocked(payload["jti"]):
+                return None
+            return await _verified_identity(payload)
     return None
 
 
-def _identity(payload: dict) -> ViewerIdentity | None:
+async def _verified_identity(payload: dict) -> ViewerIdentity | None:
+    from app.infrastructure.auth.principal import load_principal
+
     tenant_id = payload.get("tenant_id")
-    if not tenant_id:
+    if not tenant_id or "tv" not in payload:
+        return None  # tokens without a token_version predate revocation checks
+    principal = await load_principal(payload.get("sub", ""), tenant_id)
+    if (
+        principal is None
+        or int(payload.get("tv", -1)) != principal.token_version
+        or principal.must_change_password
+        or principal.mfa_enrollment_required
+    ):
         return None
     return ViewerIdentity(
-        user_id=payload.get("sub", ""),
+        user_id=principal.user_id,
         tenant_id=tenant_id,
-        is_platform_admin=bool(payload.get("is_platform_admin", False)),
+        # From the live account, never from the (signed but possibly stale) claim.
+        is_platform_admin=principal.is_platform_admin,
         referring_user_id=payload.get("ref") or None,
     )
 
@@ -100,7 +119,9 @@ async def owned_study_uids(viewer: ViewerIdentity, study_uids: list[str]) -> set
                 StudyRecord.tenant_id == viewer.tenant_id,
             )
             if viewer.referring_user_id:
-                stmt = stmt.where(StudyRecord.referring_user_id == viewer.referring_user_id)
+                from app.infrastructure.database.access_scope import referral_visible
+
+                stmt = stmt.where(referral_visible(viewer.referring_user_id))
             rows = await session.execute(stmt)
             return {r[0] for r in rows.all()}
     finally:
@@ -149,7 +170,7 @@ def study_uid_from_dicomweb_uri(uri: str) -> tuple[str, str | None]:
 @router.get("/dicomweb-authz")
 async def dicomweb_authz(request: Request) -> Response:
     """nginx auth_request target: 204 = allow, 401 = no viewer session, 403 = denied."""
-    viewer = resolve_viewer(request)
+    viewer = await resolve_viewer(request)
     if viewer is None:
         return Response(status_code=401)
 
@@ -172,4 +193,15 @@ async def dicomweb_authz(request: Request) -> Response:
             kind=kind, study_uid=study_uid,
         )
         return Response(status_code=403)
+    if kind == "study" and study_uid:
+        # Image access through the viewer (OHIF / DICOMweb): one entry per user and
+        # study per de-duplication window, not one per frame.
+        from app.application.audit_service import client_ip_from
+        from app.interface.middleware.phi_audit import audit_phi_access
+
+        await audit_phi_access(
+            user_id=viewer.user_id, username="", tenant_id=viewer.tenant_id,
+            client_ip=client_ip_from(request), entity_type="study", entity_id=study_uid,
+            route="viewer.dicomweb",
+        )
     return Response(status_code=204)

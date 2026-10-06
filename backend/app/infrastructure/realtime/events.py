@@ -14,9 +14,10 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 import redis.asyncio as aioredis
+
+from app.infrastructure.redis_conn import async_redis
 import structlog
 
-from app.config import get_settings
 
 logger = structlog.get_logger(__name__)
 
@@ -32,8 +33,7 @@ _HEALTH_CHECK_SECONDS = 15
 def _client() -> aioredis.Redis:
     # Fresh per call: redis.asyncio binds its pool to the running event loop, and Celery
     # tasks run each in a new loop (see infrastructure/ratelimit/redis_limiter.py).
-    settings = get_settings()
-    return aioredis.Redis(host=settings.redis_host, port=settings.redis_port, socket_timeout=3)
+    return async_redis(socket_timeout=3)
 
 
 def _listener_client() -> aioredis.Redis:
@@ -41,15 +41,7 @@ def _listener_client() -> aioredis.Redis:
     # socket_timeout=3 every quiet 3 s raised TimeoutError, tore the subscription down
     # and dropped any event published while it resubscribed. Liveness is checked by the
     # periodic health-check PING instead.
-    settings = get_settings()
-    return aioredis.Redis(
-        host=settings.redis_host,
-        port=settings.redis_port,
-        socket_connect_timeout=3,
-        socket_timeout=None,
-        socket_keepalive=True,
-        health_check_interval=_HEALTH_CHECK_SECONDS,
-    )
+    return async_redis(socket_connect_timeout=3, socket_timeout=None, socket_keepalive=True, health_check_interval=_HEALTH_CHECK_SECONDS)
 
 
 async def publish_tenant_event(tenant_id: str, message: dict[str, Any]) -> bool:

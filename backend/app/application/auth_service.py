@@ -26,6 +26,22 @@ class InvitationError(ValueError):
     """Invalid, expired or already-used invitation / reset token."""
 
 
+class AccountLockedError(Exception):
+    """Too many failed passwords for this account; retry after ``retry_after`` s."""
+
+    def __init__(self, retry_after: int):
+        super().__init__("Too many failed sign-in attempts — try again later")
+        self.retry_after = retry_after
+
+
+class PasswordPolicyError(ValueError):
+    """The new password does not meet the policy; ``problems`` lists why."""
+
+    def __init__(self, problems: list[str]):
+        super().__init__(" ".join(problems))
+        self.problems = problems
+
+
 class SeatLimitError(ValueError):
     """The tenant has reached its plan's user limit."""
 
@@ -61,7 +77,8 @@ class AuthService:
         self._session = session
 
     async def authenticate(
-        self, username: str, password: str, tenant_id: str | None = None
+        self, username: str, password: str, tenant_id: str | None = None,
+        client_ip: str = "",
     ) -> dict[str, Any] | None:
         """Verify credentials and return JWT tokens.
 
@@ -88,13 +105,29 @@ class AuthService:
             )
         user_record = candidates[0] if candidates else None
 
-        if not user_record:
-            return None
+        from app.infrastructure.ratelimit import login_lockout
 
-        if not self._verify_password(password, user_record.hashed_password):
+        lock_tenant = user_record.tenant_id if user_record else tenant_id
+        locked, retry_after = await login_lockout.is_locked(lock_tenant, username)
+        if locked:
+            await self._audit_login_failure(user_record, username, lock_tenant, client_ip, "locked")
+            raise AccountLockedError(retry_after)
+
+        if not user_record or not self._verify_password(password, user_record.hashed_password):
+            reason = "bad_password" if user_record else "unknown_user"
+            count = await login_lockout.record_failure(lock_tenant, username)
+            await self._audit_login_failure(user_record, username, lock_tenant, client_ip, reason)
+            if count and count >= get_settings().login_max_attempts:
+                await self._audit(
+                    AuditAction.ACCOUNT_LOCKED.value,
+                    user_record.id if user_record else username,
+                    username, lock_tenant or PLATFORM_TENANT_ID,
+                    {"client_ip": client_ip, "failed_attempts": count},
+                )
             return None
 
         await self._check_tenant_access(user_record.tenant_id)
+        await login_lockout.clear_failures(lock_tenant, username)
 
         if user_record.totp_enabled:
             # Password alone is not enough — hand back a short-lived, narrowly-scoped
@@ -122,14 +155,19 @@ class AuthService:
             return None
 
         if not await MfaService(self._session).verify_code(user.id, code):
+            await self._audit(
+                AuditAction.MFA_FAILED.value, user.id, user.username, user.tenant_id, {}
+            )
             return None
 
         return await self._issue_tokens(user)
 
-    async def _issue_tokens(self, user) -> dict[str, Any]:
+    async def _issue_tokens(self, user, audit_login: bool = True) -> dict[str, Any]:
         """Accepts either a UserRecord (from authenticate) or a domain User (from
         complete_mfa_login) — both expose the same fields used here."""
+        from app.infrastructure.database.models import UserRecord
         from app.infrastructure.database.repositories import PgAuditRepository
+        from sqlalchemy import update
 
         in_platform_tenant = user.tenant_id == PLATFORM_TENANT_ID
         access_token = self.create_access_token(
@@ -142,14 +180,22 @@ class AuthService:
             is_platform_operator=bool(user.is_platform_operator) and in_platform_tenant,
             token_version=getattr(user, "token_version", 0) or 0,
         )
-        await PgAuditRepository(self._session).save(AuditEntry(
-            action=AuditAction.USER_LOGIN,
-            entity_type="user",
-            entity_id=user.id,
-            actor=user.username,
-            details={},
-            tenant_id=user.tenant_id,
-        ))
+        if audit_login:
+            await self._session.execute(
+                update(UserRecord)
+                .where(UserRecord.id == user.id)
+                .values(last_login_at=datetime.now(timezone.utc))
+            )
+            await PgAuditRepository(self._session).save(AuditEntry(
+                action=AuditAction.USER_LOGIN,
+                entity_type="user",
+                entity_id=user.id,
+                actor=user.username,
+                details={},
+                tenant_id=user.tenant_id,
+            ))
+        from app.infrastructure.auth.principal import mfa_required_for
+
         return {
             "mfa_required": False,
             "access_token": access_token,
@@ -158,6 +204,17 @@ class AuthService:
             "username": user.username,
             "role": user.role,
             "tenant_id": user.tenant_id,
+            "token_version": getattr(user, "token_version", 0) or 0,
+            # Sign-in restrictions the UI must resolve before anything else.
+            "must_change_password": bool(getattr(user, "must_change_password", False)),
+            "mfa_enrollment_required": (
+                not getattr(user, "totp_enabled", False)
+                and mfa_required_for(
+                    user.role,
+                    bool(user.is_platform_admin or user.is_platform_operator)
+                    and in_platform_tenant,
+                )
+            ),
         }
 
     def _create_mfa_pending_token(self, user_id: str, tenant_id: str) -> str:
@@ -361,8 +418,11 @@ class AuthService:
         if expires is None or expires < datetime.now(timezone.utc):
             raise InvitationError("This link has expired — ask your administrator for a new one")
         await self._check_tenant_access(record.tenant_id)
+        self.check_password_policy(password, record.username)
 
         record.hashed_password = self._hash_password(password)
+        record.must_change_password = False
+        record.password_changed_at = datetime.now(timezone.utc)
         record.status = "active"
         record.is_active = True
         record.invitation_token_hash = None
@@ -371,6 +431,64 @@ class AuthService:
         await self._session.flush()
         await self._audit("invitation_accepted", record.id, record.username, record.tenant_id, {})
         return await self.get_user_by_id(record.id)
+
+    @staticmethod
+    def check_password_policy(password: str, username: str = "") -> None:
+        from app.domain.password_policy import password_problems
+
+        problems = password_problems(password, username, get_settings().password_min_length)
+        if problems:
+            raise PasswordPolicyError(problems)
+
+    async def change_password(
+        self, user_id: str, tenant_id: str, current_password: str, new_password: str
+    ) -> dict[str, Any] | None:
+        """Self-service password change. Returns fresh tokens (every other session is
+        revoked), or None if the current password is wrong."""
+        from app.infrastructure.database.models import UserRecord
+        from sqlalchemy import select
+
+        record = (
+            await self._session.execute(
+                select(UserRecord).where(
+                    UserRecord.id == user_id, UserRecord.tenant_id == tenant_id,
+                    UserRecord.is_active == True,  # noqa: E712
+                )
+            )
+        ).scalar_one_or_none()
+        if record is None or not self._verify_password(current_password, record.hashed_password):
+            return None
+        if self._verify_password(new_password, record.hashed_password):
+            raise PasswordPolicyError(["Choose a password different from your current one."])
+        self.check_password_policy(new_password, record.username)
+
+        record.hashed_password = self._hash_password(new_password)
+        record.must_change_password = False
+        record.password_changed_at = datetime.now(timezone.utc)
+        record.token_version = (record.token_version or 0) + 1
+        await self._session.flush()
+        await self._audit(
+            AuditAction.PASSWORD_CHANGED.value, record.id, record.username, record.tenant_id, {}
+        )
+        return await self._issue_tokens(record, audit_login=False)
+
+    async def audit_logout(self, user_id: str, username: str, tenant_id: str, client_ip: str) -> None:
+        await self._audit(
+            AuditAction.USER_LOGOUT.value, user_id, username, tenant_id, {"client_ip": client_ip}
+        )
+
+    async def _audit_login_failure(
+        self, user_record, username: str, tenant_id: str | None, client_ip: str, reason: str
+    ) -> None:
+        # entity_id is the account when it exists, else the attempted username, so
+        # repeated guessing against non-existent accounts is still reviewable.
+        await self._audit(
+            AuditAction.LOGIN_FAILED.value,
+            user_record.id if user_record else username,
+            username,
+            (user_record.tenant_id if user_record else tenant_id) or PLATFORM_TENANT_ID,
+            {"reason": reason, "client_ip": client_ip},
+        )
 
     async def revoke_sessions(self, user_id: str, tenant_id: str, actor: str) -> bool:
         """Invalidate every access token issued to the user (bumps token_version)."""
@@ -473,6 +591,8 @@ class AuthService:
             totp_enabled=r.totp_enabled,
             status=r.status or "active",
             token_version=r.token_version or 0,
+            must_change_password=bool(getattr(r, "must_change_password", False)),
+            last_login_at=getattr(r, "last_login_at", None),
             created_at=r.created_at,
             updated_at=r.updated_at,
         )
@@ -599,6 +719,7 @@ class AuthService:
         is_platform_admin: bool = False,
         expires_minutes: int | None = None,
         referral_scoped: bool = False,
+        token_version: int = 0,
     ) -> str:
         """Mint a ``purpose=viewer`` token for the viewer-session cookie.
 
@@ -620,6 +741,9 @@ class AuthService:
             "is_platform_admin": is_platform_admin,
             "purpose": "viewer",
             "ref": subject if referral_scoped else None,
+            # Checked against the live account on every viewer request, so a revoked
+            # session / password change / deactivation ends image access immediately.
+            "tv": token_version,
             "iat": now,
             "exp": now + timedelta(
                 minutes=expires_minutes or settings.jwt_access_token_expire_minutes

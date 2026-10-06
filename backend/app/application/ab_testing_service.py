@@ -147,3 +147,63 @@ class ABTestingService:
         await self._session.execute(stmt)
         await self._session.flush()
         return True
+
+    # -- Shadow evaluation (alembic 056) -------------------------------------------
+    # A treatment model never produces the result a radiologist reads. While an
+    # experiment is active, every study is read with the clinical (control) model and a
+    # sample (traffic_split) is ALSO run with the treatment model as an isolated shadow
+    # job, whose result is kept only for this comparison.
+
+    async def plan_shadow(self, study_instance_uid: str, usecase_name: str) -> dict[str, Any] | None:
+        """The shadow run to add for this study, or None. Records the assignment."""
+        from app.infrastructure.database.models import ABAssignmentRecord, ABExperimentRecord
+
+        experiment = (await self._session.execute(
+            select(ABExperimentRecord).where(
+                ABExperimentRecord.usecase_name == usecase_name,
+                ABExperimentRecord.is_active == True,  # noqa: E712
+            ).order_by(ABExperimentRecord.created_at.desc()).limit(1)
+        )).scalar_one_or_none()
+        if experiment is None or random.random() >= (experiment.traffic_split or 0.0):
+            return None
+        self._session.add(ABAssignmentRecord(
+            id=str(uuid.uuid4()),
+            experiment_id=experiment.id,
+            study_instance_uid=study_instance_uid,
+            assigned_version=experiment.treatment_version,
+        ))
+        await self._session.flush()
+        return {"experiment_id": experiment.id, "model_version": experiment.treatment_version}
+
+    async def shadow_comparison(self, experiment_id: str, limit: int = 200) -> dict[str, Any]:
+        """Shadow results of an experiment side by side with the clinical result of the
+        same study (study UID and result ids only - no patient data)."""
+        from app.infrastructure.database.models import JobRunRecord, ResultRecord
+
+        shadows = (await self._session.execute(
+            select(ResultRecord, JobRunRecord)
+            .join(JobRunRecord, ResultRecord.job_id == JobRunRecord.id)
+            .where(JobRunRecord.experiment_id == experiment_id, ResultRecord.is_shadow == True)  # noqa: E712
+            .order_by(ResultRecord.created_at.desc()).limit(limit)
+        )).all()
+        pairs = []
+        for shadow, _job in shadows:
+            clinical = (await self._session.execute(
+                select(ResultRecord).where(
+                    ResultRecord.study_instance_uid == shadow.study_instance_uid,
+                    ResultRecord.usecase_name == shadow.usecase_name,
+                    ResultRecord.tenant_id == shadow.tenant_id,
+                    ResultRecord.is_latest == True,  # noqa: E712
+                )
+            )).scalar_one_or_none()
+            pairs.append({
+                "study_instance_uid": shadow.study_instance_uid,
+                "usecase_name": shadow.usecase_name,
+                "shadow": {"result_id": shadow.id, "model_version": shadow.model_version,
+                           "qa_flags": shadow.qa_flags, "measurements": shadow.measurements},
+                "clinical": None if clinical is None else {
+                    "result_id": clinical.id, "model_version": clinical.model_version,
+                    "qa_flags": clinical.qa_flags, "measurements": clinical.measurements,
+                },
+            })
+        return {"experiment_id": experiment_id, "pairs": pairs}

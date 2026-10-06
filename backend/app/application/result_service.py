@@ -22,6 +22,10 @@ def _flatten_measurements(d: dict, prefix: str = "") -> dict[str, float]:
     return result
 
 
+
+class ArtifactIntegrityError(Exception):
+    """A stored artifact no longer matches the SHA-256 recorded when it was written."""
+
 class ResultService:
     """Handles retrieval and serving of AI pipeline results and artifacts."""
 
@@ -55,6 +59,17 @@ class ResultService:
     ) -> list[Result]:
         return await self._result_repo.list_versions(study_instance_uid, usecase_name)
 
+    async def _expected_sha256(
+        self, study_instance_uid: str, usecase_name: str, artifact_path: str, key: str
+    ) -> str | None:
+        for r in await self._result_repo.list_by_study(study_instance_uid):
+            if r.usecase_name != usecase_name:
+                continue
+            for a in getattr(r, "artifacts", None) or []:
+                if a.sha256 and (a.storage_path == key or a.name == artifact_path):
+                    return a.sha256
+        return None
+
     async def _ensure_artifact_visible(self, study_instance_uid: str, usecase_name: str) -> None:
         """The object store is shared by every tenant and has no notion of tenancy, so
         an artifact is only served when the caller's (tenant-scoped) result repository
@@ -79,7 +94,14 @@ class ResultService:
     ) -> bytes:
         await self._ensure_artifact_visible(study_instance_uid, usecase_name)
         key = await self._resolve_artifact_key(study_instance_uid, usecase_name, artifact_path)
-        return await self._artifact_store.get(key)
+        data = await self._artifact_store.get(key)
+        expected = await self._expected_sha256(study_instance_uid, usecase_name, artifact_path, key)
+        if expected is not None:
+            import hashlib
+
+            if hashlib.sha256(data).hexdigest() != expected:
+                raise ArtifactIntegrityError(key)
+        return data
 
     async def get_artifact_url(
         self, study_instance_uid: str, usecase_name: str, artifact_path: str

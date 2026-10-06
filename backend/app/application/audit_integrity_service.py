@@ -20,10 +20,19 @@ class AuditIntegrityService:
         self._session = session
 
     async def verify_chain(self) -> dict[str, Any]:
-        from app.config import derive_secret
+        from app.config import derive_secret, derive_secret_with, get_settings
         from app.infrastructure.database.models import AuditLogRecord
 
         secret = derive_secret("audit-chain-v1")
+        # After a master-key rotation, rows up to the cut-over were chained under the
+        # previous key; the chain itself stays continuous across it (prev_hash links).
+        settings = get_settings()
+        rotated_after = settings.audit_chain_rotated_after_seq
+        previous_secret = (
+            derive_secret_with(settings.audit_chain_previous_master_key, "audit-chain-v1")
+            if settings.audit_chain_previous_master_key and rotated_after > 0
+            else None
+        )
 
         stmt = (
             select(AuditLogRecord)
@@ -43,7 +52,11 @@ class AuditIntegrityService:
                     "prev_hash does not match the previous row's row_hash — rows were reordered or spliced",
                 )
             recomputed = compute_audit_row_hash(
-                secret=secret,
+                secret=(
+                    previous_secret
+                    if previous_secret is not None and row.seq <= rotated_after
+                    else secret
+                ),
                 seq=row.seq,
                 action=row.action,
                 entity_type=row.entity_type,

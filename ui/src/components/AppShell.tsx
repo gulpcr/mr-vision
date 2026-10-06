@@ -4,13 +4,32 @@ import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { Sidebar } from "./Sidebar";
 import { NotificationToast } from "./NotificationToast";
+import { SessionKeeper } from "./SessionKeeper";
 import { AuthProvider, useAuth } from "@/lib/auth";
 import { NAV_ITEMS } from "@/lib/nav";
 import { EmptyState } from "@/components/ui/EmptyState";
-import { isImpersonating, stopImpersonation } from "@/lib/impersonation";
+import { impersonatedUsername, isImpersonating, stopImpersonation } from "@/lib/impersonation";
+import { hasSession } from "@/lib/session";
 import { LogOut, ShieldAlert } from "lucide-react";
 
 const PUBLIC_PATHS = ["/login", "/portal/", "/accept-invite"];
+// Signed-in pages that resolve a sign-in restriction: rendered without the sidebar
+// (whose data calls are all blocked until the restriction is resolved).
+const SIGN_IN_FIX_PATHS = ["/change-password", "/setup-mfa"];
+
+/** Sends an account with a pending forced password change / MFA enrolment to the page
+ * that resolves it (the backend blocks everything else with 403 meanwhile). */
+function SignInRestrictionGuard({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname();
+  const router = useRouter();
+  const { mustChangePassword, mfaEnrollmentRequired, isLoading } = useAuth();
+  const target = mustChangePassword ? "/change-password" : mfaEnrollmentRequired ? "/setup-mfa" : null;
+  useEffect(() => {
+    if (!isLoading && target && pathname !== target) router.replace(target);
+  }, [isLoading, target, pathname, router]);
+  if (target && pathname !== target) return null;
+  return <>{children}</>;
+}
 
 /** Route-level permission gate: the page's nav entry (longest matching prefix) names
  * the permission it needs, checked against the caller's live server permissions. The
@@ -53,12 +72,7 @@ function ImpersonationBanner() {
   const [stopping, setStopping] = useState(false);
 
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem("user");
-      setUsername(raw ? JSON.parse(raw)?.username ?? null : null);
-    } catch {
-      setUsername(null);
-    }
+    setUsername(impersonatedUsername());
   }, []);
 
   const handleStop = async () => {
@@ -95,16 +109,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [authed, setAuthed] = useState(false);
   const [impersonating, setImpersonating] = useState(false);
 
-  // Route guard: protected pages require an auth token. Unauthenticated users
-  // are redirected to /login. In open auth mode the backend ignores the token,
-  // but the guard is harmless because login still issues one.
+  // Route guard: protected pages require a (not yet expired) session. The token is an
+  // httpOnly cookie the page cannot see; the server stays the authority (401 → login).
   useEffect(() => {
     if (isPublic) {
       setAuthed(true);
       return;
     }
-    const token = typeof window !== "undefined" && localStorage.getItem("auth_token");
-    if (!token) {
+    if (!hasSession()) {
       router.replace("/login");
       setAuthed(false);
     } else {
@@ -126,22 +138,34 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return <>{children}</>;
   }
 
+  if (SIGN_IN_FIX_PATHS.some((p) => pathname.startsWith(p))) {
+    return (
+      <AuthProvider>
+        <SessionKeeper />
+        <SignInRestrictionGuard>{children}</SignInRestrictionGuard>
+      </AuthProvider>
+    );
+  }
+
   return (
     <AuthProvider>
-      <div className="flex flex-col h-screen overflow-hidden">
-        {impersonating && <ImpersonationBanner />}
-        <div className="flex flex-1 min-h-0">
-          <Sidebar />
-          <main className="flex-1 bg-transparent overflow-y-auto">
-            {/* Keyed by route so each navigation re-triggers the entrance animation,
-                giving the app a consistent sense of "flow" between pages. */}
-            <div key={pathname} className="max-w-[1760px] mx-auto px-6 py-6 animate-fade-up">
-              <RouteGuard>{children}</RouteGuard>
-            </div>
-          </main>
+      <SignInRestrictionGuard>
+        <div className="flex flex-col h-screen overflow-hidden">
+          {impersonating && <ImpersonationBanner />}
+          <div className="flex flex-1 min-h-0">
+            <Sidebar />
+            <main className="flex-1 bg-transparent overflow-y-auto">
+              {/* Keyed by route so each navigation re-triggers the entrance animation,
+                  giving the app a consistent sense of "flow" between pages. */}
+              <div key={pathname} className="max-w-[1760px] mx-auto px-6 py-6 animate-fade-up">
+                <RouteGuard>{children}</RouteGuard>
+              </div>
+            </main>
+          </div>
         </div>
-      </div>
-      <NotificationToast />
+        <NotificationToast />
+        <SessionKeeper />
+      </SignInRestrictionGuard>
     </AuthProvider>
   );
 }

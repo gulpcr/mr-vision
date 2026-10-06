@@ -1,0 +1,28 @@
+# /etc/wireguard/wg0.conf on the platform host — encrypted site-to-site tunnel for
+# scanners that cannot speak DICOM-TLS (ops/vpn/wireguard/README.md).
+#
+#   umask 077; wg genkey | tee /etc/wireguard/server.key | wg pubkey > /etc/wireguard/server.pub
+#   (paste the private key below; never commit it)
+#   systemctl enable --now wg-quick@wg0
+#
+# The platform then publishes plain DICOM ONLY on the tunnel address:
+#   /etc/mrcv/mrcv.env: DICOM_TLS_ENABLED=false  DICOM_PORT=4242  DICOM_BIND=10.66.0.1
+#                       SCANNER_CIDRS=10.66.0.0/24
+[Interface]
+Address = 10.66.0.1/24
+ListenPort = 51820
+PrivateKey = <server private key>
+# Tunnel peers may reach only the published DICOM port — nothing on the host itself and
+# no other forwarding. The DICOM port is a Docker-published port, i.e. DNAT-ed and
+# FORWARDed (not INPUT), so it is allowed in DOCKER-USER by its original destination port;
+# everything else arriving on wg0 is dropped.
+PostUp   = iptables -A INPUT -i wg0 -j DROP; iptables -N DOCKER-USER 2>/dev/null || true; iptables -I DOCKER-USER -i wg0 -j DROP; iptables -I DOCKER-USER -i wg0 -p tcp -m conntrack --ctorigdstport 4242 --ctdir ORIGINAL -j RETURN
+PostDown = iptables -D INPUT -i wg0 -j DROP; iptables -D DOCKER-USER -i wg0 -p tcp -m conntrack --ctorigdstport 4242 --ctdir ORIGINAL -j RETURN; iptables -D DOCKER-USER -i wg0 -j DROP
+
+# One [Peer] per site (hospital router / gateway in front of the scanners).
+[Peer]
+# site: <name>, contact: <who>, added: <date>
+PublicKey = <site public key>
+PresharedKey = <wg genpsk output, shared with the site out of band>
+# The site's tunnel address plus the scanner subnet behind it.
+AllowedIPs = 10.66.0.2/32, 10.20.0.0/24

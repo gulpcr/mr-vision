@@ -193,18 +193,18 @@ class ReadingService:
             return
         raise NotAssignedError("Only the assigned radiologist (or an admin) may do this")
 
-    async def _audit(self, actor: str, action: str, entity_id: str, details: dict) -> None:
-        from app.infrastructure.database.models import AuditLogRecord
+    async def _audit(self, actor: str, action: str, entity_id: str, details: dict,
+                     before: Any = None, after: Any = None) -> None:
+        """Hash-chained entry (AuditService); before/after state hashed (TEC-07)."""
+        from app.application.audit_service import AuditService
 
-        self._session.add(AuditLogRecord(
-            id=str(uuid.uuid4()),
-            action=action,
-            entity_type="study_reading",
-            entity_id=entity_id,
-            **_audit_actor_fields(actor),
-            action_crude=audit_action_to_crude(action),
-            details=details,
-        ))
+        f = _audit_actor_fields(actor)
+        await AuditService(self._session).record(
+            action, "study_reading", entity_id,
+            actor_id=f["actor_id"], actor_display=f["actor_display"],
+            actor_type=AuditActorType(f["actor_type"]), details=details,
+            before=before, after=after,
+        )
 
     @staticmethod
     def reading_dict(rec) -> dict[str, Any]:

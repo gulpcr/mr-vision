@@ -77,6 +77,12 @@ async def create_tenant_api_key(
     service: Annotated[TenantApiKeyService, Depends(get_tenant_api_key_service)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ):
+    from app.application.tenant_baa_service import BAARequired, TenantBAAService
+
+    try:  # an API key lets data in: only with a BAA on file (ADM-01)
+        await TenantBAAService(session).require_active(tenant_id)
+    except BAARequired as e:
+        raise HTTPException(status_code=409, detail=str(e))
     unknown_scopes = set(body.scopes) - VALID_SCOPES
     if unknown_scopes:
         raise HTTPException(

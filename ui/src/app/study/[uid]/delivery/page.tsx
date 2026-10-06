@@ -11,6 +11,7 @@ import { Modal } from "@/components/ui/Modal";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { ErrorBanner } from "@/components/ui/ErrorBanner";
+import { ActionBlockedNotice } from "@/components/ui/ActionBlockedNotice";
 import {
   ArrowLeft, Share2, Copy, Trash2, CheckCircle2, XCircle, Clock, Truck,
 } from "lucide-react";
@@ -44,7 +45,7 @@ function ResultDeliveryCard({
   const { user } = useAuth();
   const [showCreate, setShowCreate] = useState(false);
   const [ttlDays, setTtlDays] = useState(7);
-  const [createError, setCreateError] = useState<string | null>(null);
+  const [createError, setCreateError] = useState<unknown>(null);
   const [createBusy, setCreateBusy] = useState(false);
   const [newLinkUrl, setNewLinkUrl] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -58,8 +59,8 @@ function ResultDeliveryCard({
       const link = await api.portal.createShareLink(resultId, user?.username || "unknown", ttlDays);
       setNewLinkUrl(`${window.location.origin}/portal/${link.token}`);
       mutate();
-    } catch (e: any) {
-      setCreateError(e.message || "Failed to create share link");
+    } catch (e: unknown) {
+      setCreateError(e ?? new Error("Failed to create share link"));
     } finally {
       setCreateBusy(false);
     }
@@ -166,7 +167,9 @@ function ResultDeliveryCard({
           </div>
         ) : (
           <div className="space-y-3">
-            {createError && <ErrorBanner message={createError} />}
+            {createError != null && (
+              <ActionBlockedNotice title="Share link not created" error={createError} />
+            )}
             <label className="block text-xs">
               <span className="text-gray-500 dark:text-gray-400 uppercase tracking-wider">Expires In (days)</span>
               <input

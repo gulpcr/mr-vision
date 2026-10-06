@@ -28,8 +28,8 @@ export default function AcceptInvitePage() {
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
-    if (password.length < 10) {
-      setError("Use at least 10 characters.");
+    if (password.length < 12) {
+      setError("Use at least 12 characters.");
       return;
     }
     if (password !== confirm) {
@@ -80,7 +80,7 @@ export default function AcceptInvitePage() {
             <label className="block">
               <span className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">New password</span>
               <input type="password" autoComplete="new-password" value={password}
-                onChange={(e) => setPassword(e.target.value)} className={inputCls} required minLength={10} />
+                onChange={(e) => setPassword(e.target.value)} className={inputCls} required minLength={12} />
             </label>
             <label className="block">
               <span className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">Confirm password</span>

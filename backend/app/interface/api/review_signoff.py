@@ -128,6 +128,23 @@ async def get_signoff(
     return await _run(_service(request, session).get_signoff(study_uid), session)
 
 
+@router.get("/studies/{study_uid}/signoff/verify", dependencies=[require_permission(STUDY_READ)])
+async def verify_signoff(
+    study_uid: str,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """Re-check the latest signature: the signed content still hashes to the recorded
+    value, and every frozen signed PDF still matches its SHA-256."""
+    from app.infrastructure.storage.client import get_artifact_store
+
+    validate_dicom_uid(study_uid)
+    return await _run(
+        _service(request, session).verify_signature(study_uid, get_artifact_store()),
+        session, commit=True,
+    )
+
+
 @router.post("/studies/{study_uid}/signature", dependencies=[require_permission("result.approve")])
 async def sign_report(
     study_uid: str,
@@ -145,7 +162,14 @@ async def sign_report(
         is_admin=_is_admin(request),
         client_ip=_client_ip(request),
     )
-    return await _run(coro, session, commit=True)
+    signoff = await _run(coro, session, commit=True)
+    # The signed findings may now go to integrations (webhooks "report_signed").
+    from app.application.export_gate import notify_report_signed
+
+    await notify_report_signed(
+        session, getattr(request.state, "tenant_id", "default") or "default", study_uid
+    )
+    return signoff
 
 
 @router.get("/studies/{study_uid}/comments", dependencies=[require_permission(STUDY_READ)])

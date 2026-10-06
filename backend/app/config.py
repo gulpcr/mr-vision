@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -39,6 +40,12 @@ class Settings(BaseSettings):
     # Redis
     redis_host: str = "redis"
     redis_port: int = 6379
+    # requirepass of the Redis server; used by every direct Redis client (rate limits,
+    # impersonation blocklist, realtime events). Celery reads its own broker/backend URLs.
+    redis_password: str = ""
+    # TLS to Redis (prod: rediss:// + CA from the internal PKI, ops/pki/make-certs.sh).
+    redis_tls: bool = False
+    redis_ca_cert: str = ""
 
     # MinIO
     minio_endpoint: str = "minio:9000"
@@ -46,6 +53,8 @@ class Settings(BaseSettings):
     minio_secret_key: str = "changeme_in_production"
     minio_bucket: str = "mri-artifacts"
     minio_secure: bool = False
+    # CA bundle that signed MinIO's certificate (internal PKI); empty = system trust store.
+    minio_ca_cert: str = ""
 
     # Orthanc
     orthanc_host: str = "orthanc"
@@ -53,6 +62,23 @@ class Settings(BaseSettings):
     orthanc_dicom_port: int = 4242
     orthanc_username: str = "orthanc"
     orthanc_password: str = "orthanc"
+    # Orthanc REST/DICOMweb over HTTPS (prod) and the CA that signed its certificate.
+    orthanc_scheme: str = "http"
+    orthanc_ca_cert: str = ""
+    # TLS to PostgreSQL: disable | require | verify-full (prod: verify-full + CA).
+    db_ssl_mode: str = "disable"
+    db_ssl_root_cert: str = ""
+    # Production mode: the secure-config check also requires TLS on every internal
+    # connection, MinIO server-side encryption and encrypted Orthanc storage.
+    production_mode: bool = False
+    minio_kms_configured: bool = False
+    orthanc_storage_encrypted: bool = False
+    # External AI (Gemini) receives PHI. In production it is used only when the operator
+    # declares the provider is covered by a Business Associate Agreement.
+    external_ai_baa_confirmed: bool = False
+    # Destinations PHI may be sent to (webhooks, FHIR): the BAA register. Comma-separated
+    # hostnames; empty = any https host (development).
+    outbound_allowed_hosts: str = ""
 
     # Backend
     backend_host: str = "0.0.0.0"
@@ -98,6 +124,10 @@ class Settings(BaseSettings):
     # returns, so dropping a series here hides it everywhere; pixels/WADO are
     # untouched. Matched on SeriesDescription by the regex below.
     viewer_hide_nondiagnostic_series: bool = True
+    # PRV-03 minimum necessary: the viewer's study/series lists are cut to an attribute
+    # allowlist and demographics it never shows are removed from metadata and retrieved
+    # files (domain/viewer_minimum_necessary.py). Production: on.
+    viewer_minimum_necessary: bool = False
     viewer_nondiagnostic_series_pattern: str = (
         r"(?i)(\bshim|shimming|localiz|localis|\bscout\b|\bloc\b|3[\s-]?axis|"
         r"3[\s-]?plane|\bsurvey\b|calibration|field\s*map|fieldmap|b0\s*map|"
@@ -121,6 +151,18 @@ class Settings(BaseSettings):
     # Auth / RBAC (F1)
     jwt_secret_key: str = "changeme"
     jwt_algorithm: str = "HS256"
+    # Master-key rotation: derive_secret() subkeys (tenant JWT signing, TOTP-at-rest
+    # encryption, the audit hash chain) all come from jwt_secret_key. The audit chain is
+    # verified with the PREVIOUS master key for rows with seq <= the cut-over, so a
+    # rotation doesn't make the existing chain unverifiable (scripts/rotate_master_key.py).
+    audit_chain_previous_master_key: str = ""
+    audit_chain_rotated_after_seq: int = 0
+    # Refuse to start with default/placeholder secrets or an unauthenticated auth mode
+    # (checked in main.lifespan). Only disable for local development.
+    enforce_secure_config: bool = False  # set ENFORCE_SECURE_CONFIG=true in deployments
+    # OpenAPI docs (/docs, /redoc, /openapi.json) expose the full API surface; off by
+    # default in deployments.
+    api_docs_enabled: bool = False
     # Viewer session (OHIF / DICOMweb / WebSocket). The OHIF viewer and the browser
     # WebSocket cannot attach an Authorization header, so after login the API also sets
     # this httpOnly cookie carrying a narrowly-scoped "viewer" JWT (tenant-bound, same
@@ -133,7 +175,74 @@ class Settings(BaseSettings):
     invitation_ttl_hours: int = 3
     viewer_cookie_name: str = "mrv_viewer"
     viewer_cookie_secure: bool = False
-    jwt_access_token_expire_minutes: int = 480
+    # Access tokens are short-lived; a session continues only through the rotating
+    # refresh token (httpOnly cookie, alembic 051). The viewer cookie follows the access
+    # token lifetime and is re-issued at every refresh.
+    jwt_access_token_expire_minutes: int = 15
+    # Automatic logoff (HIPAA 164.312(a)(2)(iii)): a session not refreshed within
+    # session_idle_minutes ends (server-enforced; the UI warns shortly before), and no
+    # session outlives session_absolute_hours regardless of activity.
+    session_idle_minutes: int = 15
+    session_absolute_hours: int = 12
+    refresh_cookie_name: str = "mrv_refresh"
+    # The access token also travels as an httpOnly cookie, so the browser UI never keeps
+    # it in script-readable storage. Requests authenticated by this cookie must carry
+    # ``X-Requested-With: mrcv`` on state-changing methods (CSRF, with SameSite=Strict).
+    # access_token_in_body=false (production) stops returning the token in JSON at all,
+    # so script injection cannot lift a reusable credential; API clients then use API
+    # keys. The impersonation token is always returned (operators hold it per tab).
+    access_cookie_name: str = "mrv_access"
+    access_token_in_body: bool = True
+    # Break-glass emergency access (alembic 053): how long a grant lasts, and the
+    # minimum length of the stated reason.
+    # Outbound integrations (webhooks, FHIR) must use https:// so PHI is encrypted in
+    # transit; allow plain http only for local development.
+    allow_insecure_outbound: bool = False
+    # Webhook payloads omit the patient identifier (MRN) unless the receiver is covered
+    # by a Business Associate Agreement and this is enabled.
+    webhook_include_patient_id: bool = False
+    # Debug endpoints (/api/debug/medgemma/*) expose raw model prompts and outputs for
+    # a study; off unless explicitly enabled for development.
+    debug_routes_enabled: bool = False
+    # Retention purges never delete studies/results younger than this (medical-record
+    # retention law, often 6-10 years depending on jurisdiction; 0 = no floor).
+    retention_min_days: int = 0
+    break_glass_minutes: int = 60
+    break_glass_min_reason_chars: int = 20
+    # Periodic audit-log review (alembic 055): Beat generates each tenant's summary for
+    # the previous calendar month on the 1st; admins review and sign it off. Reads of
+    # patient data outside business hours (local time zone) are called out.
+    audit_review_enabled: bool = True
+    # A/B experiments run the treatment model only as isolated SHADOW jobs (alembic 056) on
+    # this Celery queue - consumed by the separate worker-shadow service, never by the
+    # clinical worker. Off: experiments are recorded but nothing is run.
+    ab_shadow_enabled: bool = False
+    # Human-in-the-loop: AI results leave the platform (DICOM SR/SEG export, FHIR, webhook
+    # findings) only after a radiologist's valid e-signature (application/export_gate.py).
+    require_signed_for_export: bool = True
+    # ADM-01: no PHI before a BAA. A tenant without an active BAA record (tenant_baas) is
+    # provisioned suspended and cannot be activated or given a DICOM endpoint / API key.
+    # Production: on.
+    require_tenant_baa: bool = False
+    # With PHI_DEIDENTIFY_ENABLED: OCR-mask text burned into US / secondary-capture /
+    # BurnedInAnnotation=YES images before inference (fails closed if it cannot check).
+    burned_in_text_check_enabled: bool = True
+    # US deployments: a radiologist can sign (and SR export carries) a report only with a
+    # valid NPI on their practitioner record (system http://hl7.org/fhir/sid/us-npi).
+    require_npi_for_signing: bool = False
+    shadow_queue: str = "mri_shadow"
+    audit_review_timezone: str = "UTC"
+    audit_review_business_hours: str = "07-19"
+    # "monthly" (1st of the month) or "weekly" (Mondays) audit reviews.
+    audit_review_cadence: str = "monthly"
+    # Monthly signed audit-log archive into a compliance-mode Object Lock bucket (WORM,
+    # created by minio/init.sh). Production: on.
+    audit_archive_enabled: bool = False
+    audit_archive_bucket: str = "audit-archive"
+    audit_archive_retention_days: int = 2190
+    # Security alert rules over the audit log every 10 min (security_alert_service.py).
+    security_alerts_enabled: bool = True
+    security_alert_failed_logins: int = 10
     auth_mode: str = "jwt"  # "jwt" | "api_key" | "none"
 
     # Multi-tenant (F2)
@@ -148,6 +257,19 @@ class Settings(BaseSettings):
     # the /mfa/disable step (see infrastructure/ratelimit/mfa_lockout.py).
     mfa_max_attempts: int = 5
     mfa_lockout_minutes: float = 15
+    # Password login lockout (HIPAA 164.312(d)): after login_max_attempts failed passwords
+    # for one account the account is locked for login_lockout_minutes; independently each
+    # client IP may attempt at most login_ip_attempts_per_minute logins.
+    login_max_attempts: int = 5
+    login_lockout_minutes: float = 15
+    login_ip_attempts_per_minute: int = 20
+    # Password policy (NIST SP 800-63B style: length + blocklist, no composition rules).
+    password_min_length: int = 12
+    # Roles that must use MFA; users in them are forced to enrol at their next sign-in
+    # and can do nothing else until they have. Platform admins/operators are always
+    # included when mfa_required_for_platform is true. Comma-separated role names.
+    mfa_required_roles: str = ""
+    mfa_required_for_platform: bool = False
 
     # Self-authenticated DICOM upload via a tenant API key (POST /api/dicom/upload).
     dicom_upload_rate_limit_per_minute: int = 60
@@ -242,6 +364,14 @@ class Settings(BaseSettings):
     llm_enabled: bool = False
     gemini_api_key: str = ""
     gemini_model: str = "gemini-1.5-flash"
+    # Which Gemini endpoint GeminiClient talks to:
+    #   "api_key" — Google AI Studio via GEMINI_API_KEY (local/dev; NOT covered by the
+    #               Google Cloud BAA — never send PHI through it in production)
+    #   "vertex"  — Vertex AI in GCP_PROJECT/GCP_LOCATION, authenticated with Application
+    #               Default Credentials (the VM's service account); no key. Production.
+    gemini_backend: Literal["api_key", "vertex"] = "api_key"
+    gcp_project: str = ""
+    gcp_location: str = "us-central1"
 
     # VLM Image Quality Assessment (Phase 2)
     vlm_qa_enabled: bool = False
@@ -392,11 +522,39 @@ class Settings(BaseSettings):
 
     @property
     def orthanc_url(self) -> str:
-        return f"http://{self.orthanc_host}:{self.orthanc_http_port}"
+        return f"{self.orthanc_scheme}://{self.orthanc_host}:{self.orthanc_http_port}"
 
     @property
     def dicomweb_url(self) -> str:
         return f"{self.orthanc_url}/dicom-web"
+
+    @property
+    def outbound_policy(self) -> dict:
+        """Keyword arguments for domain.outbound_policy.check_outbound_url."""
+        from app.domain.outbound_policy import parse_host_list
+
+        return {
+            "allow_insecure": self.allow_insecure_outbound,
+            "allowed_hosts": parse_host_list(self.outbound_allowed_hosts),
+            "require_listed": self.production_mode,
+        }
+
+    @property
+    def external_ai_allowed(self) -> bool:
+        """Gemini may receive PHI: it is configured and, in production, the operator has
+        declared the provider is covered by a BAA (EXTERNAL_AI_BAA_CONFIRMED). Every
+        GeminiClient checks this; without it the features fall back or are skipped."""
+        return self.gemini_configured and (
+            self.external_ai_baa_confirmed or not self.production_mode
+        )
+
+    @property
+    def gemini_configured(self) -> bool:
+        """True when GeminiClient has what it needs for the selected backend: an API key
+        ("api_key") or a GCP project ("vertex", credentials come from ADC)."""
+        if self.gemini_backend == "vertex":
+            return bool(self.gcp_project)
+        return bool(self.gemini_api_key)
 
     @property
     def usecases_dir(self) -> Path:
@@ -428,7 +586,92 @@ def derive_secret(purpose: str) -> str:
     import hashlib
     import hmac as _hmac
 
-    settings = get_settings()
     return _hmac.new(
-        settings.jwt_secret_key.encode("utf-8"), purpose.encode("utf-8"), hashlib.sha256
+        get_settings().jwt_secret_key.encode("utf-8"), purpose.encode("utf-8"), hashlib.sha256
     ).hexdigest()
+
+
+def derive_secret_with(master_key: str, purpose: str) -> str:
+    """``derive_secret`` for an explicit master key — used to verify/re-encrypt data
+    protected under a previous master key during rotation."""
+    import hashlib
+    import hmac as _hmac
+
+    return _hmac.new(master_key.encode("utf-8"), purpose.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+_PLACEHOLDER_SECRETS = {"", "changeme", "changeme_in_production", "orthanc", "admin", "password"}
+
+
+def insecure_config_problems(settings: Settings) -> list[str]:
+    """Names (never values) of settings that make a deployment insecure."""
+    problems: list[str] = []
+    if settings.auth_mode != "jwt":
+        problems.append(f"AUTH_MODE={settings.auth_mode} (must be jwt)")
+    if settings.jwt_secret_key in _PLACEHOLDER_SECRETS or len(settings.jwt_secret_key) < 32:
+        problems.append("JWT_SECRET_KEY is a default or shorter than 32 characters")
+    if settings.phi_hash_salt in _PLACEHOLDER_SECRETS or len(settings.phi_hash_salt) < 16:
+        problems.append("PHI_HASH_SALT is a default or shorter than 16 characters")
+    if settings.orthanc_password in _PLACEHOLDER_SECRETS or len(settings.orthanc_password) < 16:
+        problems.append("ORTHANC_PASSWORD is a default or shorter than 16 characters")
+    if not settings.orthanc_webhook_secret:
+        problems.append("ORTHANC_WEBHOOK_SECRET is empty")
+    if not settings.redis_password:
+        problems.append("REDIS_PASSWORD is empty")
+    if settings.production_mode:
+        problems.extend(production_config_problems(settings))
+    return problems
+
+
+def production_config_problems(settings: Settings) -> list[str]:
+    """PRODUCTION_MODE requirements: encryption in transit and at rest is configured
+    (HIPAA 164.312(a)(2)(iv), (e)). Names only, never values."""
+    problems: list[str] = []
+    if (settings.db_ssl_mode or "").lower() != "verify-full" or not settings.db_ssl_root_cert:
+        problems.append("DB_SSL_MODE must be verify-full with DB_SSL_ROOT_CERT")
+    if not settings.redis_tls:
+        problems.append("REDIS_TLS is off")
+    for name in ("celery_broker_url", "celery_result_backend"):
+        if not getattr(settings, name).startswith("rediss://"):
+            problems.append(f"{name.upper()} must use rediss://")
+    if not settings.minio_secure:
+        problems.append("MINIO_SECURE is off")
+    if settings.orthanc_scheme != "https":
+        problems.append("ORTHANC_SCHEME must be https")
+    if not settings.minio_kms_configured:
+        problems.append("MINIO_KMS_CONFIGURED is not declared (MinIO server-side encryption)")
+    if not settings.orthanc_storage_encrypted:
+        problems.append("ORTHANC_STORAGE_ENCRYPTED is not declared (Orthanc storage encryption)")
+    if not settings.require_rls:
+        problems.append("REQUIRE_RLS is off")
+    if not settings.viewer_cookie_secure:
+        problems.append("VIEWER_COOKIE_SECURE is off")
+    if "*" not in {r.strip() for r in settings.mfa_required_roles.split(",")}:
+        problems.append("MFA_REQUIRED_ROLES must be * (MFA for every account)")
+    if settings.api_docs_enabled or settings.debug_routes_enabled:
+        problems.append("API_DOCS_ENABLED / DEBUG_ROUTES_ENABLED must be off")
+    if settings.allow_insecure_outbound:
+        problems.append("ALLOW_INSECURE_OUTBOUND is on")
+    if any(o.strip().startswith("http://") for o in settings.allowed_origins.split(",")):
+        problems.append("ALLOWED_ORIGINS contains an http:// origin")
+    # Compliance controls that must not be switched off in production.
+    for name in ("require_tenant_baa", "require_signed_for_export", "phi_deidentify_enabled",
+                 "viewer_minimum_necessary", "audit_archive_enabled"):
+        if not getattr(settings, name):
+            problems.append(f"{name.upper()} is off")
+    return problems
+
+
+def config_warnings(settings: Settings) -> list[str]:
+    """Not fatal, but worth a line in the startup log."""
+    warnings: list[str] = []
+    if settings.production_mode and settings.gemini_configured and not settings.external_ai_baa_confirmed:
+        warnings.append(
+            "Gemini is configured but EXTERNAL_AI_BAA_CONFIRMED is not set: external AI "
+            "features are disabled (local MedGemma only)"
+        )
+    if settings.production_mode and not settings.outbound_allowed_hosts:
+        warnings.append(
+            "OUTBOUND_ALLOWED_HOSTS is empty: every webhook / FHIR destination is refused"
+        )
+    return warnings

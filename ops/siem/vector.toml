@@ -1,0 +1,49 @@
+# Optional SIEM log shipping (compose profile "siem"; checklist ADM-04 / TEC-07).
+# Reads the platform containers' JSON logs from the Docker daemon (read-only socket),
+# keeps the security-relevant ones, and forwards them over HTTPS to the SIEM collector
+# in SIEM_HTTP_URL (Splunk HEC, Elastic, Sentinel/Logstash HTTP input...). The SIEM
+# vendor must be covered by a BAA: log lines carry user names and client IPs (never
+# patient identifiers - application logs are PHI-free by policy).
+
+[sources.containers]
+type = "docker_logs"
+include_labels = ["com.docker.compose.project=${COMPOSE_PROJECT_NAME:-mrcv}"]
+
+[transforms.parsed]
+type = "remap"
+inputs = ["containers"]
+drop_on_abort = true
+source = '''
+.service = .label."com.docker.compose.service"
+if !includes(["backend", "worker", "beat", "nginx", "postgres", "orthanc", "minio"], .service) { abort }
+parsed, err = parse_json(.message)
+if err == null && is_object(parsed) { . = merge!(., parsed) }
+del(.label)
+'''
+
+# Security events: structured security_alert / audit lines, auth failures, nginx 4xx/5xx
+# on auth routes, Postgres authentication errors.
+[transforms.security]
+type = "filter"
+inputs = ["parsed"]
+condition = '''
+ev = to_string(.event) ?? ""
+msg = to_string(.message) ?? ""
+starts_with(ev, "security_alert") || starts_with(ev, "audit_") || starts_with(ev, "login_") ||
+  starts_with(ev, "mfa_") || contains(ev, "integrity") || contains(ev, "break_glass") ||
+  contains(msg, "authentication failed") || match(msg, r'"(POST|GET) /api/auth/[^"]*" (401|403|423|429)')
+'''
+
+[sinks.siem]
+type = "http"
+inputs = ["security"]
+uri = "${SIEM_HTTP_URL}"
+encoding.codec = "json"
+method = "post"
+auth.strategy = "bearer"
+auth.token = "${SIEM_HTTP_TOKEN}"
+tls.verify_certificate = true
+request.retry_attempts = 10
+buffer.type = "disk"
+buffer.max_size = 268435488  # 256 MiB
+buffer.when_full = "block"

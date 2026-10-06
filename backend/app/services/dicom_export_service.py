@@ -64,8 +64,13 @@ class DICOMExportService:
         export_sr: bool = True,
         export_seg: bool = False,
         tenant_id: str | None = None,
+        verification: dict[str, Any] | None = None,
     ) -> dict[str, str]:
-        """Export result to Orthanc as DICOM SR and/or Seg. Returns dict of Orthanc IDs."""
+        """Export result to Orthanc as DICOM SR and/or Seg. Returns dict of Orthanc IDs.
+
+        ``verification`` = the radiologist's e-signature (export_gate.require_signed): the
+        SR is then VERIFIED / FINAL with the signer as verifying observer; without it the
+        SR is an UNVERIFIED, PRELIMINARY AI draft."""
         exported: dict[str, str] = {}
 
         source_ds = await self._fetch_source_instance(study_instance_uid)
@@ -73,7 +78,7 @@ class DICOMExportService:
         if export_sr:
             try:
                 sr_bytes = await asyncio.get_event_loop().run_in_executor(
-                    None, self._build_sr, source_ds, result_data, usecase_name
+                    None, self._build_sr, source_ds, result_data, usecase_name, verification
                 )
                 orthanc_id = await self._pacs.upload_dicom_instance(sr_bytes)
                 exported["sr_orthanc_id"] = orthanc_id
@@ -156,6 +161,7 @@ class DICOMExportService:
         source_ds: pydicom.Dataset,
         result_data: dict[str, Any],
         usecase_name: str,
+        verification: dict[str, Any] | None = None,
     ) -> bytes:
         """Build a DICOM Basic Text SR encoding all measurements and AI summary fields."""
         now = datetime.datetime.utcnow()
@@ -198,8 +204,29 @@ class DICOMExportService:
         ds.SeriesNumber = self.SERIES_NUMBER_SR
         ds.InstanceNumber = 1
         ds.CompletionFlag = "COMPLETE"
-        ds.VerificationFlag = "UNVERIFIED"
-        ds.PreliminaryFlag = "FINAL"
+        if verification:
+            # Attested by the signing radiologist (alembic 049 e-signature).
+            ds.VerificationFlag = "VERIFIED"
+            ds.PreliminaryFlag = "FINAL"
+            observer = Dataset()
+            observer.VerifyingObserverName = (verification.get("signer_full_name") or "")[:64]
+            observer.VerifyingOrganization = self.MANUFACTURER
+            signed = str(verification.get("signed_at") or "")
+            observer.VerificationDateTime = "".join(ch for ch in signed if ch.isdigit())[:14] or date_str
+            npi = verification.get("signer_npi")
+            if npi:
+                # NPI as the verifying observer's identification (NPI coding scheme).
+                code = Dataset()
+                code.CodeValue, code.CodingSchemeDesignator = npi, "NPI"
+                code.CodeMeaning = (verification.get("signer_full_name") or "Radiologist")[:64]
+                observer.VerifyingObserverIdentificationCodeSequence = DCMSequence([code])
+            else:
+                observer.VerifyingObserverIdentificationCodeSequence = DCMSequence([])
+            ds.VerifyingObserverSequence = DCMSequence([observer])
+        else:
+            # An AI draft nobody has attested yet.
+            ds.VerificationFlag = "UNVERIFIED"
+            ds.PreliminaryFlag = "PRELIMINARY"
         ds.ValueType = "CONTAINER"
         ds.ContinuityOfContent = "SEPARATE"
         ds.ConceptNameCodeSequence = self._code_seq("126000", "DCM", "Imaging Measurement Report")
@@ -223,6 +250,23 @@ class DICOMExportService:
         model_version = result_data.get("model_version", "")
         if model_version:
             items.append(self._text_item("111003", "DCM", "Algorithm Version", str(model_version)))
+
+        # Coded finding site and finding (AI-03): SNOMED CT, plus RadLex where verified.
+        from app.domain.terminology_codes import (
+            FINDING,
+            FINDING_SITE,
+            RADLEX,
+            USECASE_SITES,
+            finding_codes,
+        )
+
+        site = USECASE_SITES.get(usecase_name)
+        if site:
+            items.append(self._code_item(*FINDING_SITE, *site))
+        for code in finding_codes(result_data.get("summary") or {}):
+            items.append(self._code_item(*FINDING, *code))
+            if code[2] in RADLEX:
+                items.append(self._code_item(*FINDING, *RADLEX[code[2]]))
 
         # Measurements
         measurements = result_data.get("measurements", {})
@@ -297,12 +341,16 @@ class DICOMExportService:
 
         label_map = _USECASE_LABELS.get(usecase_name, {1: "Segment 1"})
 
+        from app.domain.terminology_codes import segment_codes
+
         segment_descriptions = [
             SegmentDescription(
                 segment_number=label_id,
                 segment_label=label_name,
-                segmented_property_category=CodedConcept("85756007", "SCT", "Tissue"),
-                segmented_property_type=CodedConcept("85756007", "SCT", label_name),
+                # Category / type from SNOMED CT per structure (AI-03); previously every
+                # segment was "Tissue".
+                segmented_property_category=CodedConcept(*segment_codes(label_name)[0]),
+                segmented_property_type=CodedConcept(*segment_codes(label_name)[1]),
                 algorithm_type=SegmentAlgorithmTypeValues.AUTOMATIC,
                 algorithm_identification=hd.AlgorithmIdentificationSequence(
                     name=self.MANUFACTURER,
@@ -397,7 +445,7 @@ class DICOMExportService:
         item.TextValue = str(text)[:10240]
         return item
 
-    def _num_item(self, label: str, value: float) -> Dataset:
+    def _num_item(self, label: str, value: float, unit_key: str | None = None) -> Dataset:
         item = Dataset()
         item.RelationshipType = "CONTAINS"
         item.ValueType = "NUM"
@@ -405,7 +453,9 @@ class DICOMExportService:
         measured = Dataset()
         measured.NumericValue = pydicom.valuerep.DSfloat(value)
         measured.FloatingPointValue = value
-        measured.MeasurementUnitsCodeSequence = self._code_seq("1", "UCUM", "no units")
+        from app.domain.terminology_codes import unit_for
+
+        measured.MeasurementUnitsCodeSequence = self._code_seq(*unit_for(unit_key or label))
         item.MeasuredValueSequence = DCMSequence([measured])
         return item
 
@@ -415,7 +465,7 @@ class DICOMExportService:
         if isinstance(value, bool):
             items.append(self._text_item("112039", "DCM", label[:63], str(value)))
         elif isinstance(value, (int, float)) and not isinstance(value, bool):
-            items.append(self._num_item(label, float(value)))
+            items.append(self._num_item(label, float(value), unit_key=label.split(" — ")[-1]))
         elif isinstance(value, str):
             items.append(self._text_item("112039", "DCM", label[:63], value))
         elif isinstance(value, dict):

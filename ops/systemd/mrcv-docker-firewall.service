@@ -1,0 +1,14 @@
+[Unit]
+Description=MRCV: restrict the published DICOM port to scanner networks (DOCKER-USER)
+Documentation=file:///opt/mrcv/ops/deploy/docker-firewall.sh
+After=docker.service
+Requires=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=true
+ExecStart=/bin/bash /opt/mrcv/ops/deploy/docker-firewall.sh
+
+[Install]
+WantedBy=multi-user.target

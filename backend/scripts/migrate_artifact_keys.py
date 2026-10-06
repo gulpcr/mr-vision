@@ -49,7 +49,9 @@ def main() -> int:
 
     store = MinIOArtifactStore()
     bucket = get_settings().minio_bucket
-    engine = sa.create_engine(owner_url)
+    from app.infrastructure.tls import db_sync_url
+
+    engine = sa.create_engine(db_sync_url(owner_url))
     moved = skipped = missing = 0
 
     with engine.begin() as conn:

@@ -1,0 +1,19 @@
+[Unit]
+Description=MRCV nightly encrypted backup (age + rclone, any storage provider)
+Documentation=file:///opt/mrcv/ops/deploy/README.md
+Requires=docker.service
+After=docker.service network-online.target mrcv-stack.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Destination remote (rclone RCLONE_CONFIG_OFFSITE_* settings) and BACKUP_* names:
+# /etc/mrcv/backup.env. Secrets (crypt password) come from the stack's tmpfs env.
+EnvironmentFile=/etc/mrcv/backup.env
+ExecStart=/bin/bash /opt/mrcv/ops/backup.sh
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+TimeoutStartSec=6h
+PrivateTmp=true
+NoNewPrivileges=true

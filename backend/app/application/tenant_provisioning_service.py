@@ -93,6 +93,15 @@ class TenantProvisioningService:
 
         from app.application.plan_service import PlanService
 
+        from app.config import get_settings
+
+        baa_required = get_settings().require_tenant_baa
+        if baa_required and called_aet:
+            # A DICOM endpoint lets studies in: only once a BAA is on file.
+            raise ValueError(
+                "A DICOM endpoint can only be assigned once the workspace's BAA is recorded; "
+                "provision without called_aet, record the BAA, then add the endpoint"
+            )
         plan_record = await PlanService(self._session).get_plan(plan)  # PlanNotFound → ValueError
         if not plan_record.is_active:
             raise ValueError(f"Plan '{plan}' is inactive")
@@ -100,10 +109,15 @@ class TenantProvisioningService:
         max_users = max_users or plan_record.default_max_users
 
         tenant = await self._tenants.create_tenant(name=name, slug=slug, plan=plan, features=features)
-        if max_users:
+        if max_users or baa_required:
             record = await self._session.get(TenantRecord, tenant.id)
-            record.max_users = max_users
-            tenant.max_users = max_users
+            if max_users:
+                record.max_users = max_users
+                tenant.max_users = max_users
+            if baa_required:
+                # Suspended until the BAA is recorded and the workspace activated.
+                record.status, record.is_active = "suspended", False
+                tenant.status, tenant.is_active = "suspended", False
         await seed_tenant_defaults(self._session, tenant.id, name)
 
         endpoint = None
@@ -121,7 +135,8 @@ class TenantProvisioningService:
             entity_type="tenant",
             entity_id=tenant.id,
             actor=actor,
-            details={"slug": slug, "plan": plan, "called_aet": called_aet, "max_users": max_users},
+            details={"slug": slug, "plan": plan, "called_aet": called_aet, "max_users": max_users,
+                     "pending_baa": baa_required},
             tenant_id=tenant.id,
         ))
         logger.info("tenant_provisioned", tenant_id=tenant.id, slug=slug)

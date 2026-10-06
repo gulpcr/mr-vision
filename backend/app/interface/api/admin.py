@@ -239,8 +239,19 @@ async def apply_retention_policies(
 ):
     """Apply the caller's own tenant's retention policies now."""
     from app.application.retention_service import RetentionService
-    service = RetentionService(session)
-    totals = await service.apply_policies(tenant_id=tenant_id)
+    from app.config import get_settings
+    from app.infrastructure.orthanc.client import OrthancPACSClient
+    from app.infrastructure.storage.client import get_artifact_store
+
+    if not get_settings().retention_enabled:
+        return {"status": "disabled", "purged": {},
+                "detail": "Retention is disabled (RETENTION_ENABLED=false)"}
+    pacs = OrthancPACSClient()
+    try:
+        service = RetentionService(session, get_artifact_store(), pacs)
+        totals = await service.apply_policies(tenant_id=tenant_id)
+    finally:
+        await pacs.close()
     return {"status": "ok", "purged": totals}
 
 
@@ -283,6 +294,16 @@ async def get_experiment_stats(
     return await service.get_experiment_stats(experiment_id)
 
 
+@router.get("/experiments/{experiment_id}/shadow-comparison", dependencies=[require_permission("config.manage")])
+async def get_shadow_comparison(
+    experiment_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """Shadow (treatment-model) results next to the clinical result of the same study."""
+    from app.application.ab_testing_service import ABTestingService
+    return await ABTestingService(session).shadow_comparison(experiment_id)
+
+
 @router.post("/experiments/{experiment_id}/stop", dependencies=[Depends(require_platform_admin)])
 async def stop_experiment(
     experiment_id: str,
@@ -313,14 +334,19 @@ async def create_alert_rule(
     tenant_id: Annotated[str, Depends(request_tenant_id)],
 ):
     from app.application.alerting_service import AlertingService
+    from app.domain.outbound_policy import InsecureOutboundError
+
     service = AlertingService(session)
-    rule = await service.create_rule(
-        name=body["name"],
-        event_type=body["event_type"],
-        webhook_url=body["webhook_url"],
-        condition=body.get("condition"),
-        tenant_id=tenant_id,
-    )
+    try:
+        rule = await service.create_rule(
+            name=body["name"],
+            event_type=body["event_type"],
+            webhook_url=body["webhook_url"],
+            condition=body.get("condition"),
+            tenant_id=tenant_id,
+        )
+    except InsecureOutboundError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return rule
 
 
@@ -527,6 +553,15 @@ async def get_qa_metrics(
 ):
     """QA and audit metrics: TAT, agreement rates, QA flag rates."""
     return await service.get_qa_metrics(days=days, usecase_name=usecase_name)
+
+
+@router.get("/metrics/ai-quality", dependencies=[require_permission("audit.view")])
+async def get_ai_quality(
+    service: Annotated[AnalyticsService, Depends(get_analytics_service)],
+    months: int = Query(6, ge=1, le=36),
+):
+    """AI draft vs signed report (edit distance, discrepancy) per month: drift monitoring."""
+    return await service.ai_quality(months=months)
 
 
 # ── Capacity Prediction (Feature 11) ─────────────────────────────────────────

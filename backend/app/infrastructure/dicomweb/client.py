@@ -6,6 +6,7 @@ import httpx
 import structlog
 
 from app.config import get_settings
+from app.infrastructure.tls import httpx_verify
 
 logger = structlog.get_logger(__name__)
 
@@ -57,6 +58,7 @@ class DICOMwebClient:
         self._base_url = settings.dicomweb_url
         self._auth = (settings.orthanc_username, settings.orthanc_password)
         self._client = httpx.AsyncClient(
+            verify=httpx_verify(settings.orthanc_ca_cert),
             base_url=self._base_url,
             auth=self._auth,
             timeout=httpx.Timeout(60.0, connect=15.0),

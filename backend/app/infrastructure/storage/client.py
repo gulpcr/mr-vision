@@ -26,11 +26,15 @@ class MinIOArtifactStore(ArtifactStore):
 
     def __init__(self):
         settings = get_settings()
+        from app.infrastructure.tls import minio_http_client
+
         self._client = Minio(
             settings.minio_endpoint,
             access_key=settings.minio_access_key,
             secret_key=settings.minio_secret_key,
             secure=settings.minio_secure,
+            # Trusts the internal CA when MINIO_SECURE + MINIO_CA_CERT (infrastructure/tls.py).
+            http_client=minio_http_client(settings),
         )
         self._bucket = settings.minio_bucket
         self._ensure_bucket()

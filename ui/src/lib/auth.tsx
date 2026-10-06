@@ -3,6 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { api, type MyPermissions, type WorkspaceInfo } from "@/lib/api";
 import { hasPermission, type Permission } from "@/lib/permissions";
+import { readStoredUser } from "@/lib/session";
 
 export interface StoredUser {
   id: string;
@@ -24,6 +25,9 @@ interface AuthContextValue {
   /** Re-fetch permissions (e.g. after a role edit) without reloading the page. */
   refresh: () => void;
   isLoading: boolean;
+  /** Sign-in restrictions the account must resolve before using the app. */
+  mustChangePassword: boolean;
+  mfaEnrollmentRequired: boolean;
 }
 
 const AuthContext = createContext<AuthContextValue>({
@@ -36,6 +40,8 @@ const AuthContext = createContext<AuthContextValue>({
   can: () => false,
   refresh: () => {},
   isLoading: true,
+  mustChangePassword: false,
+  mfaEnrollmentRequired: false,
 });
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
@@ -45,12 +51,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem("user");
-      setUser(raw ? (JSON.parse(raw) as StoredUser) : null);
-    } catch {
-      setUser(null);
-    }
+    setUser(readStoredUser() as StoredUser | null);
   }, []);
 
   const load = useCallback(() => {
@@ -103,6 +104,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       permission === "tenant.manage" ? isPlatformAdmin : hasPermission(permissions, permission),
     refresh: load,
     isLoading: isLoading && !!user,
+    mustChangePassword: !!me?.must_change_password,
+    mfaEnrollmentRequired: !!me?.mfa_enrollment_required,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

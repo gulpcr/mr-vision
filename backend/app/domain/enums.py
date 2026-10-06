@@ -95,6 +95,20 @@ class AuditAction(str, enum.Enum):
     USER_ROLE_CHANGED = "user_role_changed"
     USER_DEACTIVATED = "user_deactivated"
     STUDY_DELETED = "study_deleted"
+    # ── Login hardening (HIPAA 164.312(b)/(d)) ────────────────────────────────
+    LOGIN_FAILED = "login_failed"
+    MFA_FAILED = "mfa_failed"
+    ACCOUNT_LOCKED = "account_locked"
+    PASSWORD_CHANGED = "password_changed"
+    SESSION_REUSE_DETECTED = "session_reuse_detected"
+    PHI_ACCESSED = "phi_accessed"
+    BREAK_GLASS_INVOKED = "break_glass_invoked"
+    BREAK_GLASS_REVOKED = "break_glass_revoked"
+    ARTIFACT_INTEGRITY_VIOLATION = "artifact_integrity_violation"
+    PATIENT_RECORD_DISCLOSED = "patient_record_disclosed"
+    ACCESS_REPORT_GENERATED = "access_report_generated"
+    AUDIT_REVIEW_GENERATED = "audit_review_generated"
+    AUDIT_REVIEWED = "audit_reviewed"
 
 
 class ObservationStatus(str, enum.Enum):
@@ -214,6 +228,19 @@ AUDIT_ACTION_TO_CRUDE: dict[str, str] = {
     "config_changed": "U",
     "user_login": "E",
     "user_logout": "E",
+    "login_failed": "E",
+    "mfa_failed": "E",
+    "account_locked": "U",
+    "password_changed": "U",
+    "session_reuse_detected": "E",
+    "phi_accessed": "R",
+    "break_glass_invoked": "E",
+    "break_glass_revoked": "U",
+    "artifact_integrity_violation": "R",
+    "patient_record_disclosed": "R",
+    "access_report_generated": "R",
+    "audit_review_generated": "C",
+    "audit_reviewed": "U",
     "user_created": "C",
     "user_role_changed": "U",
     "user_deactivated": "U",

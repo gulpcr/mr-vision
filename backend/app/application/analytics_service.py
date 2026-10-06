@@ -27,6 +27,45 @@ class AnalyticsService:
 
     # ── QA / Audit Metrics ────────────────────────────────────────────────────
 
+    async def ai_quality(self, months: int = 6) -> dict[str, Any]:
+        """AI-04: per month and use case — signed results, mean similarity of the signed
+        report to the AI draft, edit / major-edit rates, structured-slot discrepancy rate,
+        and the AI-confidence review rejection (correction) rate. Drift shows as a trend."""
+        from datetime import datetime, timedelta, timezone
+
+        from sqlalchemy import Integer, cast, func, select
+
+        from app.infrastructure.database.models import AIReportReviewRecord as R
+
+        since = datetime.now(timezone.utc) - timedelta(days=31 * months)
+        month = func.date_trunc("month", R.created_at)
+        stmt = select(
+            month.label("month"), R.usecase_name, R.model_version,
+            func.count().label("n"),
+            func.avg(R.similarity).label("mean_similarity"),
+            func.sum(cast(R.outcome != "unchanged", Integer)).label("edited"),
+            func.sum(cast(R.outcome == "major_edit", Integer)).label("major"),
+            func.sum(R.slots_compared).label("slots_compared"),
+            func.sum(R.slots_mismatched).label("slots_mismatched"),
+        ).where(R.created_at >= since)
+        if self._tenant_id:
+            stmt = stmt.where(R.tenant_id == self._tenant_id)
+        stmt = stmt.group_by(month, R.usecase_name, R.model_version).order_by(month, R.usecase_name)
+        rows = (await self._session.execute(stmt)).all()
+        series = [{
+            "month": r.month.date().isoformat() if r.month else None,
+            "usecase_name": r.usecase_name,
+            "model_version": r.model_version,
+            "signed_results": int(r.n),
+            "mean_similarity": round(float(r.mean_similarity or 0), 4),
+            "edit_rate_pct": round(100 * (r.edited or 0) / r.n, 1),
+            "major_edit_rate_pct": round(100 * (r.major or 0) / r.n, 1),
+            "slot_discrepancy_rate_pct": (
+                round(100 * (r.slots_mismatched or 0) / r.slots_compared, 1) if r.slots_compared else None
+            ),
+        } for r in rows]
+        return {"months": months, "series": series}
+
     async def get_qa_metrics(
         self,
         days: int = 30,
@@ -93,7 +132,10 @@ class AnalyticsService:
         correction_rate = round((corrected / total_reviewed) * 100, 1) if total_reviewed > 0 else 0.0
 
         # QA flag rate
-        result_stmt = select(ResultRecord).where(ResultRecord.created_at >= since)
+        result_stmt = select(ResultRecord).where(
+            ResultRecord.created_at >= since,
+            ResultRecord.is_shadow == False,  # noqa: E712  (experimental runs are not clinical QA)
+        )
         if usecase_name:
             result_stmt = result_stmt.where(ResultRecord.usecase_name == usecase_name)
         if self._tenant_id:

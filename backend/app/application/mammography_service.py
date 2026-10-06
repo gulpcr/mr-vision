@@ -131,6 +131,7 @@ class MammographyService:
 
         rec = await self._get_scoped(MammographyReportRecord, study_uid)
         created = rec is None
+        before = None if rec is None else {f: getattr(rec, f) for f in EDITABLE_FIELDS}
         if rec is None:
             rec = MammographyReportRecord(
                 study_instance_uid=study_uid,
@@ -161,7 +162,8 @@ class MammographyService:
         payload = self._to_dict(rec)
         await self._record_observations(rec, study)
         await self._audit(
-            actor_id, "mammography_report_saved", study_uid, {"created": created}
+            actor_id, "mammography_report_saved", study_uid, {"created": created},
+            before=before, after={f: payload.get(f) for f in EDITABLE_FIELDS},
         )
         return payload
 
@@ -203,18 +205,18 @@ class MammographyService:
             )
 
     async def _audit(
-        self, actor: str | None, action: str, entity_id: str, details: dict[str, Any]
+        self, actor: str | None, action: str, entity_id: str, details: dict[str, Any],
+        before: Any = None, after: Any = None,
     ) -> None:
-        self._session.add(
-            AuditLogRecord(
-                id=str(uuid.uuid4()),
-                action=action,
-                entity_type="mammography_report",
-                entity_id=entity_id,
-                **_audit_actor_fields(actor),
-                action_crude=audit_action_to_crude(action),
-                details=details,
-            )
+        """Hash-chained entry (AuditService), with the report's before/after state hashed."""
+        from app.application.audit_service import AuditService
+
+        f = _audit_actor_fields(actor)
+        await AuditService(self._session).record(
+            action, "mammography_report", entity_id,
+            actor_id=f["actor_id"], actor_display=f["actor_display"],
+            actor_type=AuditActorType(f["actor_type"]), details=details,
+            before=before, after=after,
         )
 
     @staticmethod

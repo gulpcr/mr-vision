@@ -12,7 +12,7 @@
   "DicomCheckCalledAet": false,
   "DicomAet": "MRI_AI",
   "RemoteAccessAllowed": true,
-  "AuthenticationEnabled": false,
+  "AuthenticationEnabled": true,
   "RegisteredUsers": {},
   "DicomWeb": {
     "Enable": true,
@@ -31,7 +31,7 @@
   ],
   "ConcurrentJobs": 4,
   "JobsHistorySize": 20,
-  "DicomAlwaysAllowEcho": true,
-  "DicomAlwaysAllowStore": true,
+  "DicomAlwaysAllowEcho": false,
+  "DicomAlwaysAllowStore": false,
   "LuaScripts": ["/etc/orthanc/on_stable_study.lua"]
 }

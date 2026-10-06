@@ -1,0 +1,313 @@
+# Rendered by the nginx image's envsubst at start-up into /etc/nginx/conf.d/default.conf.
+# Only ${ORTHANC_*} variables are substituted (NGINX_ENVSUBST_FILTER); nginx's own
+# lowercase $variables are left alone. Secrets come from .env, never from this file.
+server {
+    listen 80;
+    server_name _;
+
+    client_max_body_size 2G;
+    proxy_read_timeout 600s;
+    proxy_send_timeout 600s;
+
+    # Docker's embedded DNS. Combined with the $variable hostnames in every
+    # proxy_pass below, this makes nginx re-resolve upstream service names per
+    # request (honouring valid=) instead of caching the IP once at startup.
+    # Without this, recreating a backend/ui/orthanc/ohif container (new IP)
+    # left nginx dialing the dead old address → 502 Bad Gateway until nginx
+    # was restarted. ipv6=off avoids pointless AAAA lookups for the bridge net.
+    resolver 127.0.0.11 valid=10s ipv6=off;
+
+    # Upstream hosts as variables (host:port). A literal service name in
+    # proxy_pass would be resolved once at boot and cached; a variable defers
+    # resolution to request time via the resolver above.
+    set $backend_host backend;
+    set $ui_host      ui;
+    set $orthanc_host orthanc;
+    set $ohif_host    ohif;
+
+    # Cortex sales / landing page at a clean root URL: http://<host>/sales
+    # Exact-match location wins over the "location /" frontend prefix, so this
+    # single path is served by the backend while everything else still goes to
+    # the Next.js UI. The backend page is fully self-contained (inline CSS/JS,
+    # no external assets), so no sub-path rewriting is needed.
+    location = /sales {
+        proxy_pass http://$backend_host:8000/api/cortex;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Frontend
+    location / {
+        proxy_pass http://$ui_host:3000$request_uri;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # WebSocket support for Next.js HMR
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+
+    # OHIF assets requested at the document root (F17).
+    # OHIF is built with webpack publicPath="/", so its lazy JS/CSS chunks, the
+    # WASM, web-worker bundles and fonts are fetched at the root: /<n>.bundle.<h>.js,
+    # /<n>.css, /<hash>.wasm, /<hash>.woff2, /assets/... The /ohif/ block also serves
+    # a rewritten copy under /ohif/, but a browser running a bundle whose publicPath
+    # is "/" (e.g. one cached before the rewrite, or any future build) requests these
+    # at the root. Serve them from the OHIF container so the viewer loads regardless
+    # of which publicPath the running bundle has — no cache-clearing required.
+    # Safe against the Next.js frontend (served at "/"): its assets live under
+    # /_next/ (multi-segment) and ui/public ships no root-level js/css/wasm/font
+    # files, so these single-segment patterns never shadow a frontend asset.
+    location ~* ^/[^/]+\.(?:js|css|wasm|woff2?|ttf|map)$ {
+        proxy_pass http://$ohif_host:80$request_uri;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+    location ^~ /assets/ {
+        proxy_pass http://$ohif_host:80$request_uri;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    # Backend API. location /api/ + proxy_pass .../api/ was an identity map, so
+    # forwarding the original URI verbatim preserves the path.
+    location /api/ {
+        proxy_pass http://$backend_host:8000$request_uri;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # WebSocket endpoint (F16)
+    location /ws {
+        proxy_pass http://$backend_host:8000$request_uri;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_read_timeout 86400;
+    }
+
+    # OHIF Viewer (F17)
+    # OHIF v3 is built with PUBLIC_URL='/' and webpack publicPath="/", so every
+    # asset path is rooted at "/". Served behind this /ohif/ subpath, two classes
+    # of request would otherwise break and leave the viewer blank/black:
+    #   1. Static tags in index.html (<script src="/app.bundle.js">, <link href>)
+    #      — fixed by the src=/href= rewrites below.
+    #   2. Runtime requests the JS makes for lazy chunks, the WASM, and web
+    #      workers, built from window.PUBLIC_URL and the baked webpack publicPath
+    #      (__webpack_require__.p). These are NOT in the HTML, so rewriting the
+    #      HTML alone is not enough — they must be rewritten in the JS responses
+    #      too, otherwise the browser fetches /<chunk>.js from "/" (the Next.js
+    #      frontend → 404) and the viewer never finishes loading.
+    # sub_filter_types adds application/javascript to the default text/html so the
+    # JS bundles are also processed. The bundles contain no literal src="/ or
+    # href="/, so those two rules are no-ops on JS and only affect the HTML.
+    # The `rewrite` strips the /ohif/ prefix that the old trailing-slash
+    # proxy_pass (http://ohif_viewer/) used to strip — a variable proxy_pass
+    # cannot do that implicitly.
+    location /ohif/ {
+        rewrite ^/ohif/(.*)$ /$1 break;
+        proxy_pass http://$ohif_host:80;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
+        # Disable upstream gzip so sub_filter can operate on the raw text
+        proxy_set_header Accept-Encoding "";
+
+        # These responses are rewritten on the fly by sub_filter, so the bytes
+        # served at a given (hash-named) URL change whenever this config changes.
+        # Forbid the browser from reusing a stale cached copy without revalidating
+        # — otherwise an app.bundle.js cached during an earlier/broken deploy keeps
+        # its old publicPath and requests chunks from "/" (→ 404, blank viewer).
+        add_header Cache-Control "no-cache" always;
+
+        sub_filter_types application/javascript;
+        sub_filter_once off;
+        sub_filter 'src="/'  'src="/ohif/';
+        sub_filter 'href="/' 'href="/ohif/';
+        sub_filter "window.PUBLIC_URL = '/'" "window.PUBLIC_URL = '/ohif/'";
+        sub_filter '__webpack_require__.p = "/"' '__webpack_require__.p = "/ohif/"';
+        # OHIF 3.12.2 bug: the error notification title is built as
+        # `${t('Something went wrong')}${!isProduction && ` in ${context}`}.`, which in a
+        # production build renders "Something went wrongfalse.". Make the expression
+        # evaluate to '' instead of false. (No "$" here — nginx would read it as a variable.)
+        sub_filter "!isProduction && `" "(!isProduction || '') && `";
+    }
+
+    # OHIF CSS — rewrite the absolute font url(/<hash>.woff2) refs to the /ohif/
+    # subpath. This MUST be a CSS-only location: sub_filter is case-insensitive,
+    # so applying a 'url(/' rule to the JS bundles (above) also rewrites valid
+    # code such as `new URL(/* webpack worker import */ ...)`, which both
+    # lowercases URL and mangles the /* */ comment → SyntaxError → blank viewer.
+    # This regex is declared before the /ohif/ prefix block only for readability;
+    # regex locations take precedence over the prefix match regardless of order.
+    location ~ ^/ohif/(.+\.css)$ {
+        proxy_pass http://$ohif_host:80/$1$is_args$args;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header Accept-Encoding "";
+        add_header Cache-Control "no-cache" always;
+
+        sub_filter_types text/css;
+        sub_filter_once off;
+        sub_filter 'url(/' 'url(/ohif/';
+    }
+
+    # Health check
+    location /health {
+        proxy_pass http://$backend_host:8000$request_uri;
+    }
+
+    # Orthanc Explorer / REST is DELIBERATELY NOT exposed here. It is an
+    # unauthenticated PACS admin UI (browse/upload/DELETE any patient across all
+    # tenants) and must never be reachable from the public entrypoint. Ingest now
+    # goes through the session-authed /api/studies/upload; the OHIF viewer uses the
+    # /dicom-web + /wado locations below (which stay open for the viewer only).
+    # Admins needing the Explorer reach it via an SSH tunnel to 127.0.0.1:8042.
+    location /orthanc/ {
+        return 404;
+    }
+
+    # ── DICOMweb / WADO: tenant-authorised access to the shared PACS ─────────
+    # Orthanc is one PACS for every tenant and has no notion of tenancy. Every
+    # /dicom-web and /wado request is therefore first checked by the backend
+    # (auth_request → /api/internal/dicomweb-authz): the browser's httpOnly
+    # viewer-session cookie (set at login) must be valid and the StudyInstanceUID in
+    # the URI must belong to the viewer's tenant; anything not scoped to one study is
+    # platform-admin only. Study *searches* go to the backend's tenant-filtered QIDO
+    # proxy instead of Orthanc. The viewer is same-origin, so no CORS headers are sent
+    # (they used to reflect any Origin).
+    location = /_dicomweb_authz {
+        internal;
+        proxy_pass http://$backend_host:8000/api/internal/dicomweb-authz;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        proxy_set_header X-Original-URI $request_uri;
+        proxy_set_header X-Original-Method $request_method;
+        proxy_set_header Cookie $http_cookie;
+        proxy_set_header Authorization $http_authorization;
+        proxy_set_header Host $host;
+    }
+
+    # QIDO study search (OHIF study list) → backend, filtered to the viewer's tenant.
+    location ~ ^/dicom-web/studies/?$ {
+        auth_request /_dicomweb_authz;
+        # Patient images must not persist in the browser's disk cache (TEC-03).
+        add_header Cache-Control "no-store" always;
+        proxy_pass http://$backend_host:8000/api/dicomweb/studies$is_args$args;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    # OHIF's QIDO series-list query is routed through the backend so non-diagnostic
+    # series (localizers, shim, calibration, field maps) can be filtered out of the
+    # viewer. This regex matches ONLY /dicom-web/studies/{uid}/series (no trailing
+    # segments); per-series metadata, instances, and WADO pixels go to Orthanc via the
+    # /dicom-web/ prefix location below. Regex locations take precedence over the
+    # prefix location, so this wins for the series path.
+    location ~ ^/dicom-web/studies/([^/]+)/series/?$ {
+        auth_request /_dicomweb_authz;
+        # Patient images must not persist in the browser's disk cache (TEC-03).
+        add_header Cache-Control "no-store" always;
+        proxy_pass http://$backend_host:8000/api/dicomweb/studies/$1/series$is_args$args;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    # Series / study METADATA (where OHIF reads PatientName for its header) → backend,
+    # which shows the MRN instead of the patient name (DISPLAY_PATIENT_NAMES). Pixels,
+    # frames and bulk data below still go straight to Orthanc.
+    location ~ ^/dicom-web/studies/([^/]+)/series/([^/]+)/metadata/?$ {
+        auth_request /_dicomweb_authz;
+        # Patient images must not persist in the browser's disk cache (TEC-03).
+        add_header Cache-Control "no-store" always;
+        proxy_pass http://$backend_host:8000/api/dicomweb/studies/$1/series/$2/metadata$is_args$args;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    location ~ ^/dicom-web/studies/([^/]+)/metadata/?$ {
+        auth_request /_dicomweb_authz;
+        # Patient images must not persist in the browser's disk cache (TEC-03).
+        add_header Cache-Control "no-store" always;
+        proxy_pass http://$backend_host:8000/api/dicomweb/studies/$1/metadata$is_args$args;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    # Whole-file retrievals (WADO-RS study / series / instance, QIDO instance search)
+    # carry the full DICOM header, so they also go through the backend, which writes the
+    # MRN into PatientName (DISPLAY_PATIENT_NAMES=false). Frames, rendered images,
+    # thumbnails and bulk data have no patient header and stay on the Orthanc location.
+    location ~ ^/dicom-web/studies/([^/]+)/?$ {
+        auth_request /_dicomweb_authz;
+        # Patient images must not persist in the browser's disk cache (TEC-03).
+        add_header Cache-Control "no-store" always;
+        proxy_pass http://$backend_host:8000/api/dicomweb/studies/$1$is_args$args;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    location ~ ^/dicom-web/studies/([^/]+)/series/([^/]+)/?$ {
+        auth_request /_dicomweb_authz;
+        # Patient images must not persist in the browser's disk cache (TEC-03).
+        add_header Cache-Control "no-store" always;
+        proxy_pass http://$backend_host:8000/api/dicomweb/studies/$1/series/$2$is_args$args;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    location ~ ^/dicom-web/studies/([^/]+)/series/([^/]+)/instances/?$ {
+        auth_request /_dicomweb_authz;
+        # Patient images must not persist in the browser's disk cache (TEC-03).
+        add_header Cache-Control "no-store" always;
+        proxy_pass http://$backend_host:8000/api/dicomweb/studies/$1/series/$2/instances$is_args$args;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    location ~ ^/dicom-web/studies/([^/]+)/series/([^/]+)/instances/([^/]+)/?$ {
+        auth_request /_dicomweb_authz;
+        # Patient images must not persist in the browser's disk cache (TEC-03).
+        add_header Cache-Control "no-store" always;
+        proxy_pass http://$backend_host:8000/api/dicomweb/studies/$1/series/$2/instances/$3$is_args$args;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    # /dicom-web/ + proxy_pass .../dicom-web/ was an identity map, so the original
+    # URI is forwarded verbatim.
+    location /dicom-web/ {
+        auth_request /_dicomweb_authz;
+        # Patient images must not persist in the browser's disk cache (TEC-03).
+        add_header Cache-Control "no-store" always;
+        proxy_pass http://$orthanc_host:8042$request_uri;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        # Orthanc requires its own credentials; the user's token was already checked by
+        # auth_request above and is replaced here so it never reaches Orthanc.
+        proxy_set_header Authorization "Basic ${ORTHANC_BASIC_AUTH}";
+        proxy_set_header Cookie "";
+    }
+
+    # WADO-URI can return a whole DICOM file (contentType=application/dicom), so it goes
+    # through the backend too (MRN as patient name); the backend calls Orthanc itself.
+    location /wado {
+        auth_request /_dicomweb_authz;
+        # Patient images must not persist in the browser's disk cache (TEC-03).
+        add_header Cache-Control "no-store" always;
+        proxy_pass http://$backend_host:8000/api/dicomweb/wado$is_args$args;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}

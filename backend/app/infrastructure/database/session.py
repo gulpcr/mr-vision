@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import get_settings
+from app.infrastructure.tls import db_async_connect_args, db_sync_url
 from app.infrastructure.tenant.context import TenantContextService
 from app.infrastructure.tenant.db_scope import apply_scope_sync, current_scope_tenant_id
 
@@ -18,6 +19,8 @@ engine = create_async_engine(
     pool_size=20,
     max_overflow=10,
     pool_pre_ping=True,
+    # TLS to Postgres when DB_SSL_MODE is require / verify-full (infrastructure/tls.py).
+    connect_args=db_async_connect_args(settings),
 )
 
 async_session_factory = async_sessionmaker(
@@ -39,7 +42,7 @@ def get_sync_session() -> Session:
     """
     global _sync_session_factory
     if _sync_session_factory is None:
-        sync_engine = create_engine(settings.database_url, pool_pre_ping=True)
+        sync_engine = create_engine(db_sync_url(settings.database_url, settings), pool_pre_ping=True)
         _sync_session_factory = sessionmaker(bind=sync_engine)
     return _sync_session_factory()
 

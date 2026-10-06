@@ -41,6 +41,10 @@ dependencies = [
     # MFA (TOTP) enrollment: secret generation/verification + QR code rendering
     "pyotp>=2.9.0",
     "qrcode>=7.4.2",
+    # AES-256 encrypted patient-record exports (right of access, copy handed over off-platform)
+    "pyzipper>=0.3.6",
+    # OCR of burned-in text before inference (tesseract-ocr binary: worker image)
+    "pytesseract>=0.3.10",
     # EmailStr validation (tenant provisioning / invitations)
     "email-validator>=2.1.0",
     # PDF Reports (F18)
@@ -53,6 +57,8 @@ dependencies = [
     "websockets>=12.0",
     # LLM Report Generation (Phase 1)
     "google-generativeai>=0.8.0",
+    # Gemini on Vertex AI (GEMINI_BACKEND=vertex, production under the Google Cloud BAA)
+    "google-genai>=1.0.0",
     # PET/CT pipelines
     "matplotlib>=3.8",
     "scikit-image>=0.21",
@@ -60,8 +66,15 @@ dependencies = [
     # MRI organ segmentation — nnU-Net based real model weights
     "totalsegmentator>=2.2.0",
     # Abdomen CT tumour measurement (SAM-Med3D promptable segmentation)
-    "torchio>=0.19",
-    "edt>=2.3",
+    # Versions pinned to what the working worker ran with (they were hand-installed
+    # into the container before being declared here).
+    "torchio==1.2.1",
+    "edt==3.1.2",
+    "jaxtyping==0.3.11",
+    "wadler-lindig==0.1.7",
+    "humanize==4.16.0",
+    "Deprecated==1.3.1",
+    "wrapt==2.4.1",
     # dicom2nifti is a TotalSegmentator dependency; >=2.5 imports
     # `pydicom.pixels` (pydicom>=3.0) and breaks under our pinned pydicom 2.4.4,
     # crashing every TotalSegmentator call. Pin to the last pydicom-2.x line.

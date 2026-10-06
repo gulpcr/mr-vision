@@ -52,15 +52,22 @@ def _bearer(resp) -> dict:
 PUBLIC_OR_SELF_AUTH = {
     "/health", "/metrics", "/api/cortex", "/api/auth/login", "/api/auth/register",
     "/api/auth/mfa/verify", "/api/auth/invitations/accept", "/api/tenant/public-branding",
+    "/api/auth/refresh",
     "/api/dicom/upload", "/api/orthanc/notify-stable-study", "/api/internal/dicomweb-authz",
     "/api/dicomweb/studies", "/api/dicomweb/studies/{study_uid}/series",
     "/api/dicomweb/studies/{study_uid}/series/{series_uid}/metadata",
     "/api/dicomweb/studies/{study_uid}/metadata",
+    "/api/dicomweb/studies/{study_uid}/series/{series_uid}/instances",
+    "/api/dicomweb/studies/{study_uid}/series/{series_uid}/instances/{sop_uid}",
+    "/api/dicomweb/studies/{study_uid}/series/{series_uid}",
+    "/api/dicomweb/studies/{study_uid}",
+    "/api/dicomweb/wado",
 }
 # Any authenticated user (self-service or shared reference data).
 AUTHENTICATED_ONLY = {
     "/api/auth/me", "/api/auth/me/permissions", "/api/auth/mfa/enroll", "/api/auth/mfa/confirm",
     "/api/auth/mfa/disable", "/api/auth/viewer-session", "/api/auth/impersonate/stop",
+    "/api/auth/change-password", "/api/auth/logout",
     "/api/usecases", "/api/usecases/{usecase_name}/ui-schema",
     "/api/usecases/{usecase_name}/output-schema", "/api/tenant/current",
 }

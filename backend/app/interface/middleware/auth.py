@@ -31,6 +31,7 @@ AUTH_PATHS = frozenset({
     "/api/auth/register",
     "/api/auth/mfa/verify",
     "/api/auth/invitations/accept",
+    "/api/auth/refresh",
     "/api/tenant/public-branding",
 })
 # Viewer endpoints authenticate with the httpOnly viewer-session cookie (OHIF and the
@@ -41,6 +42,18 @@ VIEWER_COOKIE_PREFIXES = ("/api/dicomweb/",)
 # global admin api_key) — they must bypass this middleware's own auth entirely rather
 # than have it reject/misinterpret their bearer token.
 SELF_AUTHENTICATING_PATHS = frozenset({"/api/dicom/upload"})
+# What an account restricted to "fix your sign-in first" (forced password change / forced
+# MFA enrolment) may still call: its own identity, the fix itself, and signing out.
+RESTRICTED_SESSION_PATHS = frozenset({
+    "/api/auth/me",
+    "/api/auth/me/permissions",
+    "/api/auth/change-password",
+    "/api/auth/logout",
+    "/api/auth/viewer-session",
+    "/api/auth/mfa/enroll",
+    "/api/auth/mfa/confirm",
+    "/api/tenant/current",
+})
 
 
 def _set_anonymous(request: Request) -> None:
@@ -69,6 +82,10 @@ def _set_superuser(request: Request, user: str) -> None:
     request.state.referral_scoped = False
     request.state.allowed_usecases = None
 
+
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+# The UI sends ``X-Requested-With: mrcv`` on every API call (ui/src/lib/session.ts).
+CSRF_HEADER_VALUE = "mrcv"
 
 class RBACMiddleware(BaseHTTPMiddleware):
     """Authentication middleware supporting JWT, API-key, and no-auth modes.
@@ -137,6 +154,18 @@ class RBACMiddleware(BaseHTTPMiddleware):
     ) -> Response:
         token = self._extract_bearer_token(request)
         if not token:
+            token = request.cookies.get(get_settings().access_cookie_name) or None
+            # A cookie is sent by the browser on its own, so a state-changing request
+            # authenticated by it must also prove it came from our own scripts (a
+            # cross-site form or fetch cannot set this header without a CORS preflight).
+            if token and request.method not in _SAFE_METHODS and (
+                request.headers.get("x-requested-with", "").lower() != CSRF_HEADER_VALUE
+            ):
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "Missing X-Requested-With header", "code": "csrf"},
+                )
+        if not token:
             return JSONResponse(
                 status_code=401,
                 content={"detail": "Missing authentication token"},
@@ -171,16 +200,15 @@ class RBACMiddleware(BaseHTTPMiddleware):
             )
 
         impersonated_by = payload.get("impersonated_by")
-        if impersonated_by:
-            # Only impersonation tokens pay the Redis round-trip — the hot path for
-            # ordinary tokens stays a pure in-memory JWT verify.
-            from app.infrastructure.ratelimit.impersonation_blocklist import is_blocked
-            jti = payload.get("jti", "")
-            if jti and await is_blocked(jti):
-                return JSONResponse(
-                    status_code=401,
-                    content={"detail": "This impersonation session has been ended"},
-                )
+        # Ended sessions: signed-out tokens and stopped impersonations are blocklisted
+        # by jti until they expire (Redis; fails open like the other limiters).
+        from app.infrastructure.ratelimit.impersonation_blocklist import is_blocked
+        jti = payload.get("jti", "")
+        if jti and await is_blocked(jti):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "This session has ended — please sign in again"},
+            )
 
         from app.infrastructure.auth.principal import load_principal
 
@@ -205,6 +233,24 @@ class RBACMiddleware(BaseHTTPMiddleware):
         request.state.allowed_usecases = principal.allowed_usecases
         request.state.jti = payload.get("jti")
         request.state.token_exp = payload.get("exp")
+        request.state.token_version = principal.token_version
+        request.state.must_change_password = principal.must_change_password
+        request.state.mfa_enrollment_required = principal.mfa_enrollment_required
+
+        # An operator impersonating the account is not subject to its sign-in fixes.
+        if not impersonated_by and request.url.path not in RESTRICTED_SESSION_PATHS:
+            if principal.must_change_password:
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "You must change your password before continuing",
+                             "code": "password_change_required"},
+                )
+            if principal.mfa_enrollment_required:
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "Set up two-factor authentication before continuing",
+                             "code": "mfa_enrollment_required"},
+                )
 
         return await self._call_in_tenant_scope(request, call_next)
 

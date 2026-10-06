@@ -1,0 +1,50 @@
+// Production additions to orthanc.json (docker-compose.prod.yml mounts this file as
+// /etc/orthanc/zz-prod.json; the orthancteam configurator deep-merges every
+// /etc/orthanc/*.json and expands ${VARS} before parsing, so unquoted ${...} is fine).
+//
+//   * HTTPS on 8042 with the internal-PKI certificate (nginx/backend verify it).
+//   * DICOM only over TLS, mutual: scanners must present a certificate signed by a CA in
+//     DicomTlsTrustedCertificates (see ops/deploy/SCANNERS.md).
+//   * DICOM files stored in MinIO, encrypted by Orthanc itself before upload (AES-256,
+//     MasterKey) and again by MinIO SSE. Nothing readable lands on a filesystem.
+//   * The index (patient/study tags) in PostgreSQL over verified TLS, not a SQLite file.
+//   * Orthanc's own outgoing HTTPS (the Lua webhook to the backend) trusts the internal CA.
+{
+  "SslEnabled": true,
+  "SslCertificate": "/run/pki/orthanc/orthanc.pem",
+  "SslMinimumProtocolVersion": 4,
+  "HttpsVerifyPeers": true,
+  "HttpsCACertificates": "/run/pki/ca.crt",
+
+  "DicomTlsEnabled": ${DICOM_TLS_ENABLED},
+  "DicomTlsCertificate": "/run/pki/orthanc/dicom.crt",
+  "DicomTlsPrivateKey": "/run/pki/orthanc/dicom.key",
+  "DicomTlsTrustedCertificates": "/run/pki/orthanc/trusted-scanners.pem",
+  "DicomTlsRemoteCertificateRequired": true,
+
+  "AwsS3Storage": {
+    "BucketName": "${ORTHANC_S3_BUCKET}",
+    "Region": "us-east-1",
+    "Endpoint": "https://minio:9000",
+    "AccessKey": "${MINIO_ORTHANC_USER}",
+    "SecretKey": "${MINIO_ORTHANC_PASSWORD}",
+    "VirtualAddressing": false,
+    "StorageStructure": "flat",
+    "HybridMode": "Disabled",
+    "EnableLegacyUnknownFiles": false,
+    // MasterKey / PreviousMasterKeys come from zz-storage-keys.json, generated on tmpfs
+    // by ops/deploy/up.sh from the SOPS secrets (key rotation: ops/KEYS.md).
+    "StorageEncryption": {
+      "Enable": true,
+      "MaxConcurrentInputSize": 1024
+    }
+  },
+
+  "PostgreSQL": {
+    "EnableIndex": true,
+    "EnableStorage": false,
+    "ConnectionUri": "postgresql://orthanc:${ORTHANC_DB_PASSWORD}@postgres:5432/orthanc?sslmode=verify-full&sslrootcert=/run/pki/ca.crt",
+    "Lock": false,
+    "IndexConnectionsCount": 5
+  }
+}

@@ -130,6 +130,12 @@ def build_job_orchestrator(
     allowed_usecases: set[str] | None = None,
 ) -> JobOrchestrator:
     """``allowed_usecases`` = the tenant's entitled use cases (None = unrestricted)."""
+    settings = get_settings()
+    shadow_planner = None
+    if settings.ab_shadow_enabled:
+        from app.application.ab_testing_service import ABTestingService
+
+        shadow_planner = ABTestingService(session).plan_shadow
     return JobOrchestrator(
         study_repo=PgStudyRepository(session, tenant_id=tenant_id),
         series_repo=PgSeriesRepository(session, tenant_id=tenant_id),
@@ -138,6 +144,8 @@ def build_job_orchestrator(
         routing_service=routing_service,
         registry=registry,
         usecase_allowed=(allowed_usecases.__contains__ if allowed_usecases is not None else None),
+        shadow_planner=shadow_planner,
+        shadow_queue=settings.shadow_queue,
     )
 
 

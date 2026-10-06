@@ -2,16 +2,10 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { api } from "@/lib/api";
+import { api, type SessionResponse } from "@/lib/api";
+import { storeSession, pathAfterSignIn } from "@/lib/session";
 import { CortexMark } from "@/components/ui/CortexMark";
 
-interface SessionResult {
-  access_token: string | null;
-  user_id: string | null;
-  username: string | null;
-  role: string | null;
-  tenant_id: string | null;
-}
 
 export default function LoginPage() {
   const router = useRouter();
@@ -27,6 +21,12 @@ export default function LoginPage() {
   const [branding, setBranding] = useState<{
     display_name: string | null; logo_data_url: string | null; primary_color: string | null;
   } | null>(null);
+
+  useEffect(() => {
+    const reason = new URLSearchParams(window.location.search).get("reason");
+    if (reason === "idle") setError("You were signed out after 15 minutes of inactivity.");
+    else if (reason === "expired") setError("Your session has ended — please sign in again.");
+  }, []);
 
   useEffect(() => {
     const fromQuery = new URLSearchParams(window.location.search).get("workspace");
@@ -45,16 +45,10 @@ export default function LoginPage() {
     return () => window.clearTimeout(handle);
   }, [workspace]);
 
-  const storeSessionAndGo = (result: SessionResult) => {
-    localStorage.setItem("auth_token", result.access_token || "");
+  const storeSessionAndGo = (result: SessionResponse) => {
+    storeSession(result);
     if (workspace.trim()) localStorage.setItem("workspace", workspace.trim().toLowerCase());
-    localStorage.setItem("user", JSON.stringify({
-      id: result.user_id,
-      username: result.username,
-      role: result.role,
-      tenant_id: result.tenant_id,
-    }));
-    router.push("/dashboard");
+    router.push(pathAfterSignIn(result));
   };
 
   const handleLogin = async (e: React.FormEvent) => {

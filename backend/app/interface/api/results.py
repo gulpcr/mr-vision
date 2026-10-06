@@ -7,7 +7,7 @@ from fastapi.responses import Response, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.flagged_slice_service import FlaggedSliceService
-from app.application.result_service import ResultService
+from app.application.result_service import ArtifactIntegrityError, ResultService
 from app.config import get_settings
 from app.interface.api.dependencies import (
     get_flagged_slice_service,
@@ -335,8 +335,18 @@ async def create_share_link(
     if not result:
         raise HTTPException(404, "Result not found")
 
+    from app.application.export_gate import ExportNotSigned, ExportRestricted, require_signed
     from app.application.portal_service import PortalService
 
+    # A portal link shows the AI findings to someone outside the workspace: only once the
+    # report is signed, and never against a patient restriction.
+    try:
+        await require_signed(session, _request_tenant(request), result.study_instance_uid,
+                             channel="share_links", actor=getattr(request.state, "user", "unknown"))
+    except ExportNotSigned as exc:
+        if isinstance(exc, ExportRestricted):
+            await session.commit()  # keep the audit entry of the refused disclosure
+        raise HTTPException(409, detail=exc.detail())
     portal = PortalService(session, tenant_id=_request_tenant(request))
     link = await portal.create_share_link(
         result_id=result_id,
@@ -760,8 +770,40 @@ async def get_artifact(
             elif path.endswith(".png"):
                 content_type = "image/png"
             return Response(content=data, media_type=content_type)
-    except Exception as e:
-        raise HTTPException(status_code=404, detail=f"Artifact not found: {str(e)}")
+    except ArtifactIntegrityError as e:
+        # Stored bytes no longer match the SHA-256 recorded at write time: never serve
+        # possibly altered clinical data; alert through the log and the audit trail.
+        logger.error("artifact_integrity_violation", key=str(e), study=study_uid, usecase=usecase)
+        from app.application.audit_service import AuditService
+
+        await AuditService(service._result_repo._session).record(
+            "artifact_integrity_violation", "artifact", f"{study_uid}/{usecase}/{path}",
+            outcome="8", commit=True,
+        )
+        raise HTTPException(status_code=500, detail="This file failed its integrity check")
+    except Exception:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+
+
+@router.get("/provenance/{result_id}", dependencies=[require_permission(STUDY_READ)])
+async def get_result_provenance(
+    result_id: str,
+    service: Annotated[ResultService, Depends(get_result_service)],
+):
+    """Which exact model iteration produced this result (AI-02)."""
+    from sqlalchemy import select
+
+    from app.infrastructure.database.models import AIInferenceMetadataRecord
+
+    result = await service.get_result_by_id(result_id)  # tenant / referral scoped
+    if not result:
+        raise HTTPException(404, "Result not found")
+    row = (await service._result_repo._session.execute(
+        select(AIInferenceMetadataRecord).where(AIInferenceMetadataRecord.result_id == result_id)
+    )).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(404, "No provenance recorded for this result")
+    return {"result_id": result_id, "record_sha256": row.record_sha256, **row.record}
 
 
 @router.post("/results/{result_id}/export-dicom", dependencies=[require_permission("result.export")])
@@ -790,6 +832,18 @@ async def export_dicom(
     if not result:
         raise HTTPException(404, "Result not found")
 
+    from app.application.export_gate import ExportNotSigned, ExportRestricted, require_signed
+
+    try:
+        verification = await require_signed(
+            service._result_repo._session, result.tenant_id, result.study_instance_uid,
+            channel="dicom_export",
+        )
+    except ExportNotSigned as exc:
+        if isinstance(exc, ExportRestricted):  # keep the audit entry of the refusal
+            await service._result_repo._session.commit()
+        raise HTTPException(409, detail=exc.detail())
+
     result_data = {
         "id": result.id,
         "study_instance_uid": result.study_instance_uid,
@@ -811,6 +865,7 @@ async def export_dicom(
             tenant_id=result.tenant_id,
             export_sr=sr and settings.dicom_sr_enabled,
             export_seg=seg and settings.dicom_seg_enabled,
+            verification=verification,
         )
     except Exception as exc:
         logger.error("dicom_export_endpoint_failed", result_id=result_id, error=str(exc))

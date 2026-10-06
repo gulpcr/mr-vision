@@ -27,7 +27,7 @@ from typing import Any
 import structlog
 from sqlalchemy import select
 
-from app.domain.interfaces import AuditRepository
+from app.domain.interfaces import ArtifactStore, AuditRepository
 from app.domain.models import AuditEntry, utcnow
 from app.domain.report_priority import PRIORITIES, RANK, compute_priority
 from app.domain.signature_statements import (
@@ -55,6 +55,10 @@ class SignoffConflictError(Exception):
 
 class SignoffForbiddenError(Exception):
     """The actor may not sign this study (→ 403)."""
+
+
+class SignedDocumentIntegrityError(Exception):
+    """A frozen signed PDF no longer matches its recorded SHA-256."""
 
 
 class SignoffValidationError(Exception):
@@ -95,7 +99,9 @@ class ReviewSignoffService:
 
         stmt = stmt.where(StudyRecord.tenant_id == self._tenant_id)
         if self._referring_user_id:
-            stmt = stmt.where(StudyRecord.referring_user_id == self._referring_user_id)
+            from app.infrastructure.database.access_scope import referral_visible
+
+            stmt = stmt.where(referral_visible(self._referring_user_id))
         return stmt
 
     async def _get_study(self, study_uid: str):
@@ -238,8 +244,17 @@ class ReviewSignoffService:
     # ── Signature ──────────────────────────────────────────────────────────────
 
     async def _snapshot(self, study_uid: str, results: list) -> dict[str, Any]:
-        from app.infrastructure.database.models import MammographyReportRecord
+        from app.infrastructure.database.models import (
+            AIInferenceMetadataRecord,
+            MammographyReportRecord,
+        )
 
+        provenance: dict[str, str] = {}
+        if results:
+            provenance = dict((await self._session.execute(
+                select(AIInferenceMetadataRecord.result_id, AIInferenceMetadataRecord.record_sha256)
+                .where(AIInferenceMetadataRecord.result_id.in_([r.id for r in results]))
+            )).all())
         snapshot: dict[str, Any] = {
             "study_instance_uid": study_uid,
             "results": [
@@ -252,6 +267,8 @@ class ReviewSignoffService:
                     "summary": r.summary or {},
                     "measurements": r.measurements or {},
                     "qa_flags": r.qa_flags or [],
+                    # The exact model iteration (AI-02), when recorded.
+                    **({"provenance_sha256": provenance[r.id]} if r.id in provenance else {}),
                 }
                 for r in results
             ],
@@ -316,6 +333,15 @@ class ReviewSignoffService:
             raise SignoffConflictError("There is no AI result to sign for this study yet")
 
         user = await self._signer()
+        from app.domain.npi import NPI_SYSTEM, is_valid_npi
+
+        signer_npi = user.identifier_value if (
+            user.identifier_system == NPI_SYSTEM and is_valid_npi(user.identifier_value)
+        ) else None
+        if get_settings().require_npi_for_signing and signer_npi is None:
+            raise SignoffValidationError(
+                "A valid NPI must be recorded on your practitioner profile before you can sign"
+            )
         name = (user.full_name or "").strip()
         if not name:
             name = (full_name or "").strip()
@@ -338,6 +364,7 @@ class ReviewSignoffService:
             signer_username=user.username,
             signer_full_name=name,
             signer_role=user.role,
+            signer_npi=signer_npi,
             statement_version=statement_version,
             statement_text=render_statement(name, statement_version),
             comment=comment,
@@ -348,6 +375,8 @@ class ReviewSignoffService:
             signed_at=now,
         )
         self._session.add(signature)
+        await self._session.flush()  # the metrics rows reference the signature
+        await self._record_review_metrics(signature, study, snapshot)
 
         if not study.assigned_to:
             study.assigned_to = user.id
@@ -419,6 +448,7 @@ class ReviewSignoffService:
             "signer_username": s.signer_username,
             "signer_full_name": s.signer_full_name,
             "signer_role": s.signer_role,
+            "signer_npi": getattr(s, "signer_npi", None),
             "statement_version": s.statement_version,
             "statement_text": s.statement_text,
             "comment": s.comment,
@@ -502,6 +532,135 @@ class ReviewSignoffService:
         }
 
     # ── Audit ──────────────────────────────────────────────────────────────────
+
+    async def _record_review_metrics(self, signature, study, snapshot: dict[str, Any]) -> None:
+        """AI-04: AI draft vs signed report, per result (numbers only). Never blocks signing."""
+        from app.domain.report_edit_metrics import review_metrics
+        from app.infrastructure.database.models import AIReportReviewRecord
+
+        try:
+            signed_report = snapshot.get("mammography_report")
+            for r in snapshot.get("results", []):
+                m = review_metrics(r.get("summary") or {},
+                                   signed_report if r.get("usecase_name") == "mammography" else None)
+                self._session.add(AIReportReviewRecord(
+                    id=str(uuid.uuid4()), tenant_id=self._tenant_id, signature_id=signature.id,
+                    result_id=r["result_id"], usecase_name=r["usecase_name"],
+                    modality=getattr(study, "modality", None), model_version=r.get("model_version"),
+                    **m,
+                ))
+        except Exception as exc:
+            logger.warning("ai_review_metrics_failed", study_uid=study.study_instance_uid, error=str(exc))
+
+    # ── Frozen signed documents (alembic 054) ──────────────────────────────────
+
+    async def _latest_signature(self, study_uid: str):
+        from app.infrastructure.database.models import ReportSignatureRecord
+
+        return (await self._session.execute(
+            select(ReportSignatureRecord).where(
+                ReportSignatureRecord.study_instance_uid == study_uid,
+                ReportSignatureRecord.tenant_id == self._tenant_id,
+            ).order_by(ReportSignatureRecord.signed_at.desc()).limit(1)
+        )).scalar_one_or_none()
+
+    async def _document(self, signature_id: str, usecase: str):
+        from app.infrastructure.database.models import ReportSignatureDocumentRecord
+
+        return (await self._session.execute(
+            select(ReportSignatureDocumentRecord).where(
+                ReportSignatureDocumentRecord.signature_id == signature_id,
+                ReportSignatureDocumentRecord.usecase == usecase,
+            )
+        )).scalar_one_or_none()
+
+    async def signed_document(self, study_uid: str, usecase: str, store: ArtifactStore) -> bytes | None:
+        """The frozen PDF of the latest signature for this report, hash-verified; None
+        if the study is unsigned or no copy has been frozen yet. Raises
+        SignedDocumentIntegrityError (and audits it) if the stored bytes changed."""
+        signature = await self._latest_signature(study_uid)
+        if signature is None:
+            return None
+        doc = await self._document(signature.id, usecase)
+        if doc is None:
+            return None
+        data = await store.get(doc.object_path)
+        if hashlib.sha256(data).hexdigest() != doc.sha256:
+            await self._audit("signed_document_integrity_failed", study_uid, {
+                "signature_id": signature.id, "usecase": usecase, "expected_sha256": doc.sha256,
+            })
+            raise SignedDocumentIntegrityError(
+                "The stored signed report does not match its signature record"
+            )
+        return data
+
+    async def freeze_signed_document(
+        self, study_uid: str, usecase: str, pdf: bytes, store: ArtifactStore
+    ) -> str | None:
+        """Store ``pdf`` as the signed copy of this report if the study is signed, its
+        content still matches the signature, and no copy exists yet. Returns the hash."""
+        from app.infrastructure.database.models import ReportSignatureDocumentRecord
+
+        signature = await self._latest_signature(study_uid)
+        if signature is None or await self._document(signature.id, usecase) is not None:
+            return None
+        results = (await self._latest_results([study_uid]))[study_uid]
+        if content_hash(await self._snapshot(study_uid, results)) != signature.content_hash:
+            logger.warning("signed_document_not_frozen_content_changed", study_uid=study_uid,
+                           usecase=usecase)
+            return None
+        digest = hashlib.sha256(pdf).hexdigest()
+        path = f"{self._tenant_id}/{study_uid}/signed/{signature.id}/{usecase}.pdf"
+        await store.put(path, pdf, "application/pdf")
+        self._session.add(ReportSignatureDocumentRecord(
+            id=str(uuid.uuid4()), tenant_id=self._tenant_id, signature_id=signature.id,
+            study_instance_uid=study_uid, usecase=usecase, sha256=digest,
+            object_path=path, size_bytes=len(pdf),
+        ))
+        await self._audit("signed_document_frozen", study_uid, {
+            "signature_id": signature.id, "usecase": usecase, "sha256": digest,
+        })
+        await self._session.commit()
+        return digest
+
+    async def verify_signature(self, study_uid: str, store: ArtifactStore) -> dict[str, Any]:
+        """Integrity of the latest signature: the signed content (snapshot hash) and
+        every frozen PDF (stored bytes vs recorded SHA-256)."""
+        from app.infrastructure.database.models import ReportSignatureDocumentRecord
+
+        signature = await self._latest_signature(study_uid)
+        if signature is None:
+            return {"study_instance_uid": study_uid, "signed": False}
+        results = (await self._latest_results([study_uid]))[study_uid]
+        content_ok = content_hash(await self._snapshot(study_uid, results)) == signature.content_hash
+        docs = (await self._session.execute(
+            select(ReportSignatureDocumentRecord).where(
+                ReportSignatureDocumentRecord.signature_id == signature.id
+            )
+        )).scalars().all()
+        documents = []
+        for doc in docs:
+            try:
+                ok = hashlib.sha256(await store.get(doc.object_path)).hexdigest() == doc.sha256
+            except Exception:
+                ok = False
+            documents.append({"usecase": doc.usecase, "sha256": doc.sha256, "valid": ok,
+                              "frozen_at": _iso(doc.created_at)})
+        valid = content_ok and all(d["valid"] for d in documents)
+        await self._audit("signature_verified", study_uid, {
+            "signature_id": signature.id, "valid": valid,
+        })
+        return {
+            "study_instance_uid": study_uid,
+            "signed": True,
+            "signature_id": signature.id,
+            "signed_at": _iso(signature.signed_at),
+            "signer_full_name": signature.signer_full_name,
+            "content_hash": signature.content_hash,
+            "content_valid": content_ok,
+            "documents": documents,
+            "valid": valid,
+        }
 
     async def _audit(self, action: str, entity_id: str, details: dict, entity_type: str = "study_reading") -> None:
         """Hash-chained audit entry (via the injected AuditRepository). Signatures are

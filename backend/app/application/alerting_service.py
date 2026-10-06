@@ -27,8 +27,11 @@ class AlertingService:
         condition: dict[str, Any] | None = None,
         tenant_id: str = "default",
     ) -> dict[str, Any]:
+        from app.config import get_settings
+        from app.domain.outbound_policy import check_outbound_url
         from app.infrastructure.database.models import AlertRuleRecord
 
+        webhook_url = check_outbound_url(webhook_url, **get_settings().outbound_policy)
         rule_id = str(uuid.uuid4())
         record = AlertRuleRecord(
             id=rule_id,
@@ -82,9 +85,11 @@ class AlertingService:
         return result.rowcount > 0
 
     async def trigger_alert(
-        self, event_type: str, payload: dict[str, Any]
+        self, event_type: str, payload: dict[str, Any],
+        match_payload: dict[str, Any] | None = None,
     ) -> int:
-        """Check rules matching event_type and send webhooks."""
+        """Check rules matching event_type and send webhooks. Rule conditions are evaluated
+        on ``match_payload`` (default: ``payload``); only ``payload`` is sent and stored."""
         from app.infrastructure.database.models import AlertRuleRecord, AlertHistoryRecord
 
         stmt = select(AlertRuleRecord).where(
@@ -96,7 +101,7 @@ class AlertingService:
 
         sent_count = 0
         for rule in rules:
-            if not self._matches_condition(rule.condition, payload):
+            if not self._matches_condition(rule.condition, match_payload or payload):
                 continue
 
             success = await self._send_webhook(rule.webhook_url, event_type, payload)
@@ -233,16 +238,30 @@ class AlertingService:
         self._flatten_into(measurements, flat_measurements)
         self._flatten_into(summary, flat_measurements, prefix="summary")
 
+        from app.config import get_settings
+
         payload = {
             "study_instance_uid": study_instance_uid,
             "usecase_name": usecase_name,
             "result_id": result_id,
-            "patient_id": patient_id or "",
+            # The MRN leaves the platform only to receivers covered by a BAA.
+            **({"patient_id": patient_id or ""} if get_settings().webhook_include_patient_id else {}),
             "qa_flags": qa_flags,
             "measurements": measurements,
             **{f"measurements.{k}": v for k, v in flat_measurements.items()},
         }
-        webhook_count = await self.trigger_alert("result_ready", payload)
+        # Before sign-off the receiver learns only that a result exists (export_gate);
+        # nothing at all while the patient restricts webhooks (164.522).
+        from app.application.export_gate import preliminary_webhook_payload
+        from app.application.patient_rights_service import PatientRightsService
+
+        webhook_count = 0
+        if not await PatientRightsService(self._session, tenant_id or "default").study_restricted(
+            study_instance_uid, "webhooks",
+        ):
+            webhook_count = await self.trigger_alert(
+                "result_ready", preliminary_webhook_payload(payload), match_payload=payload,
+            )
 
         # Critical finding detection
         findings = self._check_critical_findings(usecase_name, summary, measurements, qa_flags)
@@ -597,6 +616,15 @@ class AlertingService:
     async def _send_webhook(
         url: str, event_type: str, payload: dict[str, Any]
     ) -> bool:
+        from app.config import get_settings
+        from app.domain.outbound_policy import InsecureOutboundError, check_outbound_url, url_host
+
+        try:
+            # Re-checked at send time: rules created before the policy may be http://.
+            check_outbound_url(url, **get_settings().outbound_policy)
+        except InsecureOutboundError as exc:
+            logger.error("webhook_refused_destination", host=url_host(url), reason=str(exc))
+            return False
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.post(
@@ -606,5 +634,5 @@ class AlertingService:
                 )
                 return response.status_code < 400
         except Exception as e:
-            logger.error("webhook_send_failed", url=url, error=str(e))
+            logger.error("webhook_send_failed", host=url_host(url), error=type(e).__name__)
             return False

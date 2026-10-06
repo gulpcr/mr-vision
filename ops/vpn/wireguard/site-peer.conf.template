@@ -1,0 +1,14 @@
+# WireGuard configuration for the SITE gateway (hospital router or a small Linux box on
+# the scanner network). It routes scanner traffic for the platform through the tunnel;
+# the scanners themselves need no change except the destination address 10.66.0.1:4242.
+[Interface]
+Address = 10.66.0.2/32
+PrivateKey = <site private key>
+
+[Peer]
+PublicKey = <platform server.pub>
+PresharedKey = <same preshared key as on the platform>
+Endpoint = <platform public address>:51820
+# Only the platform's tunnel address goes through the tunnel (split tunnel).
+AllowedIPs = 10.66.0.1/32
+PersistentKeepalive = 25

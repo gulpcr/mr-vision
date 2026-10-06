@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import { api, Study, Job, Result, CptSuggestion, ProtocolCheckResult, ComparisonData, ClinicalForStudy, FlaggedSlices, SliceJumpTarget } from "@/lib/api";
 import { attachFlagHighlight, jumpToImage, waitForOhif, type FlagInfo } from "@/lib/ohifBridge";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { ActionBlockedNotice } from "@/components/ui/ActionBlockedNotice";
 import { ReportSignoffPanel } from "@/components/reports/ReportSignoffPanel";
 import { SignReportDialog } from "@/components/reports/SignReportDialog";
 import { useAuth } from "@/lib/auth";
@@ -124,6 +125,7 @@ export default function StudyPage() {
   const [shareLoading, setShareLoading] = useState(false);
   const [shareLink, setShareLink] = useState<string | null>(null);
   const [shareCopied, setShareCopied] = useState(false);
+  const [shareError, setShareError] = useState<unknown>(null);
 
 
   const [pdfLoading, setPdfLoading] = useState(false);
@@ -319,12 +321,13 @@ export default function StudyPage() {
   const handleCreateShareLink = useCallback(async () => {
     if (!selectedResult || shareLoading) return;
     setShareLoading(true);
+    setShareError(null);
     try {
       const link = await api.portal.createShareLink(selectedResult.id, currentUser?.username || "unknown", 7);
       const portalUrl = `${window.location.origin}/portal/${link.token}`;
       setShareLink(portalUrl);
-    } catch (e: any) {
-      alert("Share link creation failed: " + e.message);
+    } catch (e: unknown) {
+      setShareError(e);
     } finally {
       setShareLoading(false);
     }
@@ -554,7 +557,7 @@ export default function StudyPage() {
       <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_340px] gap-5 items-start">
         {/* Metadata sidebar — placed on the right via order, sticky on scroll */}
         <aside className="space-y-4 lg:order-2 lg:sticky lg:top-4">
-          <div className="glass rounded-2xl p-4">
+          <div id="signoff" className="glass rounded-2xl p-4 scroll-mt-4">
             <h2 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3">Report sign-off</h2>
             <ReportSignoffPanel
               studyUid={uid}
@@ -802,6 +805,15 @@ export default function StudyPage() {
       {/* AI results — panels + report */}
       {results.length > 0 && (
         <div className="space-y-4">
+          {/* Share refused: why, and how to make it work */}
+          {shareError != null && (
+            <ActionBlockedNotice
+              title="Share link not created"
+              error={shareError}
+              onDismiss={() => setShareError(null)}
+              className="mb-4"
+            />
+          )}
           {/* Share link display */}
           {shareLink && (
             <div className="mb-4 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg p-4 flex items-center gap-3">

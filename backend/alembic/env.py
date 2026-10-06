@@ -18,7 +18,10 @@ target_metadata = Base.metadata
 
 db_url = os.environ.get("DATABASE_URL")
 if db_url:
-    config.set_main_option("sqlalchemy.url", db_url)
+    # Same TLS options as the application (DB_SSL_MODE / DB_SSL_ROOT_CERT).
+    from app.infrastructure.tls import db_sync_url
+
+    config.set_main_option("sqlalchemy.url", db_sync_url(db_url).replace("%", "%%"))
 
 
 def run_migrations_offline() -> None:

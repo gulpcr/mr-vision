@@ -138,6 +138,11 @@ class JobRun:
     completed_at: datetime | None = None
     error_detail: str | None = None
     retry_count: int = 0
+    # "clinical" | "shadow": a shadow run evaluates a candidate model; its result is kept
+    # for comparison only and never becomes the clinical result.
+    run_mode: str = "clinical"
+    experiment_id: str | None = None
+    model_version_override: str | None = None
     created_at: datetime = field(default_factory=_utcnow)
     updated_at: datetime = field(default_factory=_utcnow)
 
@@ -208,6 +213,9 @@ class ResultArtifact:
     storage_path: str
     content_type: str = "application/octet-stream"
     size_bytes: int = 0
+    # SHA-256 of the stored bytes, recorded at upload and verified on every download
+    # (HIPAA 164.312(c) integrity). None for artifacts stored before hashing existed.
+    sha256: str | None = None
 
 
 @dataclass
@@ -248,6 +256,8 @@ class User:
     totp_enabled: bool = False
     status: str = "active"
     token_version: int = 0
+    must_change_password: bool = False
+    last_login_at: datetime | None = None
     created_at: datetime = field(default_factory=_utcnow)
     updated_at: datetime = field(default_factory=_utcnow)
 

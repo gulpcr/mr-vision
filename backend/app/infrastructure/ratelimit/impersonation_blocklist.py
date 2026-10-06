@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import redis.asyncio as aioredis
 
-from app.config import get_settings
+from app.infrastructure.redis_conn import async_redis
+
 
 _KEY_PREFIX = "impersonation:blocked:"
 
@@ -18,8 +19,7 @@ def _get_client() -> aioredis.Redis:
     # visible error. Constructing fresh per call is cheap: redis.asyncio.Redis()
     # does not eagerly open a socket, only the connection pool's first real
     # command does.
-    settings = get_settings()
-    return aioredis.Redis(host=settings.redis_host, port=settings.redis_port, socket_timeout=3)
+    return async_redis(socket_timeout=3)
 
 
 async def block_jti(jti: str, ttl_seconds: int) -> None:

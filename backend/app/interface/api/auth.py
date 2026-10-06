@@ -3,10 +3,15 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.audit_service import client_ip_from
+from app.domain.audit_state import state_change_details
 from app.application.auth_service import (
+    AccountLockedError,
+    PasswordPolicyError,
     AmbiguousAccountError,
     AuthService,
     InvitationError,
@@ -70,6 +75,23 @@ class LoginResponse(BaseModel):
     username: str | None = None
     role: str | None = None
     tenant_id: str | None = None
+    must_change_password: bool = False
+    mfa_enrollment_required: bool = False
+    # Unix time the access token (and its httpOnly cookie) expires; the UI schedules its
+    # refresh from this instead of reading the token.
+    expires_at: int | None = None
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=256)
+    new_password: str = Field(min_length=1, max_length=256)
+
+
+def _policy_exception(e: PasswordPolicyError) -> HTTPException:
+    return HTTPException(
+        status_code=400,
+        detail={"message": "Password does not meet the policy", "problems": e.problems},
+    )
 
 
 class MfaVerifyRequest(BaseModel):
@@ -126,6 +148,8 @@ class UserResponse(BaseModel):
     totp_enabled: bool = False
     created_at: str | None = None
     status: str = "active"
+    must_change_password: bool = False
+    last_login_at: str | None = None
 
 
 def _to_user_response(user) -> UserResponse:
@@ -142,12 +166,16 @@ def _to_user_response(user) -> UserResponse:
         totp_enabled=user.totp_enabled,
         created_at=user.created_at.isoformat() if user.created_at else None,
         status=getattr(user, "status", "active") or "active",
+        must_change_password=bool(getattr(user, "must_change_password", False)),
+        last_login_at=(
+            user.last_login_at.isoformat() if getattr(user, "last_login_at", None) else None
+        ),
     )
 
 
 def _set_viewer_cookie(
     response: Response, user_id: str, tenant_id: str, is_platform_admin: bool,
-    referral_scoped: bool = False,
+    referral_scoped: bool = False, token_version: int = 0,
 ) -> None:
     """Issue the httpOnly viewer-session cookie (see interface/api/viewer_access.py)."""
     from app.config import get_settings
@@ -155,7 +183,7 @@ def _set_viewer_cookie(
     settings = get_settings()
     token = AuthService(session=None).create_viewer_token(
         subject=user_id, tenant_id=tenant_id, is_platform_admin=is_platform_admin,
-        referral_scoped=referral_scoped,
+        referral_scoped=referral_scoped, token_version=token_version,
     )
     response.set_cookie(
         key=settings.viewer_cookie_name,
@@ -169,7 +197,9 @@ def _set_viewer_cookie(
 
 
 async def _set_viewer_cookie_from_login(response: Response, result: dict) -> None:
-    if result.get("access_token"):
+    # No image access until a forced password change / MFA enrolment is resolved.
+    restricted = result.get("must_change_password") or result.get("mfa_enrollment_required")
+    if result.get("access_token") and not restricted:
         from app.domain.permissions import is_referral_scoped
         from app.infrastructure.auth.principal import load_principal
 
@@ -179,7 +209,74 @@ async def _set_viewer_cookie_from_login(response: Response, result: dict) -> Non
             response, result["user_id"], result["tenant_id"],
             bool(payload.get("is_platform_admin", False)),
             referral_scoped=bool(principal and is_referral_scoped(principal.permissions)),
+            token_version=principal.token_version if principal else 0,
         )
+
+
+def _session_response(response: Response, result: dict) -> LoginResponse:
+    """Set the httpOnly access-token cookie for a freshly issued token and build the
+    JSON answer (without the token itself when ACCESS_TOKEN_IN_BODY is off)."""
+    from app.config import get_settings
+
+    settings = get_settings()
+    token = result.get("access_token")
+    body = dict(result)
+    if token:
+        payload = AuthService(session=None).decode_token(token) or {}
+        exp = int(payload.get("exp", 0) or 0) or None
+        body["expires_at"] = exp
+        response.set_cookie(
+            key=settings.access_cookie_name,
+            value=token,
+            max_age=settings.jwt_access_token_expire_minutes * 60,
+            httponly=True,
+            secure=settings.viewer_cookie_secure,
+            samesite="strict",
+            path="/",
+        )
+        if not settings.access_token_in_body:
+            body["access_token"] = None
+    return LoginResponse(**body)
+
+
+def _clear_access_cookie(response: Response) -> None:
+    from app.config import get_settings
+
+    response.delete_cookie(get_settings().access_cookie_name, path="/")
+
+
+def _set_refresh_cookie(response: Response, token: str) -> None:
+    from app.config import get_settings
+
+    settings = get_settings()
+    response.set_cookie(
+        key=settings.refresh_cookie_name,
+        value=token,
+        max_age=settings.session_absolute_hours * 3600,
+        httponly=True,
+        secure=settings.viewer_cookie_secure,
+        samesite="strict",
+        path="/api/auth",  # only ever sent to /api/auth/refresh and /api/auth/logout
+    )
+
+
+def _clear_refresh_cookie(response: Response) -> None:
+    from app.config import get_settings
+
+    response.delete_cookie(get_settings().refresh_cookie_name, path="/api/auth")
+
+
+async def _start_session(request: Request, response: Response, session, result: dict) -> None:
+    """After a successful sign-in: begin a refresh-session family and set its cookie."""
+    from app.application.session_service import RefreshSessionService
+
+    if not result.get("access_token"):
+        return
+    raw = await RefreshSessionService(session).start(
+        result["user_id"], result["tenant_id"], int(result.get("token_version", 0) or 0),
+        client_ip=client_ip_from(request), user_agent=request.headers.get("user-agent", ""),
+    )
+    _set_refresh_cookie(response, raw)
 
 
 async def _resolve_login_tenant(request: Request, workspace: str | None) -> str | None:
@@ -216,23 +313,41 @@ async def login(
     session: Annotated[AsyncSession, Depends(get_session)],
 ):
     """Authenticate user and return a JWT token, or an mfa_token if MFA is enabled."""
+    from app.infrastructure.ratelimit.login_lockout import ip_allowed
+
+    client_ip = client_ip_from(request)
+    if not await ip_allowed(client_ip):
+        raise HTTPException(
+            status_code=429, detail="Too many sign-in attempts — wait a minute and try again",
+            headers={"Retry-After": "60"},
+        )
     tenant_id = await _resolve_login_tenant(request, body.workspace)
     service = AuthService(session)
     try:
-        result = await service.authenticate(body.username, body.password, tenant_id=tenant_id)
+        result = await service.authenticate(
+            body.username, body.password, tenant_id=tenant_id, client_ip=client_ip
+        )
     except TenantAccessError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except AmbiguousAccountError as e:
         raise HTTPException(status_code=409, detail=str(e))
+    except AccountLockedError as e:
+        await session.commit()  # keep the audit entry: raising rolls the session back
+        raise HTTPException(
+            status_code=423, detail=str(e), headers={"Retry-After": str(e.retry_after)}
+        )
     if not result:
+        await session.commit()  # keep the failed-login audit entry
         raise HTTPException(status_code=401, detail="Invalid credentials")
+    await _start_session(request, response, session, result)
     await _set_viewer_cookie_from_login(response, result)
-    return LoginResponse(**result)
+    return _session_response(response, result)
 
 
 @router.post("/mfa/verify", response_model=LoginResponse)
 async def verify_mfa(
     body: MfaVerifyRequest,
+    request: Request,
     response: Response,
     session: Annotated[AsyncSession, Depends(get_session)],
 ):
@@ -243,9 +358,11 @@ async def verify_mfa(
     except MfaLockedError as e:
         raise _mfa_locked_exception(e)
     if not result:
+        await session.commit()  # keep the mfa_failed audit entry
         raise HTTPException(status_code=401, detail="Invalid or expired MFA session, or wrong code")
+    await _start_session(request, response, session, result)
     await _set_viewer_cookie_from_login(response, result)
-    return LoginResponse(**result)
+    return _session_response(response, result)
 
 
 @router.get("/me/permissions")
@@ -265,7 +382,122 @@ async def my_permissions(request: Request):
         "is_platform_admin": bool(getattr(request.state, "is_platform_admin", False)),
         "is_platform_operator": bool(getattr(request.state, "is_platform_operator", False)),
         "is_admin": has_permission(permissions, "*"),
+        "must_change_password": bool(getattr(request.state, "must_change_password", False)),
+        "mfa_enrollment_required": bool(
+            getattr(request.state, "mfa_enrollment_required", False)
+        ),
     }
+
+
+@router.post("/change-password", response_model=LoginResponse)
+async def change_password(
+    body: ChangePasswordRequest,
+    request: Request,
+    response: Response,
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """Self-service password change (also resolves a forced change). Ends every other
+    session and returns a fresh token for this one."""
+    from app.infrastructure.auth.principal import invalidate_principal
+
+    user_id = getattr(request.state, "user_id", "") or ""
+    if not user_id or getattr(request.state, "impersonated_by", None):
+        raise HTTPException(status_code=403, detail="Password can only be changed by its owner")
+    service = AuthService(session)
+    try:
+        result = await service.change_password(
+            user_id, request.state.tenant_id, body.current_password, body.new_password
+        )
+    except PasswordPolicyError as e:
+        raise _policy_exception(e)
+    if result is None:
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    # Commit before dropping the cached principal: the session would otherwise commit
+    # only after the response, and a request in between would re-cache the old state.
+    await _start_session(request, response, session, result)
+    await session.commit()
+    invalidate_principal(user_id)
+    await _set_viewer_cookie_from_login(response, result)
+    return _session_response(response, result)
+
+
+@router.post("/refresh", response_model=LoginResponse)
+async def refresh_session(
+    request: Request,
+    response: Response,
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """Continue a session: exchange the refresh cookie for a new access token (and a
+    rotated refresh cookie). Fails once the session is idle, expired, revoked, or the
+    token is replayed — the UI then signs out."""
+    from app.application.session_service import RefreshSessionService, SessionRejected
+    from app.config import get_settings
+
+    raw = request.cookies.get(get_settings().refresh_cookie_name, "")
+    if not raw:
+        raise HTTPException(status_code=401, detail="No active session")
+    try:
+        refreshed = await RefreshSessionService(session).rotate(
+            raw, client_ip=client_ip_from(request), user_agent=request.headers.get("user-agent", ""),
+        )
+    except SessionRejected as e:
+        await session.commit()  # keep revocations / reuse audit
+        rejection = JSONResponse(
+            status_code=401, content={"detail": "Your session has ended — please sign in again",
+                                      "reason": e.reason},
+        )
+        _clear_refresh_cookie(rejection)
+        _clear_access_cookie(rejection)
+        return rejection
+    service = AuthService(session)
+    user = await service.get_user_by_id(refreshed.user_id)
+    if user is None or user.tenant_id != refreshed.tenant_id:
+        raise HTTPException(status_code=401, detail="Your session has ended — please sign in again")
+    result = await service._issue_tokens(user, audit_login=False)
+    _set_refresh_cookie(response, refreshed.refresh_token)
+    await _set_viewer_cookie_from_login(response, result)
+    return _session_response(response, result)
+
+
+@router.post("/logout", status_code=204)
+async def logout(
+    request: Request,
+    response: Response,
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """End this session server-side: the access token is blocklisted until it would
+    have expired, the viewer cookie is dropped, and the sign-out is audited."""
+    import time
+
+    from app.config import get_settings
+    from app.infrastructure.ratelimit.impersonation_blocklist import block_jti
+
+    jti = getattr(request.state, "jti", None)
+    exp = getattr(request.state, "token_exp", None)
+    if jti and exp:
+        try:
+            await block_jti(jti, int(exp) - int(time.time()))
+        except Exception:
+            raise HTTPException(status_code=503, detail="Could not end the session — try again")
+    user_id = getattr(request.state, "user_id", "") or ""
+    if user_id:
+        await AuthService(session).audit_logout(
+            user_id, getattr(request.state, "user", "") or "",
+            getattr(request.state, "tenant_id", "default") or "default",
+            client_ip_from(request),
+        )
+    raw_refresh = request.cookies.get(get_settings().refresh_cookie_name, "")
+    if raw_refresh:
+        from app.application.session_service import RefreshSessionService
+
+        await RefreshSessionService(session).end(raw_refresh, "logout")
+    response.delete_cookie(get_settings().viewer_cookie_name, path="/")
+    _clear_refresh_cookie(response)
+    _clear_access_cookie(response)
+    # Tell the browser to drop cached viewer images and site storage (HIPAA 164.312(a)(2)(iii)).
+    response.headers["Clear-Site-Data"] = '"cache", "storage"'
+    response.status_code = 204
+    return response
 
 
 def _ttl_hours() -> int:
@@ -345,6 +577,7 @@ async def revoke_user_sessions(
         user_id, tenant_id, actor=getattr(request.state, "user", "unknown")
     ):
         raise HTTPException(status_code=404, detail="User not found")
+    await session.commit()  # before invalidating (see change_password)
     invalidate_principal(user_id)
     return {"status": "ok"}
 
@@ -359,10 +592,13 @@ async def accept_invitation(
 
     try:
         user = await AuthService(session).accept_invitation(body.token, body.password)
+    except PasswordPolicyError as e:
+        raise _policy_exception(e)
     except InvitationError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except TenantAccessError as e:
         raise HTTPException(status_code=403, detail=str(e))
+    await session.commit()  # before invalidating (see change_password)
     invalidate_principal(user.id)
     return {"status": "ok", "username": user.username, "tenant_id": user.tenant_id}
 
@@ -371,12 +607,18 @@ async def accept_invitation(
 async def refresh_viewer_session(request: Request, response: Response):
     """(Re)issue the viewer-session cookie for the authenticated caller — the UI calls
     this on load so a session restored from storage also has a valid viewer cookie."""
+    if getattr(request.state, "must_change_password", False) or getattr(
+        request.state, "mfa_enrollment_required", False
+    ):
+        response.status_code = 204  # restricted session: no image access yet
+        return response
     _set_viewer_cookie(
         response,
         getattr(request.state, "user_id", "") or "",
         getattr(request.state, "tenant_id", "default") or "default",
         bool(getattr(request.state, "is_platform_admin", False)),
         referral_scoped=bool(getattr(request.state, "referral_scoped", False)),
+        token_version=int(getattr(request.state, "token_version", 0) or 0),
     )
     response.status_code = 204
     return response
@@ -422,6 +664,10 @@ async def register(
             detail="Self-registration is disabled — ask your workspace administrator for an invitation",
         )
     service = AuthService(session)
+    try:
+        service.check_password_policy(body.password, body.username)
+    except PasswordPolicyError as e:
+        raise _policy_exception(e)
     try:
         user = await service.create_user(
             username=body.username,
@@ -474,6 +720,8 @@ async def update_user_role(
     if role == "admin" and "admin" not in (getattr(request.state, "roles", None) or []):
         raise HTTPException(status_code=403, detail="Only an admin can grant the admin role")
     service = AuthService(session)
+    previous = await service.get_user_by_id(user_id)
+    previous_role = previous.role if previous is not None else None
     try:
         user = await service.update_user_role(user_id, role, tenant_id=caller_tenant_id)
     except ValueError as e:
@@ -482,13 +730,15 @@ async def update_user_role(
         raise HTTPException(status_code=404, detail="User not found")
     from app.infrastructure.auth.principal import invalidate_principal
 
+    await session.commit()  # before invalidating (see change_password)
     invalidate_principal(user_id)
     await PgAuditRepository(session, tenant_id=caller_tenant_id).save(AuditEntry(
         action=AuditAction.USER_ROLE_CHANGED,
         entity_type="user",
         entity_id=user_id,
         actor=getattr(request.state, "user", "unknown"),
-        details={"target_username": user.username, "role": role},
+        details={"target_username": user.username, "role": role, "previous_role": previous_role,
+                 **state_change_details({"role": previous_role}, {"role": role})},
         tenant_id=caller_tenant_id,
     ))
     return {"status": "ok", "user_id": user_id, "role": role}
@@ -511,6 +761,7 @@ async def deactivate_user(
         raise HTTPException(status_code=404, detail="User not found")
     from app.infrastructure.auth.principal import invalidate_principal
 
+    await session.commit()  # before invalidating (see change_password)
     invalidate_principal(user_id)
     await PgAuditRepository(session, tenant_id=caller_tenant_id).save(AuditEntry(
         action=AuditAction.USER_DEACTIVATED,
@@ -645,6 +896,10 @@ async def confirm_mfa(
         details={},
         tenant_id=getattr(request.state, "tenant_id", "default"),
     ))
+    from app.infrastructure.auth.principal import invalidate_principal
+
+    await session.commit()  # before invalidating, or the old state gets re-cached
+    invalidate_principal(request.state.user_id)  # lifts a forced-enrolment restriction now
     return MfaConfirmResponse(recovery_codes=codes)
 
 
@@ -654,6 +909,17 @@ async def disable_mfa(
     request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
 ):
+    from app.infrastructure.auth.principal import mfa_required_for
+
+    role = (getattr(request.state, "roles", None) or [""])[0]
+    privileged = bool(
+        getattr(request.state, "is_platform_admin", False)
+        or getattr(request.state, "is_platform_operator", False)
+    )
+    if mfa_required_for(role, privileged):
+        raise HTTPException(
+            status_code=403, detail="Two-factor authentication is required for your role"
+        )
     service = MfaService(session)
     try:
         await service.disable(request.state.user_id, body.code)

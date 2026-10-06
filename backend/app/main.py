@@ -13,6 +13,10 @@ from app.config import get_settings
 from app.interface.api import dependencies
 from app.interface.api.admin import router as admin_router
 from app.interface.api.auth import router as auth_router
+from app.interface.api.audit_review import router as audit_review_router
+from app.interface.api.break_glass import router as break_glass_router
+from app.interface.api.patient_rights import rights_router as patient_rights_register_router
+from app.interface.api.patient_rights import router as patient_rights_router
 from app.interface.api.health import router as health_router
 from app.interface.api.landing import router as landing_router
 from app.interface.api.jobs import router as jobs_router
@@ -64,6 +68,21 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     from app.infrastructure.database.session import rls_enforcement_status
 
     settings = get_settings()
+    from app.config import insecure_config_problems
+
+    problems = insecure_config_problems(settings)
+    if problems and settings.enforce_secure_config:
+        raise RuntimeError(
+            "Refusing to start with an insecure configuration: " + "; ".join(problems)
+            + ". Fix these in .env (ENFORCE_SECURE_CONFIG=false only for local development)."
+        )
+    if problems:
+        logger.warning("insecure_config_allowed", problems=problems)
+    from app.config import config_warnings
+
+    for warning in config_warnings(settings):
+        logger.warning("config_warning", detail=warning)
+
     rls_enforced, db_role = await rls_enforcement_status()
     if rls_enforced:
         logger.info("tenant_rls_enforced", db_role=db_role)
@@ -117,7 +136,27 @@ def create_app() -> FastAPI:
         description="Production-grade AI-based MRI analysis platform",
         version="1.0.0",
         lifespan=lifespan,
+        # The interactive docs map the whole API surface; only served when enabled.
+        docs_url="/docs" if settings.api_docs_enabled else None,
+        redoc_url="/redoc" if settings.api_docs_enabled else None,
+        openapi_url="/openapi.json" if settings.api_docs_enabled else None,
     )
+
+    @app.exception_handler(Exception)
+    async def _unhandled_error(request, exc):  # pragma: no cover - exercised via tests
+        """Never return exception text (paths, SQL, PACS responses) to the client: log it
+        with a reference the user can quote to support."""
+        import uuid
+
+        from fastapi.responses import JSONResponse
+
+        error_id = uuid.uuid4().hex[:12]
+        logger.error("unhandled_error", error_id=error_id, path=request.url.path,
+                     error_type=type(exc).__name__, error=str(exc))
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "An internal error occurred", "error_id": error_id},
+        )
 
     origins = [o.strip() for o in settings.allowed_origins.split(",") if o.strip()]
     app.add_middleware(
@@ -130,6 +169,11 @@ def create_app() -> FastAPI:
     # Starlette executes the LAST-added middleware first, so RBACMiddleware (added
     # last, unchanged position) still runs before TenantResolutionMiddleware, which
     # depends on request.state.tenant_id already being set from the JWT.
+    # Runs inside RBAC/tenant resolution (needs the authenticated user on request.state):
+    # records every successful read of a patient-data route (HIPAA 164.312(b)).
+    from app.interface.middleware.phi_audit import PhiReadAuditMiddleware
+
+    app.add_middleware(PhiReadAuditMiddleware)
     app.add_middleware(TenantResolutionMiddleware)
     app.add_middleware(RBACMiddleware)
 
@@ -145,6 +189,10 @@ def create_app() -> FastAPI:
     app.include_router(orthanc_router, prefix="/api")
     app.include_router(reports_router, prefix="/api")
     app.include_router(critical_alerts_router, prefix="/api")
+    app.include_router(break_glass_router, prefix="/api")
+    app.include_router(audit_review_router, prefix="/api")
+    app.include_router(patient_rights_router, prefix="/api")
+    app.include_router(patient_rights_register_router, prefix="/api")
     app.include_router(roles_router, prefix="/api")
     app.include_router(reading_router, prefix="/api")
     app.include_router(review_signoff_router, prefix="/api")
@@ -152,7 +200,8 @@ def create_app() -> FastAPI:
     app.include_router(clinical_router, prefix="/api")
     app.include_router(practitioners_router, prefix="/api")
     app.include_router(mammography_router, prefix="/api")
-    app.include_router(medgemma_debug_router, prefix="/api")
+    if settings.debug_routes_enabled:
+        app.include_router(medgemma_debug_router, prefix="/api")
     app.include_router(dicomweb_router, prefix="/api")
     app.include_router(viewer_access_router, prefix="/api")
     app.include_router(dashboards_router, prefix="/api")

@@ -66,7 +66,9 @@ class PgStudyRepository(StudyRepository):
             stmt = stmt.where(StudyRecord.tenant_id == self._tenant_id)
             referring = _referral_scope()
             if referring:
-                stmt = stmt.where(StudyRecord.referring_user_id == referring)
+                from app.infrastructure.database.access_scope import referral_visible
+
+                stmt = stmt.where(referral_visible(referring))
         return stmt
 
     async def save(self, study: Study) -> Study:
@@ -344,6 +346,9 @@ class PgJobRepository(JobRepository):
             completed_at=job.completed_at,
             error_detail=job.error_detail,
             retry_count=job.retry_count,
+            run_mode=job.run_mode,
+            experiment_id=job.experiment_id,
+            model_version_override=job.model_version_override,
         )
         self._session.add(record)
         await self._session.flush()
@@ -420,6 +425,9 @@ class PgJobRepository(JobRepository):
             completed_at=record.completed_at,
             error_detail=record.error_detail,
             retry_count=getattr(record, "retry_count", 0),
+            run_mode=getattr(record, "run_mode", None) or "clinical",
+            experiment_id=getattr(record, "experiment_id", None),
+            model_version_override=getattr(record, "model_version_override", None),
             created_at=record.created_at,
             updated_at=record.updated_at,
         )
@@ -431,14 +439,18 @@ class PgResultRepository(ResultRepository):
         self._tenant_id = tenant_id
 
     def _scope(self, stmt):
+        # Shadow (experimental) results never reach a clinical reader (alembic 056).
+        stmt = stmt.where(ResultRecord.is_shadow == False)  # noqa: E712
         if self._tenant_id:
             stmt = stmt.where(ResultRecord.tenant_id == self._tenant_id)
             referring = _referral_scope()
             if referring:
+                from app.infrastructure.database.access_scope import referral_visible
+
                 stmt = stmt.where(ResultRecord.study_instance_uid.in_(
                     select(StudyRecord.study_instance_uid).where(
                         StudyRecord.tenant_id == self._tenant_id,
-                        StudyRecord.referring_user_id == referring,
+                        referral_visible(referring),
                     )
                 ))
         return stmt
@@ -485,6 +497,7 @@ class PgResultRepository(ResultRepository):
                     "storage_path": a.storage_path,
                     "content_type": a.content_type,
                     "size_bytes": a.size_bytes,
+                    "sha256": a.sha256,
                 }
                 for a in result.artifacts
             ],
@@ -576,6 +589,7 @@ class PgResultRepository(ResultRepository):
                     storage_path=a["storage_path"],
                     content_type=a.get("content_type", "application/octet-stream"),
                     size_bytes=a.get("size_bytes", 0),
+                    sha256=a.get("sha256"),
                 )
             )
         qa_flags = []
@@ -653,6 +667,27 @@ class PgUseCaseRegistryRepository(UseCaseRegistryRepository):
         )
 
 
+async def next_audit_chain_link(
+    session: AsyncSession, *, action: str, entity_type: str, entity_id: str,
+    actor: str | None, details: dict | None, tenant_id: str,
+) -> tuple[int, str | None, str]:
+    """(seq, prev_hash, row_hash) for the next audit row, holding the chain-tail lock
+    until the caller's transaction ends. Every audit writer must use this so the hash
+    chain stays linear and every row is tamper-evident (see PgAuditRepository.save)."""
+    from app.config import derive_secret
+    from app.domain.audit_chain import compute_audit_row_hash
+
+    tail = (await session.execute(text("SELECT seq, row_hash FROM audit_chain_tail()"))).first()
+    next_seq = (tail.seq + 1) if tail else 1
+    prev_hash = tail.row_hash if tail else None
+    row_hash = compute_audit_row_hash(
+        secret=derive_secret("audit-chain-v1"), seq=next_seq, action=action,
+        entity_type=entity_type, entity_id=entity_id, actor=actor, details=details,
+        tenant_id=tenant_id, prev_hash=prev_hash,
+    )
+    return next_seq, prev_hash, row_hash
+
+
 class PgAuditRepository(AuditRepository):
     def __init__(self, session: AsyncSession, tenant_id: str | None = None):
         self._session = session
@@ -664,9 +699,6 @@ class PgAuditRepository(AuditRepository):
         return stmt
 
     async def save(self, entry: AuditEntry) -> AuditEntry:
-        from app.config import derive_secret
-        from app.domain.audit_chain import compute_audit_row_hash
-
         action = entry.action.value if isinstance(entry.action, AuditAction) else entry.action
         # actor here is legacy free-text ("system", "celery_worker", a user id, or a
         # username depending on the caller). Type it as far as it can be typed without
@@ -687,22 +719,10 @@ class PgAuditRepository(AuditRepository):
         # tail directly would return that tenant's last row — not the global tail — and
         # fork the chain. The function returns only (seq, row_hash), with the same
         # FOR UPDATE lock, regardless of the caller's scope.
-        tail = (
-            await self._session.execute(text("SELECT seq, row_hash FROM audit_chain_tail()"))
-        ).first()
-        next_seq = (tail.seq + 1) if tail else 1
-        prev_hash = tail.row_hash if tail else None
-
-        row_hash = compute_audit_row_hash(
-            secret=derive_secret("audit-chain-v1"),
-            seq=next_seq,
-            action=action,
-            entity_type=entry.entity_type,
-            entity_id=entry.entity_id,
-            actor=raw_actor,
-            details=entry.details,
+        next_seq, prev_hash, row_hash = await next_audit_chain_link(
+            self._session, action=action, entity_type=entry.entity_type,
+            entity_id=entry.entity_id, actor=raw_actor, details=entry.details,
             tenant_id=tenant_id,
-            prev_hash=prev_hash,
         )
 
         record = AuditLogRecord(
